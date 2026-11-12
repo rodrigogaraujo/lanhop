@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: first release, v0.1.0.** One person has used it on one desk: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. Not tried by a person yet: two Macs together, three or more machines, an Intel Mac, and the installer on a real machine. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: first release, v0.1.0.** One person has used it on one desk, in one direction: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. Not tried by a person yet: a Linux machine sharing its keyboard and mouse, a Mac controlled from another machine, two Macs together, three or more machines, and the installer on a real machine. The build for Intel Macs has never been run. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 

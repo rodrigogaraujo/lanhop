@@ -1,6 +1,6 @@
 # Setting up lanhop on macOS
 
-> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person has shared the keyboard and trackpad of one Mac (macOS 26.5, Apple silicon) with a Linux machine, by hotkey and through the screen edge. Two Macs together, an Intel Mac, and a Mac controlled by a person typing on another machine have been tried only by automated tests.
+> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person has shared the keyboard and trackpad of one Mac (macOS 26.5, Apple silicon) with a Linux machine, by hotkey and through the screen edge. A Mac controlled from another machine has been tried only with input that a program generated, not with a person typing. Two Macs together have not been tried. The build for Intel Macs has never been run.
 
 ## The quick way: the installer
 
