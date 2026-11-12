@@ -41,12 +41,14 @@ sudo go test ./internal/evdev/
 
 On Linux, the input tests create real virtual keyboards and mice with `uinput`. Whatever they emit is real input for the machine that runs them, and the system acts on it. A test once pressed the power key on a fake power button, and the CI machine shut down in the middle of the run.
 
-Running these tests with `sudo` types the letter "a" and clicks the left mouse button once, wherever the cursor is, on the machine that runs them.
+Running these tests with `sudo` types the letter "a" a few times, moves the pointer by a few pixels, clicks the left mouse button once, wherever the cursor is, and presses Ctrl+Alt+2 a few times, on the machine that runs them.
 
 - Never emit a key the system acts on: power, sleep, suspend, restart, SysRq, or combinations such as Ctrl+Alt+Delete and Ctrl+Alt+F1.
 - A test may create a device that *has* such a key, to check how it is classified. It must not press it.
-- In `internal/evdev`, tests reach a device only through the `emit` test helper. It lets through the letter A, the left mouse button, mouse movement and scrolling, and stops the test on anything else. A test fails if any test in that package calls `Emit` directly.
-- Tests in other packages that replay through a real virtual device, such as the ones in `cmd/lanhop`, are not covered by that helper. Besides the events above, they may press only Shift.
+- In `internal/evdev`, tests reach a device only through the `emit` test helper. It lets through the letter A, the left mouse button, mouse movement and scrolling, and the keys of the hotkeys Ctrl+Alt+1 and Ctrl+Alt+2: left Ctrl, left Alt and the digits 1 and 2. It stops the test on anything else. A test fails if any test in that package calls `Emit` directly.
+- Press Ctrl and Alt only as part of those two hotkeys. The end-to-end tests press Ctrl+Alt+2 once each to give the focus to their receiver. The machine that runs them sees that hotkey, but nothing that is typed while a receiver has the focus: the sharer takes the fake keyboard and mouse away from that machine until the focus comes back.
+- A test that replays input on a real virtual device takes that device for itself before anything is replayed: it opens the event node of the device, calls `Grab` on it and keeps it open until the replay has stopped. Only the test then reads what is replayed, so the machine that runs the test does not act on it. `receiveFrom` in `internal/evdev/endtoend_test.go` does this, and it is the pattern for every new test that replays.
+- Tests in other packages that replay through a real virtual device, such as the ones in `cmd/lanhop`, are not covered by the `emit` helper and do not take their device for themselves yet. They may replay only the letter A, the left mouse button, Shift, mouse movement and scrolling.
 - Keep mouse movement and scrolling small.
 
 On macOS, the tests that post real input are off by default, because they act on the Mac that runs them:
