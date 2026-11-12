@@ -19,6 +19,7 @@ Usage:
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
   lanhop layout          show where the layout file is and how lanhop understands it
+  lanhop layout --edit   arrange the machines on the desk by dragging them, in a browser
   lanhop devices         list the input devices this machine can read
   lanhop version         print the version
 

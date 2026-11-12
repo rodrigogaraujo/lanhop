@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/layout"
@@ -99,8 +102,22 @@ func describedFor(own string, desk *layout.Layout) string {
 }
 
 func showLayout(args []string, stdout io.Writer) error {
-	if len(args) > 0 {
-		return usageError("layout takes no argument")
+	flags := flag.NewFlagSet("layout", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	edit := flags.Bool("edit", false, "")
+	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
+		fmt.Fprint(stdout, usage)
+		return nil
+	} else if err != nil {
+		return usageError(err.Error())
+	}
+	if flags.NArg() > 0 {
+		return usageError("layout takes no argument besides --edit")
+	}
+	if *edit {
+		interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stopWaiting()
+		return editLayoutUntil(interrupted, stdout)
 	}
 	directory, err := configDirectory()
 	if err != nil {
