@@ -62,7 +62,7 @@ Each task is one pull request with its tests. Tasks 1 to 3 and task 6 do not dep
 
 - [ ] **1. Classify devices.** Query capabilities with `EVIOCGBIT` in `internal/evdev`, tell keyboards and relative mice from the rest, and skip lanhop's own virtual device. → Verify: test with virtual devices of each kind. `lanhop devices` prints the kind.
 - [x] **2. Control frames and key state.** Add the control codes to `internal/event` and a tracker of held keys in `internal/keystate` that returns the releases needed to clear them. → Verify: unit tests.
-- [ ] **3. Identity and trust store.** `internal/identity` creates and loads the key and certificate and formats the code. `internal/trust` stores the peers. → Verify: unit tests, including file mode 0600 and a corrupted file.
+- [x] **3. Identity and trust store.** `internal/identity` creates and loads the key and certificate and formats the code. `internal/trust` stores the peers. → Verify: unit tests, including file mode 0600 and a corrupted file.
 - [ ] **4. Transport.** `internal/transport` listens and dials with TLS 1.3 and pinned keys, exchanges `hello` and keeps the connection alive with `ping`. → Verify: a paired peer connects. An unpaired peer is refused in both directions. A different protocol version is refused. A silent peer is dropped within 3 seconds.
 - [ ] **5. Pairing.** `internal/pairing` and the `pair`, `peers` and `forget` commands. → Verify: pairing succeeds only when both sides accept. With a machine in the middle, the codes shown do not match.
 - [x] **6. Hotkey detector.** `internal/hotkey`, a state machine with no I/O that turns key events into "focus machine N" when the hotkey is released. → Verify: table tests, including a hotkey pressed during a drag.
