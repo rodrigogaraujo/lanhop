@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync/atomic"
@@ -206,20 +207,27 @@ type replayedEvent struct {
 }
 
 type receivingMachine struct {
-	node      string
-	replayed  chan replayedEvent
-	connected atomic.Bool
+	node        string
+	otherReader *Device
+	replayed    chan replayedEvent
+	failures    chan error
+	connected   atomic.Bool
 }
 
 func (m machine) receiveFrom(t *testing.T, sharing trust.Peer) *receivingMachine {
 	t.Helper()
 	trusted := m.trusting(t, sharing)
 	virtual := createVirtualDevice(t)
-	controlled := &receivingMachine{node: eventNode(t, virtual), replayed: make(chan replayedEvent, replayedEventsKept)}
+	controlled := &receivingMachine{
+		node:     eventNode(t, virtual),
+		replayed: make(chan replayedEvent, replayedEventsKept),
+		failures: make(chan error, 8),
+	}
 	onlyReader := openAsAnotherReader(t, controlled.node)
 	if err := onlyReader.Grab(); err != nil {
 		t.Fatalf("keep what the receiver replays away from the machine running the tests: %v", err)
 	}
+	controlled.otherReader = openAsAnotherReader(t, controlled.node)
 	go func() {
 		for {
 			read, err := onlyReader.Read()
@@ -235,9 +243,17 @@ func (m machine) receiveFrom(t *testing.T, sharing trust.Peer) *receivingMachine
 			Sharer:    trusted.Peers()[0],
 			Replay:    virtual,
 			OnConnect: func() { controlled.connected.Store(true) },
+			OnFailure: controlled.failed,
 		})
 	})
 	return controlled
+}
+
+func (r *receivingMachine) failed(reason error) {
+	select {
+	case r.failures <- reason:
+	default:
+	}
 }
 
 func (r *receivingMachine) nextReplayed(t *testing.T) replayedEvent {
@@ -266,6 +282,13 @@ func (r *receivingMachine) expectNothingReplayed(t *testing.T) {
 	case unexpected := <-r.replayed:
 		t.Errorf("the receiver's device replayed %+v, want nothing", unexpected.Event)
 	case <-time.After(quietPeriod):
+	}
+}
+
+func (r *receivingMachine) expectReplayHiddenFromOtherReaders(t *testing.T) {
+	t.Helper()
+	if seen, err := readWithin(t, r.otherReader, quietPeriod); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("another reader of the receiver's device got %+v, %v, want nothing: the machine running the tests would act on what is replayed", seen, err)
 	}
 }
 
@@ -386,6 +409,7 @@ func TestFocusFollowsTheHotkeyAndTheDigitOfTheHotkeyNeverReachesTheReceiver(t *t
 	emit(t, desk.mouse, nudged...)
 	controlled.expectNothingReplayed(t)
 	controlled.expectHeld(t)
+	controlled.expectReplayHiddenFromOtherReaders(t)
 }
 
 func TestAThousandKeysAndHundredsOfMovementsAreReplayedOnceAndInOrder(t *testing.T) {
@@ -415,6 +439,7 @@ func TestAThousandKeysAndHundredsOfMovementsAreReplayedOnceAndInOrder(t *testing
 
 	controlled.expectNothingReplayed(t)
 	controlled.expectHeld(t)
+	controlled.expectReplayHiddenFromOtherReaders(t)
 }
 
 func TestMachineTheSharerIsNotPairedWithCannotConnectAndReplaysNothing(t *testing.T) {
@@ -440,6 +465,28 @@ func TestMachineTheSharerIsNotPairedWithCannotConnectAndReplaysNothing(t *testin
 	uninvited.expectNothingReplayed(t)
 	if uninvited.connected.Load() {
 		t.Error("the unpaired machine connected to the sharer")
+	}
+}
+
+func TestReceiverRefusesAMachineThatIsNotItsSharerAndReplaysNothing(t *testing.T) {
+	laptop, desk := newMachine(t), newMachine(t)
+	impostor := startSharing(t, laptop.knownAs("laptop"))
+
+	controlled := laptop.receiveFrom(t, desk.reachedAt("desk", impostor.address))
+	select {
+	case reason := <-controlled.failures:
+		if !errors.Is(reason, transport.ErrUntrusted) {
+			t.Errorf("the receiver refused the machine that is not its sharer with %v, want ErrUntrusted", reason)
+		}
+	case <-time.After(capturePatience):
+		t.Fatal("the receiver did not refuse the machine that is not its sharer")
+	}
+	emit(t, impostor.keyboard, hotkeyOfMachine(keyDigit2)...)
+	emit(t, impostor.keyboard, event.Key(event.KeyA, event.KeyPressed), event.Sync(), event.Key(event.KeyA, event.KeyReleased), event.Sync())
+
+	controlled.expectNothingReplayed(t)
+	if controlled.connected.Load() {
+		t.Error("the receiver connected to a machine that is not its sharer")
 	}
 }
 
