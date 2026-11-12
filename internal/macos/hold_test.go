@@ -1,6 +1,7 @@
 package macos
 
 import (
+	"slices"
 	"sync"
 	"testing"
 )
@@ -210,5 +211,52 @@ func TestMovementInFlightNeverUndoesAPlacementFollowedByGivingTheInputBack(t *te
 		if at := mac.pointer.Cursor(); afterGivingBack != arrival || at != arrival {
 			t.Fatalf("round %d: the cursor was at %+v when the input was given back and at %+v in the end, want %+v both times", round, afterGivingBack, at, arrival)
 		}
+	}
+}
+
+func TestDigitOfTheHotkeyIsKeptWhileThisMacHasTheInputAndItsModifiersPassOn(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+
+	var kept []bool
+	for _, seen := range hotkeyOnARealKeyboard(macOSDigit2) {
+		kept = append(kept, mac.hold.keeps(seen))
+	}
+
+	if want := []bool{false, false, true, true, false, false}; !slices.Equal(kept, want) {
+		t.Errorf("of Control, Option, the digit going down and up, Option and Control, kept %v from this Mac, want %v", kept, want)
+	}
+}
+
+func TestDigitOfTheHotkeyStaysKeptWhenTheInputIsGivenBackBeforeItsRelease(t *testing.T) {
+	chord := FlagControl | FlagOption
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+	mac.hold.take()
+	mac.hold.keeps(Observation{Type: TypeKeyDown, KeyCode: macOSDigit1, Flags: chord})
+	mac.hold.letGo()
+
+	keptRepeat := mac.hold.keeps(Observation{Type: TypeKeyDown, KeyCode: macOSDigit1, Flags: chord, Repeat: true})
+	keptRelease := mac.hold.keeps(Observation{Type: TypeKeyUp, KeyCode: macOSDigit1, Flags: chord})
+	keptLetter := mac.hold.keeps(Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Flags: chord})
+
+	if !keptRepeat || !keptRelease {
+		t.Errorf("after the input was given back the repeat of the digit was kept: %v, its release: %v, want both kept, as its press was", keptRepeat, keptRelease)
+	}
+	if keptLetter {
+		t.Error("a letter typed after the input was given back was kept from this Mac")
+	}
+}
+
+func TestDigitOfTheHotkeyThatLanhopPostedPassesOnAndKeepsNothingAfterIt(t *testing.T) {
+	chord := FlagControl | FlagOption
+	mac := macWithTheCursorAt(whereTheCursorWas, notPostedByLanhop)
+
+	keptPosted := mac.hold.keeps(Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord, Marker: Marker})
+	keptReleaseByTheUser := mac.hold.keeps(Observation{Type: TypeKeyUp, KeyCode: macOSDigit2})
+
+	if keptPosted {
+		t.Error("the digit of a hotkey that lanhop itself posted was kept from this Mac")
+	}
+	if keptReleaseByTheUser {
+		t.Error("the release of a digit by the user was kept from this Mac after lanhop posted that digit with the hotkey")
 	}
 }
