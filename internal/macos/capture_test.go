@@ -747,42 +747,51 @@ func swallowedByTheHotkey(detector *hotkey.Detector, captured []event.Event) boo
 }
 
 func TestHotkeyGuardKeepsExactlyTheKeysThatTheDefaultHotkeySwallows(t *testing.T) {
-	const keyCodes uint16 = 0x80
+	const (
+		keyCodes uint16 = 0x80
+		device   Flags  = 0x100
+	)
 	sides := map[string][]uint16{
 		"left":  {0x3B, 0x3A, 0x38, 0x37},
 		"right": {0x3E, 0x3D, 0x3C, 0x36},
 	}
 	for side, modifiers := range sides {
-		for held := range 1 << len(modifiers) {
-			var flags Flags
-			var goingDown []Observation
-			for i, modifier := range modifiers {
-				if held&(1<<i) != 0 {
+		for _, asARealKeyboardSendsThem := range []bool{false, true} {
+			for held := range 1 << len(modifiers) {
+				var flags Flags
+				var goingDown []Observation
+				for i, modifier := range modifiers {
+					if held&(1<<i) == 0 {
+						continue
+					}
 					flags |= modifierFlags[modifier]
+					if asARealKeyboardSendsThem {
+						flags |= device | sideBits[modifier]
+					}
 					goingDown = append(goingDown, Observation{Type: TypeFlagsChanged, KeyCode: modifier, Flags: flags})
 				}
-			}
-			for key := range keyCodes {
-				detector, err := hotkey.New(hotkey.DefaultModifiers)
-				if err != nil {
-					t.Fatalf("hotkey.New: %v", err)
-				}
-				translator := newTranslator(keymap.Translator{}, nil)
-				guard := newHotkeyGuard(HotkeyFlags)
-				for _, modifier := range goingDown {
-					swallowed := swallowedByTheHotkey(detector, translator.translate(modifier))
-					if guard.keeps(modifier) || swallowed {
-						t.Fatalf("the %s modifier %#x going down was kept from this Mac or swallowed by the hotkey", side, modifier.KeyCode)
+				for key := range keyCodes {
+					detector, err := hotkey.New(hotkey.DefaultModifiers)
+					if err != nil {
+						t.Fatalf("hotkey.New: %v", err)
 					}
-				}
-				for _, seen := range []Observation{
-					{Type: TypeKeyDown, KeyCode: key, Flags: flags},
-					{Type: TypeKeyUp, KeyCode: key, Flags: flags},
-				} {
-					kept, swallowed := guard.keeps(seen), swallowedByTheHotkey(detector, translator.translate(seen))
-					if kept != swallowed {
-						t.Fatalf("key %#x, event type %d, with the %s modifiers of flags %#x held: kept from this Mac = %v, swallowed by the hotkey = %v",
-							key, seen.Type, side, uint64(flags), kept, swallowed)
+					translator := newTranslator(keymap.Translator{}, nil)
+					guard := newHotkeyGuard(HotkeyFlags)
+					for _, modifier := range goingDown {
+						swallowed := swallowedByTheHotkey(detector, translator.translate(modifier))
+						if guard.keeps(modifier) || swallowed {
+							t.Fatalf("the %s modifier %#x going down was kept from this Mac or swallowed by the hotkey", side, modifier.KeyCode)
+						}
+					}
+					for _, seen := range []Observation{
+						{Type: TypeKeyDown, KeyCode: key, Flags: flags},
+						{Type: TypeKeyUp, KeyCode: key, Flags: flags},
+					} {
+						kept, swallowed := guard.keeps(seen), swallowedByTheHotkey(detector, translator.translate(seen))
+						if kept != swallowed {
+							t.Fatalf("key %#x, event type %d, with the %s modifiers of flags %#x held: kept from this Mac = %v, swallowed by the hotkey = %v",
+								key, seen.Type, side, uint64(flags), kept, swallowed)
+						}
 					}
 				}
 			}
