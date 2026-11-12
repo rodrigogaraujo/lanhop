@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: early development.** Nothing here is usable day to day yet. See [Roadmap](#roadmap) for what works.
+> **Status: first release, v0.1.0.** One person has used it on one desk: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. Not tried by a person yet: two Macs together, three or more machines, an Intel Mac, and the installer on a real machine. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -35,8 +35,6 @@ On each machine, Linux or macOS, as your own user:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/rodrigogaraujo/lanhop/main/install.sh | sh
 ```
-
-> **No release has been published yet**, so the installer has nothing to download until the first one. Until then, build lanhop from the source: see [Building](#building).
 
 The installer asks before each step:
 
@@ -75,11 +73,11 @@ Each release also has the archives themselves, one per system and architecture, 
 
 - [x] Wire format for input events
 - [x] Linux: virtual device (`uinput`) and device reader (`evdev`)
-- [ ] First release: Linux and macOS in any combination, encrypted with device pairing
-  - [ ] Switching with a hotkey ([spec 001](specs/001-hotkey-switching/spec.md))
+- [x] First release: Linux and macOS in any combination, encrypted with device pairing
+  - [x] Switching with a hotkey ([spec 001](specs/001-hotkey-switching/spec.md))
   - [ ] Switching through the screen edges, with a layout file ([spec 002](specs/002-edge-switching/spec.md))
     - [x] The layout file, and crossing between the machines that are being controlled
-    - [ ] The edges of the own screen of a Mac that has the keyboard: built, not yet tried by a person
+    - [x] The edges of the own screen of a Mac that has the keyboard
     - [ ] The edges of the own screen of a Linux machine that has the keyboard
     - [ ] A hotkey that locks focus, and settings for the push time, the corner size and the cursor speed
 - [ ] Windows

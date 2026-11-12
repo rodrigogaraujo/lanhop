@@ -1,6 +1,6 @@
 # Setting up lanhop on macOS
 
-> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. Sharing from a Mac has been tested only with input that lanhop generated itself, not yet with a person typing.
+> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person has shared the keyboard and trackpad of one Mac (macOS 26.5, Apple silicon) with a Linux machine, by hotkey and through the screen edge. Two Macs together, an Intel Mac, and a Mac controlled by a person typing on another machine have been tried only by automated tests.
 
 ## The quick way: the installer
 
@@ -120,7 +120,7 @@ With a [layout file](../README.md#layout) in `~/Library/Application Support/lanh
 
 - With more than one display, the edges are the ones of the rectangle around all the displays. Moving between the displays of the Mac never crosses.
 - While another machine has focus, the cursor of the Mac stays where it left. When focus comes back through an edge, lanhop puts the cursor on that edge, at the matching height.
-- Switching through the edges of a Mac has been tested only by automated tests with a simulated screen, not yet on a real Mac with a person moving the mouse.
+- Switching through the edges of a Mac has been tried by one person, on one Mac with a trackpad and one display. A mouse and more than one display have been tried only by automated tests with a simulated screen.
 
 ### If the keyboard and mouse stop answering
 
