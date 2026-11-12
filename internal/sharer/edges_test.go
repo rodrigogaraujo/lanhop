@@ -1,6 +1,7 @@
 package sharer
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -750,6 +751,28 @@ func TestReceiverThatCannotBeEnteredThroughAnEdgeIsLostAndTheInputIsGivenBack(t 
 
 	s.expectJournal(then(tookInput, gaveInputBack, closed(desk)))
 	s.expectInputAtThisMachine()
+}
+
+func TestSharerStopsWithoutPlacingTheCursorWhenTheInputCannotBeGivenBackOnTheWayBackThroughAnEdge(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk", desk)
+	s.connect(desk)
+	s.screen.cursorIsAt(1000, 125)
+	s.pushes(1, 0, reportsToCross)
+	s.capture.giveBackFails.Store(true)
+
+	s.pushes(-1, 0, reportsToCross)
+	result := s.outcome()
+
+	if !errors.Is(result.err, errGiveBackFailed) {
+		t.Errorf("the sharer stopped with %+v, want %v", result, errGiveBackFailed)
+	}
+	s.expectJournal(story(
+		then(tookInput),
+		gets(desk, enteredAt(0, 16384)...),
+		gets(desk, times(reportsToCross, positioned(0, 16384)...)...),
+		gets(desk, event.Leave()),
+		then(gaveInputBack, gaveInputBack, closed(desk)),
+	))
 }
 
 func TestReceiverThatCannotBeSentAPositionIsLostAndTheSharerKeepsWorking(t *testing.T) {
