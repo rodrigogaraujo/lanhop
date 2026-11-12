@@ -105,6 +105,10 @@ func (Quartz) PlaceCursor(at Point) {
 	C.lanhopPlaceCursor(C.double(at.X), C.double(at.Y))
 }
 
+func (Quartz) PutCursorBack(at Point) {
+	C.lanhopPutCursorBack(C.double(at.X), C.double(at.Y))
+}
+
 func (Quartz) Displays() []Rect {
 	var raw [maxDisplays * 4]C.double
 	count := int(C.lanhopDisplays(&raw[0], maxDisplays))
@@ -233,8 +237,4 @@ func lanhopTapMissedInput(handle C.uintptr_t) {
 	default:
 		tap.reportOverflow()
 	}
-}
-
-func followMouse(follow bool) {
-	C.lanhopFollowMouse(C.bool(follow))
 }

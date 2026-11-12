@@ -1,0 +1,56 @@
+package macos
+
+import "sync"
+
+type holdingScreen interface {
+	cursorScreen
+	PutCursorBack(at Point)
+}
+
+type hold struct {
+	holdingScreen
+	accepts func(Observation) bool
+	state   sync.Mutex
+	taken   bool
+	cursor  Point
+}
+
+func (h *hold) take() {
+	cursor := h.Cursor()
+	h.state.Lock()
+	defer h.state.Unlock()
+	h.taken, h.cursor = true, cursor
+}
+
+func (h *hold) letGo() {
+	h.state.Lock()
+	defer h.state.Unlock()
+	h.taken = false
+}
+
+func (h *hold) PlaceCursor(at Point) {
+	h.state.Lock()
+	h.cursor = at
+	h.state.Unlock()
+	h.holdingScreen.PlaceCursor(at)
+}
+
+func (h *hold) keeps(seen Observation) bool {
+	h.state.Lock()
+	defer h.state.Unlock()
+	if !h.taken || !h.accepts(seen) {
+		return false
+	}
+	if movesTheCursor(seen.Type) {
+		h.PutCursorBack(h.cursor)
+	}
+	return true
+}
+
+func movesTheCursor(observed uint32) bool {
+	switch observed {
+	case TypeMouseMoved, TypeLeftMouseDragged, TypeRightMouseDragged, TypeOtherMouseDragged:
+		return true
+	}
+	return false
+}

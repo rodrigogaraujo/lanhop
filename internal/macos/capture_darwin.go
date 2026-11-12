@@ -4,7 +4,6 @@ package macos
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
@@ -19,8 +18,7 @@ const (
 
 type Capture struct {
 	tap     *Tap
-	accepts func(Observation) bool
-	taken   atomic.Bool
+	hold    *hold
 	state   sync.Mutex
 	closed  bool
 	events  chan event.Event
@@ -34,11 +32,11 @@ func StartCapture(keys keymap.Translator) (*Capture, error) {
 
 func startCapture(keys keymap.Translator, accepts func(Observation) bool) (*Capture, error) {
 	capture := &Capture{
-		accepts: accepts,
-		events:  make(chan event.Event),
-		stop:    make(chan struct{}),
+		hold:   &hold{holdingScreen: Quartz{}, accepts: accepts},
+		events: make(chan event.Event),
+		stop:   make(chan struct{}),
 	}
-	tap, err := startTap(seesInputFirst, capture.keeps)
+	tap, err := startTap(seesInputFirst, capture.hold.keeps)
 	if err != nil {
 		return nil, err
 	}
@@ -59,10 +57,6 @@ func startCapture(keys keymap.Translator, accepts func(Observation) bool) (*Capt
 	return capture, nil
 }
 
-func (c *Capture) keeps(seen Observation) bool {
-	return c.taken.Load() && c.accepts(seen)
-}
-
 func (c *Capture) Events() <-chan event.Event {
 	return c.events
 }
@@ -73,16 +67,14 @@ func (c *Capture) Take() error {
 	if c.closed {
 		return nil
 	}
-	c.taken.Store(true)
-	followMouse(false)
+	c.hold.take()
 	return nil
 }
 
 func (c *Capture) GiveBack() error {
 	c.state.Lock()
 	defer c.state.Unlock()
-	c.taken.Store(false)
-	followMouse(true)
+	c.hold.letGo()
 	return nil
 }
 
@@ -91,23 +83,21 @@ func (c *Capture) Cursor() (x, y int, desktop edge.Bounds, known bool) {
 }
 
 func (c *Capture) PlaceCursor(x, y int) {
-	placeCursorOn(Quartz{}, x, y)
+	placeCursorOn(c.hold, x, y)
 }
 
 func (c *Capture) giveUp() {
 	c.state.Lock()
 	defer c.state.Unlock()
 	c.closed = true
-	c.taken.Store(false)
-	followMouse(true)
+	c.hold.letGo()
 }
 
 func (c *Capture) Close() error {
 	c.closing.Do(func() {
 		c.state.Lock()
 		c.closed = true
-		c.taken.Store(false)
-		followMouse(true)
+		c.hold.letGo()
 		c.state.Unlock()
 		close(c.stop)
 		c.tap.Close()

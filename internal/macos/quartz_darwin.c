@@ -141,6 +141,11 @@ void lanhopPlaceCursor(double x, double y) {
 	CGWarpMouseCursorPosition(CGPointMake(x, y));
 }
 
+void lanhopPutCursorBack(double x, double y) {
+	CGWarpMouseCursorPosition(CGPointMake(x, y));
+	CGAssociateMouseAndMouseCursorPosition(true);
+}
+
 int lanhopDisplays(double *rects, int capacity) {
 	CGDirectDisplayID displays[32];
 	uint32_t count = 0;
@@ -216,10 +221,6 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 	};
 	bool keep = lanhopObserved(tap->handle, &seen);
 	return tap->active && keep ? NULL : event;
-}
-
-void lanhopFollowMouse(bool follow) {
-	CGAssociateMouseAndMouseCursorPosition(follow);
 }
 
 bool lanhopKeyIsDown(uint16_t keyCode) {

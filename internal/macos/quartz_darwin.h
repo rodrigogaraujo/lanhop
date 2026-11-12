@@ -52,10 +52,10 @@ void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks,
 void lanhopPostScroll(int32_t vertical, int32_t horizontal, uint64_t flags);
 void lanhopCursor(double *x, double *y);
 void lanhopPlaceCursor(double x, double y);
+void lanhopPutCursorBack(double x, double y);
 int lanhopDisplays(double *rects, int capacity);
 bool lanhopKeyRepeat(int64_t *delayNanoseconds, int64_t *intervalNanoseconds);
 lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last);
-void lanhopFollowMouse(bool follow);
 bool lanhopKeyIsDown(uint16_t keyCode);
 bool lanhopButtonIsDown(int button);
 void lanhopTapRun(lanhopTap *tap);
