@@ -32,8 +32,10 @@ Design decisions are recorded in [docs/adr](docs/adr). Features are specified in
 
 - [x] Wire format for input events
 - [x] Linux: virtual device (`uinput`) and device reader (`evdev`)
-- [ ] First usable version ([spec 001](specs/001-hotkey-switching/spec.md)): Linux and macOS in any combination, encrypted with device pairing, switching with a hotkey
-- [ ] Switching by pushing the cursor through a screen edge
+- [ ] First release: Linux and macOS in any combination, encrypted with device pairing
+  - [ ] Switching with a hotkey ([spec 001](specs/001-hotkey-switching/spec.md))
+  - [ ] Switching through the screen edges, with a layout file ([spec 002](specs/002-edge-switching/spec.md))
+- [ ] Windows
 - [ ] Automatic discovery on the local network
 - [ ] Clipboard sharing
 - [ ] Packages: systemd unit, udev rule, launch agent, Homebrew formula

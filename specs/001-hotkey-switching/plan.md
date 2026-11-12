@@ -1,6 +1,6 @@
 # Implementation Plan: the shared core and Linux
 
-**Spec**: [spec.md](spec.md) · **Created**: 2026-11-11 · **Status**: Draft
+**Spec**: [spec.md](spec.md) · **Created**: 2026-11-11 · **Status**: Accepted
 
 This is part 1 of 2. It builds everything the two systems share, plus the Linux side. [plan-macos.md](plan-macos.md) is part 2 and adds macOS. The first release needs both.
 
@@ -82,3 +82,4 @@ Each task is one pull request with its tests. Tasks 1 to 3 and task 6 do not dep
 - **Laptop as sharer.** A touchpad is not a relative mouse, so it is not shared in this version. The sharer needs a mouse.
 - **Hotkey collisions.** `Ctrl+Alt+<number>` may be bound in some desktop or application. It is configurable.
 - **Permissions.** Until spec 006 ships a udev rule, the user sets group permissions by hand or runs with `sudo`.
+- **Pointer movement is relative in this part.** [Spec 002](../002-edge-switching/plan.md) adds absolute positions, so the replay interface of task 8 must leave room for them.

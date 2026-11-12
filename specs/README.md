@@ -7,10 +7,11 @@ Each feature gets a folder with two files:
 
 A spec is agreed on before its code is written. To propose a feature, open an issue first (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
-| # | Feature | Status |
-|---|---|---|
-| [001](001-hotkey-switching) | Linux and macOS with hotkey switching | Draft |
-| 002 | Switching through a screen edge | Not started |
-| 003 | Automatic discovery on the local network | Not started |
-| 004 | Clipboard sharing | Not started |
-| 005 | Packages and services (systemd, udev, launchd, Homebrew) | Not started |
+| # | Feature | Status | Release |
+|---|---|---|---|
+| [001](001-hotkey-switching) | Linux and macOS with hotkey switching | Accepted | First |
+| [002](002-edge-switching) | Switching through the screen edges, with a layout file | Draft | First |
+| 003 | Windows | Not started | |
+| 004 | Automatic discovery on the local network | Not started | |
+| 005 | Clipboard sharing | Not started | |
+| 006 | Packages and services (systemd, udev, launchd, Homebrew) | Not started | |

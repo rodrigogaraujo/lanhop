@@ -1,6 +1,6 @@
 # Feature Specification: Linux and macOS with hotkey switching
 
-**Created**: 2026-11-11 · **Status**: Draft
+**Created**: 2026-11-11 · **Status**: Accepted
 
 The first version of lanhop that a person can use every day: one keyboard and one mouse, plugged into one machine, control the other machines on the desk. Linux and macOS machines work together in any combination: either system can be the sharer or a receiver.
 
@@ -125,10 +125,11 @@ When the setup is incomplete, lanhop tells me what to fix.
 
 ### Out of scope for this feature
 
-- Switching by pushing the cursor through a screen edge (spec 002)
-- Finding machines automatically (spec 003). The receiver is given the sharer's address.
-- Clipboard sharing (spec 004)
-- Running as a system service, packages, udev rules and launch agents (spec 005). Setup is documented by hand.
+- Switching by pushing the cursor through a screen edge ([spec 002](../002-edge-switching/spec.md), same release)
+- Windows (spec 003)
+- Finding machines automatically (spec 004). The receiver is given the sharer's address.
+- Clipboard sharing (spec 005)
+- Running as a system service, packages, udev rules and launch agents (spec 006). Setup is documented by hand.
 - Touchpads, touchscreens, tablets and game controllers. Only keyboards and relative mice are shared.
 - Keyboard LEDs (Caps Lock and Num Lock state) on the sharer.
 - Controlling the macOS login window and lock screen.
@@ -152,8 +153,8 @@ When the setup is incomplete, lanhop tells me what to fix.
 - The machines sit on the same desk, so a person can read both screens while pairing.
 - The local network is not trusted: other devices on it may listen or try to connect.
 
-## Open questions
+## Resolved questions
 
-1. **Default hotkey.** The proposal is `Ctrl+Alt+<number>`. Does it collide with anything you use daily?
-2. **Hotkey leak.** In this version, on a Linux sharer the hotkey is also seen by the application in front (see the plan). Is that acceptable for a first release?
-3. **Which machine has the keyboard.** It decides whether macOS capture or macOS replay is built first.
+1. **Default hotkey.** `Ctrl+Alt+<number>`, configurable.
+2. **Hotkey leak.** Accepted for this version: on a Linux sharer the hotkey is also seen by the application in front.
+3. **Which machine has the keyboard.** Any of them, so both roles are built for both systems.

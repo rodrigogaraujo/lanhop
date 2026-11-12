@@ -1,6 +1,6 @@
 # Implementation Plan: macOS
 
-**Spec**: [spec.md](spec.md) · **Created**: 2026-11-11 · **Status**: Draft
+**Spec**: [spec.md](spec.md) · **Created**: 2026-11-11 · **Status**: Accepted
 
 This is part 2 of 2. [plan.md](plan.md) builds the shared core and the Linux side. This part plugs macOS into the same capture and replay interfaces.
 
