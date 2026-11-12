@@ -5,7 +5,6 @@
 #include <IOKit/hidsystem/IOHIDEventSystemClient.h>
 #include <IOKit/hidsystem/IOLLEvent.h>
 #include <dispatch/dispatch.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 
 #include "_cgo_export.h"
@@ -46,8 +45,6 @@ struct lanhopTap {
 	uintptr_t handle;
 	bool active;
 	bool stopping;
-	CGPoint held;
-	atomic_bool holdsCursor;
 };
 
 static void doNothing(void *info) {
@@ -144,6 +141,11 @@ void lanhopPlaceCursor(double x, double y) {
 	CGWarpMouseCursorPosition(CGPointMake(x, y));
 }
 
+void lanhopPutCursorBack(double x, double y) {
+	CGWarpMouseCursorPosition(CGPointMake(x, y));
+	CGAssociateMouseAndMouseCursorPosition(true);
+}
+
 int lanhopDisplays(double *rects, int capacity) {
 	CGDirectDisplayID displays[32];
 	uint32_t count = 0;
@@ -218,24 +220,7 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 	};
 	bool keep = lanhopObserved(tap->handle, &seen);
-	if (!tap->active || !keep) {
-		return event;
-	}
-	bool moved = type == kCGEventMouseMoved || type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDragged || type == kCGEventOtherMouseDragged;
-	if (moved && atomic_load(&tap->holdsCursor)) {
-		CGWarpMouseCursorPosition(tap->held);
-		CGAssociateMouseAndMouseCursorPosition(true);
-	}
-	return NULL;
-}
-
-void lanhopTapHoldCursor(lanhopTap *tap, bool hold) {
-	if (hold) {
-		double x, y;
-		lanhopCursor(&x, &y);
-		tap->held = CGPointMake(x, y);
-	}
-	atomic_store(&tap->holdsCursor, hold);
+	return tap->active && keep ? NULL : event;
 }
 
 bool lanhopKeyIsDown(uint16_t keyCode) {

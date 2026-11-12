@@ -140,7 +140,7 @@ func TestClosedCaptureEndsItsEvents(t *testing.T) {
 	case <-time.After(observePatience):
 		t.Fatal("the events of a closed capture never ended")
 	}
-	if capture.taken.Load() {
+	if capture.hold.keeps(Observation{Type: TypeKeyDown, KeyCode: macOSF18, Marker: Marker}) {
 		t.Error("a closed capture still keeps the input taken")
 	}
 }

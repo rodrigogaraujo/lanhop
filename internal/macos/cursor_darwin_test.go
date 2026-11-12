@@ -34,7 +34,7 @@ func TestPlacedCursorIsToldWhereItWasPut(t *testing.T) {
 	if os.Getenv(realInputVariable) == "" {
 		t.Skipf("set %s=1 to move the cursor of this Mac", realInputVariable)
 	}
-	capture := &Capture{}
+	capture := &Capture{hold: &hold{holdingScreen: Quartz{}}}
 	before := Quartz{}.Cursor()
 	var home *Rect
 	for _, display := range (Quartz{}).Displays() {
