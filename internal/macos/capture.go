@@ -360,11 +360,14 @@ func newHotkeyGuard(chord Flags) *hotkeyGuard {
 func (g *hotkeyGuard) keeps(seen Observation) bool {
 	switch seen.Type {
 	case TypeKeyDown:
+		if seen.Repeat {
+			return g.kept[seen.KeyCode]
+		}
 		if hotkeyDigits[seen.KeyCode] && seen.Flags&everyModifierFlag == g.chord {
 			g.kept[seen.KeyCode] = true
 			return true
 		}
-		return g.kept[seen.KeyCode]
+		delete(g.kept, seen.KeyCode)
 	case TypeKeyUp:
 		if g.kept[seen.KeyCode] {
 			delete(g.kept, seen.KeyCode)
