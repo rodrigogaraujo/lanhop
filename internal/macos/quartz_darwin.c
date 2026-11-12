@@ -1,6 +1,8 @@
 #include "quartz_darwin.h"
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hid/IOHIDProperties.h>
+#include <IOKit/hidsystem/IOHIDEventSystemClient.h>
 #include <dispatch/dispatch.h>
 #include <stdlib.h>
 
@@ -63,10 +65,13 @@ bool lanhopCanListen(void) {
 	return CGPreflightListenEventAccess();
 }
 
-void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, uint64_t flags) {
+void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, bool autorepeat, uint64_t flags) {
 	CGEventRef event = CGEventCreateKeyboardEvent(eventSource(), keyCode, down);
 	if (event != NULL && modifier) {
 		CGEventSetType(event, kCGEventFlagsChanged);
+	}
+	if (event != NULL && autorepeat) {
+		CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, 1);
 	}
 	post(event, flags);
 }
@@ -120,6 +125,34 @@ int lanhopDisplays(double *rects, int capacity) {
 	return written;
 }
 
+static IOHIDEventSystemClientRef inputSettings(void) {
+	static IOHIDEventSystemClientRef client;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault);
+	});
+	return client;
+}
+
+static bool inputSetting(CFStringRef name, int64_t *value) {
+	IOHIDEventSystemClientRef settings = inputSettings();
+	if (settings == NULL) {
+		return false;
+	}
+	CFTypeRef setting = IOHIDEventSystemClientCopyProperty(settings, name);
+	if (setting == NULL) {
+		return false;
+	}
+	bool isNumber = CFGetTypeID(setting) == CFNumberGetTypeID() && CFNumberGetValue(setting, kCFNumberSInt64Type, value);
+	CFRelease(setting);
+	return isNumber;
+}
+
+bool lanhopKeyRepeat(int64_t *delayNanoseconds, int64_t *intervalNanoseconds) {
+	return inputSetting(CFSTR(kIOHIDServiceInitialKeyRepeatDelayKey), delayNanoseconds) &&
+		inputSetting(CFSTR(kIOHIDServiceKeyRepeatDelayKey), intervalNanoseconds);
+}
+
 static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *info) {
 	lanhopTap *tap = info;
 	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
@@ -142,6 +175,7 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 		.scrollVertical = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1),
 		.scrollHorizontal = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2),
 		.marker = CGEventGetIntegerValueField(event, kCGEventSourceUserData),
+		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 	};
 	lanhopObserved(tap->handle, &seen);
 	return event;

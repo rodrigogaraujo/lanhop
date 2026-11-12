@@ -58,7 +58,6 @@ lanhop receive
 
 Not done yet on a Mac that is being controlled:
 
-- A key held down does not repeat.
 - Alt and Super cannot be swapped yet, so Alt acts as Option and Super as Command.
 - Caps Lock does not switch on the Mac.
 - The volume and mute keys do nothing on the Mac.

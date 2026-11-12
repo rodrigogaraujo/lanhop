@@ -20,17 +20,19 @@ typedef struct {
 	int64_t scrollVertical;
 	int64_t scrollHorizontal;
 	int64_t marker;
+	bool autorepeat;
 } lanhopObservation;
 
 typedef struct lanhopTap lanhopTap;
 
 bool lanhopCanPost(void);
 bool lanhopCanListen(void);
-void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, uint64_t flags);
+void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, bool autorepeat, uint64_t flags);
 void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags);
 void lanhopPostScroll(int32_t vertical, int32_t horizontal, uint64_t flags);
 void lanhopCursor(double *x, double *y);
 int lanhopDisplays(double *rects, int capacity);
+bool lanhopKeyRepeat(int64_t *delayNanoseconds, int64_t *intervalNanoseconds);
 lanhopTap *lanhopTapCreate(uintptr_t handle);
 void lanhopTapRun(lanhopTap *tap);
 void lanhopTapStop(lanhopTap *tap);
