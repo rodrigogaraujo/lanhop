@@ -1,6 +1,8 @@
 package macos
 
 import (
+	"errors"
+	"sync"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/event"
@@ -29,7 +31,15 @@ const (
 	doubleClickInterval = 500 * time.Millisecond
 	doubleClickDistance = 4.0
 	cursorMemory        = 500 * time.Millisecond
+
+	defaultRepeatDelay    = 500 * time.Millisecond
+	defaultRepeatInterval = time.Second / 12
+	shortestRepeat        = 16 * time.Millisecond
+
+	capsLock uint16 = 0x39
 )
+
+var errClosed = errors.New("macos: the replay is closed")
 
 var modifierFlags = map[uint16]Flags{
 	0x38: FlagShift,
@@ -65,6 +75,7 @@ type KeyPress struct {
 	Code     uint16
 	Down     bool
 	Modifier bool
+	Repeat   bool
 	Flags    Flags
 }
 
@@ -88,6 +99,17 @@ type Screen interface {
 	PostScroll(Scroll)
 	Cursor() Point
 	Displays() []Rect
+	KeyRepeat() (delay, interval time.Duration, known bool)
+}
+
+type stopper interface {
+	Stop() bool
+}
+
+type repeat struct {
+	key      uint16
+	interval time.Duration
+	timer    stopper
 }
 
 type lastPress struct {
@@ -98,9 +120,13 @@ type lastPress struct {
 }
 
 type Replay struct {
+	mu            sync.Mutex
 	screen        Screen
 	keys          keymap.Translator
 	now           func() time.Time
+	after         func(time.Duration, func()) stopper
+	repeating     *repeat
+	closed        bool
 	heldModifiers map[uint16]Flags
 	heldButtons   map[int]int
 	moveX, moveY  int32
@@ -115,12 +141,18 @@ func NewReplay(screen Screen, keys keymap.Translator) *Replay {
 		screen:        screen,
 		keys:          keys,
 		now:           time.Now,
+		after:         func(wait time.Duration, run func()) stopper { return time.AfterFunc(wait, run) },
 		heldModifiers: make(map[uint16]Flags),
 		heldButtons:   make(map[int]int),
 	}
 }
 
 func (r *Replay) Emit(events ...event.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errClosed
+	}
 	for _, e := range events {
 		switch e.Type {
 		case event.TypeKey:
@@ -135,10 +167,17 @@ func (r *Replay) Emit(events ...event.Event) error {
 }
 
 func (r *Replay) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopRepeating()
+	r.closed = true
 	return nil
 }
 
 func (r *Replay) key(code uint16, value int32) {
+	if value == event.KeyRepeated {
+		return
+	}
 	if code >= event.ButtonFirst && code <= event.ButtonLast {
 		r.button(int(code-event.ButtonFirst), value)
 		return
@@ -150,9 +189,6 @@ func (r *Replay) key(code uint16, value int32) {
 	down := value != event.KeyReleased
 	flag, modifier := modifierFlags[macOSKey]
 	if modifier {
-		if value == event.KeyRepeated {
-			return
-		}
 		if down {
 			r.heldModifiers[macOSKey] = flag
 		} else {
@@ -160,6 +196,53 @@ func (r *Replay) key(code uint16, value int32) {
 		}
 	}
 	r.screen.PostKey(KeyPress{Code: macOSKey, Down: down, Modifier: modifier, Flags: r.flags()})
+	if modifier || macOSKey == capsLock {
+		return
+	}
+	if down {
+		r.startRepeating(macOSKey)
+	} else if r.repeating != nil && r.repeating.key == macOSKey {
+		r.stopRepeating()
+	}
+}
+
+func (r *Replay) startRepeating(key uint16) {
+	r.stopRepeating()
+	delay, interval, on := repeatTiming(r.screen.KeyRepeat())
+	if !on {
+		return
+	}
+	held := &repeat{key: key, interval: interval}
+	held.timer = r.after(delay, func() { r.repeatKey(held) })
+	r.repeating = held
+}
+
+func (r *Replay) stopRepeating() {
+	if r.repeating == nil {
+		return
+	}
+	r.repeating.timer.Stop()
+	r.repeating = nil
+}
+
+func (r *Replay) repeatKey(held *repeat) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.repeating != held {
+		return
+	}
+	r.screen.PostKey(KeyPress{Code: held.key, Down: true, Repeat: true, Flags: r.flags()})
+	held.timer = r.after(held.interval, func() { r.repeatKey(held) })
+}
+
+func repeatTiming(delay, interval time.Duration, known bool) (time.Duration, time.Duration, bool) {
+	if !known {
+		return defaultRepeatDelay, defaultRepeatInterval, true
+	}
+	if delay <= 0 || interval <= 0 {
+		return 0, 0, false
+	}
+	return max(delay, shortestRepeat), max(interval, shortestRepeat), true
 }
 
 func (r *Replay) button(button int, value int32) {

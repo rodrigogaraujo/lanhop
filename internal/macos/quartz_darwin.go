@@ -3,7 +3,7 @@
 package macos
 
 /*
-#cgo LDFLAGS: -framework ApplicationServices -framework CoreFoundation
+#cgo LDFLAGS: -framework ApplicationServices -framework CoreFoundation -framework IOKit
 #include "quartz_darwin.h"
 */
 import "C"
@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"runtime/cgo"
 	"sync"
+	"time"
 )
 
 const (
@@ -34,7 +35,13 @@ func CanListen() bool {
 }
 
 func (Quartz) PostKey(key KeyPress) {
-	C.lanhopPostKey(C.uint16_t(key.Code), C.bool(key.Down), C.bool(key.Modifier), C.uint64_t(key.Flags))
+	C.lanhopPostKey(C.uint16_t(key.Code), C.bool(key.Down), C.bool(key.Modifier), C.bool(key.Repeat), C.uint64_t(key.Flags))
+}
+
+func (Quartz) KeyRepeat() (delay, interval time.Duration, known bool) {
+	var delayNanoseconds, intervalNanoseconds C.int64_t
+	known = bool(C.lanhopKeyRepeat(&delayNanoseconds, &intervalNanoseconds))
+	return time.Duration(delayNanoseconds), time.Duration(intervalNanoseconds), known
 }
 
 func nativeAction(action MouseAction) C.int {
@@ -77,6 +84,7 @@ func (Quartz) Displays() []Rect {
 type Observation struct {
 	Type             uint32
 	KeyCode          uint16
+	Repeat           bool
 	Flags            Flags
 	At               Point
 	DX, DY           int64
@@ -143,6 +151,7 @@ func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) {
 	observation := Observation{
 		Type:             uint32(seen._type),
 		KeyCode:          uint16(seen.keyCode),
+		Repeat:           bool(seen.autorepeat),
 		Flags:            Flags(seen.flags),
 		At:               Point{X: float64(seen.x), Y: float64(seen.y)},
 		DX:               int64(seen.deltaX),

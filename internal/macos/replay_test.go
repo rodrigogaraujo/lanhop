@@ -25,10 +25,18 @@ const (
 	macOSCommandLeft uint16 = 0x37
 )
 
+const (
+	heldDelay    = 400 * time.Millisecond
+	heldInterval = 50 * time.Millisecond
+)
+
 type fakeScreen struct {
-	cursor   Point
-	displays []Rect
-	posted   []any
+	cursor         Point
+	displays       []Rect
+	posted         []any
+	repeatDelay    time.Duration
+	repeatInterval time.Duration
+	repeatUnknown  bool
 }
 
 func (s *fakeScreen) PostKey(key KeyPress) {
@@ -52,23 +60,81 @@ func (s *fakeScreen) Displays() []Rect {
 	return s.displays
 }
 
+func (s *fakeScreen) KeyRepeat() (time.Duration, time.Duration, bool) {
+	return s.repeatDelay, s.repeatInterval, !s.repeatUnknown
+}
+
+type manualTimer struct {
+	due     time.Time
+	run     func()
+	stopped bool
+}
+
+func (t *manualTimer) Stop() bool {
+	wasWaiting := !t.stopped
+	t.stopped = true
+	return wasWaiting
+}
+
 type manualClock struct {
-	now time.Time
+	now    time.Time
+	timers []*manualTimer
+}
+
+func (c *manualClock) after(wait time.Duration, run func()) stopper {
+	timer := &manualTimer{due: c.now.Add(wait), run: run}
+	c.timers = append(c.timers, timer)
+	return timer
 }
 
 func (c *manualClock) advance(by time.Duration) {
-	c.now = c.now.Add(by)
+	end := c.now.Add(by)
+	for timer := c.nextDueBy(end); timer != nil; timer = c.nextDueBy(end) {
+		c.now = timer.due
+		timer.stopped = true
+		timer.run()
+	}
+	c.now = end
+}
+
+func (c *manualClock) nextDueBy(end time.Time) *manualTimer {
+	var next *manualTimer
+	for _, timer := range c.timers {
+		if timer.stopped || timer.due.After(end) {
+			continue
+		}
+		if next == nil || timer.due.Before(next.due) {
+			next = timer
+		}
+	}
+	return next
+}
+
+func (c *manualClock) waiting() []*manualTimer {
+	var waiting []*manualTimer
+	for _, timer := range c.timers {
+		if !timer.stopped {
+			waiting = append(waiting, timer)
+		}
+	}
+	return waiting
 }
 
 func newReplayOn(screen *fakeScreen) (*Replay, *manualClock) {
 	clock := &manualClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
 	replay := NewReplay(screen, keymap.Translator{})
 	replay.now = func() time.Time { return clock.now }
+	replay.after = clock.after
 	return replay, clock
 }
 
 func oneDisplay() *fakeScreen {
-	return &fakeScreen{cursor: Point{X: 50, Y: 50}, displays: []Rect{{Width: 100, Height: 100}}}
+	return &fakeScreen{
+		cursor:         Point{X: 50, Y: 50},
+		displays:       []Rect{{Width: 100, Height: 100}},
+		repeatDelay:    heldDelay,
+		repeatInterval: heldInterval,
+	}
 }
 
 func press(code uint16) event.Event   { return event.Key(code, event.KeyPressed) }
@@ -149,15 +215,6 @@ func TestSwappingAltAndSuperTurnsAltIntoCommand(t *testing.T) {
 	replay.Emit(press(linuxLeftAlt))
 
 	expectPosted(t, screen, KeyPress{Code: macOSCommandLeft, Down: true, Modifier: true, Flags: FlagCommand})
-}
-
-func TestKeyRepeatIsPostedAsAnotherKeyDown(t *testing.T) {
-	screen := oneDisplay()
-	replay, _ := newReplayOn(screen)
-
-	replay.Emit(press(linuxKeyA), event.Key(linuxKeyA, event.KeyRepeated))
-
-	expectPosted(t, screen, KeyPress{Code: macOSKeyA, Down: true}, KeyPress{Code: macOSKeyA, Down: true})
 }
 
 func TestKeyWithoutACounterpartIsNotPosted(t *testing.T) {
