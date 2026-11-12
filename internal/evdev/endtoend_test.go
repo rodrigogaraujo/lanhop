@@ -490,7 +490,7 @@ func TestCableUnpluggedWithAKeyHeldGivesTheInputBackAndReleasesTheKeyOnTheReceiv
 func TestKeysReachTheReceiversDeviceWithLittleAddedDelay(t *testing.T) {
 	const (
 		measuredKeys     = 300
-		medianLimit      = 20 * time.Millisecond
+		medianLimit      = 10 * time.Millisecond
 		ninetyNinthLimit = 100 * time.Millisecond
 	)
 	desk, controlled := sharerAndItsPairedReceiver(t)
