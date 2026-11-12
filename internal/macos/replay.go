@@ -175,7 +175,7 @@ func (r *Replay) Close() error {
 }
 
 func (r *Replay) key(code uint16, value int32) {
-	if value == event.KeyRepeated {
+	if value != event.KeyPressed && value != event.KeyReleased {
 		return
 	}
 	if code >= event.ButtonFirst && code <= event.ButtonLast {

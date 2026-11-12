@@ -1,6 +1,7 @@
 package macos
 
 import (
+	"math"
 	"runtime"
 	"sync"
 	"testing"
@@ -246,6 +247,36 @@ func TestRepeatReceivedFromTheNetworkIsNotPosted(t *testing.T) {
 	replay.Emit(press(linuxKeyA), event.Sync(), event.Key(linuxKeyA, event.KeyRepeated), event.Sync())
 
 	expectPosted(t, screen, KeyPress{Code: macOSKeyA, Down: true})
+}
+
+func TestKeyEventThatIsNeitherAPressNorAReleaseIsNotPostedAndStartsNoRepeat(t *testing.T) {
+	for name, value := range map[string]int32{
+		"a value above the repeat": 3,
+		"a negative value":         -1,
+		"the largest value":        math.MaxInt32,
+	} {
+		t.Run(name, func(t *testing.T) {
+			screen := oneDisplay()
+			replay, clock := newReplayOn(screen)
+
+			replay.Emit(event.Key(linuxKeyA, value), event.Sync())
+			clock.advance(longHold)
+
+			expectPosted(t, screen)
+		})
+	}
+}
+
+func TestKeyEventThatIsNeitherAPressNorAReleaseLeavesTheRepeatOfAHeldKey(t *testing.T) {
+	screen := oneDisplay()
+	replay, clock := newReplayOn(screen)
+
+	replay.Emit(press(linuxKeyA), event.Sync())
+	clock.advance(heldDelay)
+	replay.Emit(event.Key(linuxKeyB, 3), event.Sync())
+	clock.advance(heldInterval)
+
+	expectPosted(t, screen, KeyPress{Code: macOSKeyA, Down: true}, repeatOf(macOSKeyA), repeatOf(macOSKeyA))
 }
 
 func TestRepeatReceivedFromTheNetworkDoesNotPostponeTheRepeat(t *testing.T) {
