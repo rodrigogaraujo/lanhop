@@ -50,6 +50,34 @@ func TestFrameLayoutIsBigEndianTypeCodeValue(t *testing.T) {
 	}
 }
 
+func TestAbsolutePositionsTravelInTheSameEightByteFrame(t *testing.T) {
+	tests := []struct {
+		name     string
+		position event.Event
+		frame    []byte
+	}{
+		{"the left edge", event.Absolute(event.AbsX, 0), []byte{0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+		{"the right edge", event.Absolute(event.AbsX, event.AbsoluteMax), []byte{0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff}},
+		{"the bottom edge", event.Absolute(event.AbsY, event.AbsoluteMax), []byte{0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0xff, 0xff}},
+		{"a point in between", event.Absolute(event.AbsY, 0x1234), []byte{0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x12, 0x34}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			frame := Append(nil, test.position)
+			if !bytes.Equal(frame, test.frame) {
+				t.Errorf("frame = % x, want % x", frame, test.frame)
+			}
+			decoded, err := Decode(test.frame)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if decoded != test.position {
+				t.Errorf("decoded %+v, want %+v", decoded, test.position)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsFramesOfTheWrongSize(t *testing.T) {
 	for _, size := range []int{0, FrameSize - 1, FrameSize + 1} {
 		if _, err := Decode(make([]byte, size)); !errors.Is(err, ErrFrameSize) {

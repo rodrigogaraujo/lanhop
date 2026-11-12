@@ -34,7 +34,7 @@ const (
 var (
 	usbKeyboard = deviceSpec{name: "lanhop captured keyboard", id: someUSBDevice, keys: typingKeys}
 	usbMouse    = deviceSpec{name: "lanhop captured mouse", id: someUSBDevice, keys: mouseButtons, relativeAxes: []uint16{event.RelX, event.RelY, event.RelWheel}}
-	usbTouchpad = deviceSpec{name: "lanhop ignored touchpad", id: someUSBDevice, keys: []uint16{event.ButtonLeft, buttonTouch}, absoluteAxes: []uint16{absoluteX, absoluteY}}
+	usbTouchpad = deviceSpec{name: "lanhop ignored touchpad", id: someUSBDevice, keys: []uint16{event.ButtonLeft, buttonTouch}, absoluteAxes: []uint16{event.AbsX, event.AbsY}}
 )
 
 func plugInto(t *testing.T, directory string, spec deviceSpec) (*VirtualDevice, string) {
@@ -70,14 +70,73 @@ func firstUnsafeEvent(events []event.Event) (event.Event, bool) {
 	return event.Event{}, false
 }
 
-func emit(t *testing.T, device *VirtualDevice, events ...event.Event) {
+type emitter interface {
+	Emit(events ...event.Event) error
+}
+
+func emit(t *testing.T, device emitter, events ...event.Event) {
 	t.Helper()
-	if unsafe, found := firstUnsafeEvent(events); found {
+	if unsafe, found := firstEventUnsafeOn(t, device, events); found {
 		t.Fatalf("refusing to emit %+v: the machine running the tests would act on it", unsafe)
 	}
 	if err := device.Emit(events...); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
+}
+
+func firstEventUnsafeOn(t *testing.T, device emitter, events []event.Event) (event.Event, bool) {
+	t.Helper()
+	if !slices.ContainsFunc(events, isPosition) || !isGrabbed(t, deviceReachedByPositions(t, device)) {
+		return firstUnsafeEvent(events)
+	}
+	return firstUnsafeEvent(slices.DeleteFunc(slices.Clone(events), isPosition))
+}
+
+func isPosition(e event.Event) bool {
+	isPositionAxis := e.Code == event.AbsX || e.Code == event.AbsY
+	return e.Type == event.TypeAbsolute && isPositionAxis && e.Value >= 0 && e.Value <= event.AbsoluteMax
+}
+
+func deviceReachedByPositions(t *testing.T, device emitter) *VirtualDevice {
+	t.Helper()
+	switch reached := device.(type) {
+	case *VirtualDevice:
+		return reached
+	case *Replay:
+		return reached.pointer
+	}
+	t.Fatalf("cannot tell which device the positions emitted through a %T reach", device)
+	return nil
+}
+
+func isGrabbed(t *testing.T, virtual *VirtualDevice) bool {
+	t.Helper()
+	probe, err := Open(eventNode(t, virtual))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer probe.Close()
+	switch err := probe.Grab(); {
+	case err == nil:
+		if err := probe.Release(); err != nil {
+			t.Fatalf("Release: %v", err)
+		}
+		return false
+	case errors.Is(err, syscall.EBUSY):
+		return true
+	default:
+		t.Fatalf("Grab: %v", err)
+		return false
+	}
+}
+
+func hideFromTheDesktop(t *testing.T, virtual *VirtualDevice) *Device {
+	t.Helper()
+	onlyReader := openEventNode(t, virtual)
+	if err := onlyReader.Grab(); err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+	return onlyReader
 }
 
 func TestTestsMayPressOnlyTheLetterATheLeftButtonAndTheHotkeysOfTheFirstTwoMachines(t *testing.T) {
@@ -101,7 +160,6 @@ func TestTestsMayPressOnlyTheLetterATheLeftButtonAndTheHotkeysOfTheFirstTwoMachi
 
 func TestUnsafeEventsAreRefusedWhereverAndHoweverTheyAppear(t *testing.T) {
 	const (
-		typeAbsolute uint16 = 0x03
 		typeSwitch   uint16 = 0x05
 		keyDigit3    uint16 = 4
 		keyF1        uint16 = 59
@@ -121,7 +179,7 @@ func TestUnsafeEventsAreRefusedWhereverAndHoweverTheyAppear(t *testing.T) {
 		"hotkey of a third machine":           append(slices.Clone(ctrlAlt), event.Key(keyDigit3, event.KeyPressed)),
 		"Ctrl and Alt of the right-hand side": {event.Key(keyRightCtrl, event.KeyPressed), event.Key(keyRightAlt, event.KeyPressed)},
 		"switch such as the lid":              {{Type: typeSwitch, Code: 0, Value: 1}},
-		"absolute position":                   {{Type: typeAbsolute, Code: absoluteX, Value: 10}},
+		"absolute position":                   {event.Absolute(event.AbsX, 10)},
 		"control event":                       {event.Enter()},
 	} {
 		if _, refused := firstUnsafeEvent(events); !refused {
@@ -142,6 +200,128 @@ func TestSafeEventsAreAllowed(t *testing.T) {
 	}
 	if unsafe, refused := firstUnsafeEvent(allowed); refused {
 		t.Errorf("%+v was refused", unsafe)
+	}
+}
+
+func TestOnlyXAndYFromZeroTo65535CountAsPositions(t *testing.T) {
+	const (
+		axisZ        uint16 = 0x02
+		axisPressure uint16 = 0x18
+	)
+	tests := []struct {
+		name  string
+		event event.Event
+		want  bool
+	}{
+		{"the left edge", event.Absolute(event.AbsX, 0), true},
+		{"the right edge", event.Absolute(event.AbsX, event.AbsoluteMax), true},
+		{"the top edge", event.Absolute(event.AbsY, 0), true},
+		{"the bottom edge", event.Absolute(event.AbsY, event.AbsoluteMax), true},
+		{"left of the left edge", event.Absolute(event.AbsX, -1), false},
+		{"below the bottom edge", event.Absolute(event.AbsY, event.AbsoluteMax+1), false},
+		{"a third axis", event.Absolute(axisZ, 10), false},
+		{"pressure", event.Absolute(axisPressure, 10), false},
+		{"relative movement on X", event.Relative(event.RelX, 10), false},
+		{"a key with the code of the X axis", event.Key(event.AbsX, event.KeyPressed), false},
+		{"the end of a report", event.Sync(), false},
+	}
+	for _, test := range tests {
+		if got := isPosition(test.event); got != test.want {
+			t.Errorf("%s: isPosition(%+v) = %v, want %v", test.name, test.event, got, test.want)
+		}
+	}
+}
+
+func TestADeviceCountsAsGrabbedOnlyWhileAReaderHoldsIt(t *testing.T) {
+	pointer := createPointer(t)
+
+	for range 2 {
+		if isGrabbed(t, pointer) {
+			t.Fatal("a device that nobody grabbed counts as grabbed")
+		}
+	}
+	onlyReader := hideFromTheDesktop(t, pointer)
+	if !isGrabbed(t, pointer) {
+		t.Error("a device that a reader grabbed does not count as grabbed")
+	}
+	if err := onlyReader.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if isGrabbed(t, pointer) {
+		t.Error("a device still counts as grabbed after its reader released it")
+	}
+}
+
+func TestPositionsAreRefusedUntilTheDeviceTheyReachIsGrabbed(t *testing.T) {
+	position := []event.Event{event.Absolute(event.AbsX, 10), event.Absolute(event.AbsY, event.AbsoluteMax), event.Sync()}
+	tests := []struct {
+		name   string
+		create func(t *testing.T) (through emitter, reached *VirtualDevice)
+	}{
+		{"emitted on the pointer", func(t *testing.T) (emitter, *VirtualDevice) {
+			pointer := createPointer(t)
+			return pointer, pointer
+		}},
+		{"emitted through the replay", func(t *testing.T) (emitter, *VirtualDevice) {
+			replay := createReplay(t)
+			return replay, replay.pointer
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			through, reached := test.create(t)
+
+			if _, refused := firstEventUnsafeOn(t, through, position); !refused {
+				t.Error("positions were allowed on a pointer that the desktop can read")
+			}
+			hideFromTheDesktop(t, reached)
+			if unsafe, refused := firstEventUnsafeOn(t, through, position); refused {
+				t.Errorf("%+v was refused on a pointer that only the test can read", unsafe)
+			}
+		})
+	}
+}
+
+func TestGrabbingTheKeyboardAndMouseOfAReplayDoesNotAllowPositions(t *testing.T) {
+	replay := createReplay(t)
+	hideFromTheDesktop(t, replay.keyboardAndMouse)
+
+	if _, refused := firstEventUnsafeOn(t, replay, []event.Event{event.Absolute(event.AbsX, 10)}); !refused {
+		t.Error("positions were allowed while the desktop can read the pointer of the replay")
+	}
+}
+
+func TestAGrabbedPointerAllowsPositionsAndNothingElseThatIsUnsafe(t *testing.T) {
+	const (
+		typeSwitch uint16 = 0x05
+		axisZ      uint16 = 0x02
+	)
+	replay := createReplay(t)
+	hideFromTheDesktop(t, replay.pointer)
+	position := event.Absolute(event.AbsX, 10)
+
+	allowed := []event.Event{
+		position, event.Absolute(event.AbsY, 20), event.Key(event.KeyA, event.KeyPressed),
+		event.Key(event.ButtonLeft, event.KeyPressed), event.Relative(event.RelX, 7), event.Sync(),
+	}
+	if unsafe, refused := firstEventUnsafeOn(t, replay, allowed); refused {
+		t.Errorf("%+v was refused", unsafe)
+	}
+	for name, unsafe := range map[string]event.Event{
+		"unsafe key":                 event.Key(keyPower, event.KeyPressed),
+		"switch such as the lid":     {Type: typeSwitch, Code: 0, Value: 1},
+		"position outside the range": event.Absolute(event.AbsX, event.AbsoluteMax+1),
+		"axis that is not X or Y":    event.Absolute(axisZ, 10),
+		"control event":              event.Enter(),
+	} {
+		for order, events := range map[string][]event.Event{
+			"after a position":  {position, unsafe, event.Sync()},
+			"before a position": {unsafe, position, event.Sync()},
+		} {
+			if got, refused := firstEventUnsafeOn(t, replay, events); !refused || got != unsafe {
+				t.Errorf("%s %s: refused %+v, %v, want %+v refused", name, order, got, refused, unsafe)
+			}
+		}
 	}
 }
 
@@ -255,10 +435,6 @@ func readWithin(t *testing.T, device *Device, limit time.Duration) (event.Event,
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 	return device.Read()
-}
-
-func isEndOfReport(e event.Event) bool {
-	return e.Type == event.TypeSync && e.Code == event.SyncReport
 }
 
 func TestEventsOfEveryKeyboardAndMouseArriveInOneStream(t *testing.T) {
@@ -405,6 +581,8 @@ func TestOnlyKeyboardsAndMiceThatAreNotLanhopsOwnAreCaptured(t *testing.T) {
 	directory := t.TempDir()
 	plugInto(t, directory, usbTouchpad)
 	makeNodeFromSysfs(t, directory, sysEventPath(t, createVirtualDevice(t)))
+	makeNodeFromSysfs(t, directory, sysEventPath(t, createPointer(t)))
+	plugInto(t, directory, deviceSpec{name: "lanhop keyboard with the identity of the pointer", id: lanhopsPointer, keys: typingKeys})
 	keyboard, keyboardNode := plugInto(t, directory, usbKeyboard)
 	mouse, mouseNode := plugInto(t, directory, usbMouse)
 	capture := startCaptureIn(t, directory)

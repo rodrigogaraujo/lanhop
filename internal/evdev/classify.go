@@ -90,5 +90,6 @@ func (d *Device) isOwn() (bool, error) {
 	if err := ioctlPointer(d.file, deviceID, unsafe.Pointer(&id)); err != nil {
 		return false, err
 	}
-	return id.bus == busVirtual && id.vendor == virtualVendor && id.product == virtualProduct, nil
+	isLanhopsProduct := id.product == virtualProduct || id.product == pointerProduct
+	return id.bus == busVirtual && id.vendor == virtualVendor && isLanhopsProduct, nil
 }

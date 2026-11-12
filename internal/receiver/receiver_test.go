@@ -283,6 +283,59 @@ func TestInputIsReplayedOnlyBetweenEnterAndLeave(t *testing.T) {
 	)
 }
 
+func TestAbsolutePositionsAreReplayedOnlyBetweenEnterAndLeave(t *testing.T) {
+	d, _, sharerSide := connectedDesk(t)
+
+	send(t, sharerSide,
+		event.Absolute(event.AbsX, 5), event.Absolute(event.AbsY, 6), event.Sync(),
+		event.Enter(),
+		event.Absolute(event.AbsX, 0), event.Absolute(event.AbsY, event.AbsoluteMax), event.Sync(),
+		event.Absolute(event.AbsX, event.AbsoluteMax), event.Key(event.ButtonLeft, pressed), event.Sync(),
+		event.Key(event.ButtonLeft, released), event.Sync(),
+		event.Leave(),
+		event.Absolute(event.AbsX, 7), event.Absolute(event.AbsY, 8), event.Sync(),
+		event.Enter(),
+		event.Absolute(event.AbsY, 32768), event.Sync(),
+	)
+
+	d.replay.expect(t,
+		event.Absolute(event.AbsX, 0), event.Absolute(event.AbsY, event.AbsoluteMax), event.Sync(),
+		event.Absolute(event.AbsX, event.AbsoluteMax), event.Key(event.ButtonLeft, pressed), event.Sync(),
+		event.Key(event.ButtonLeft, released), event.Sync(),
+		event.Absolute(event.AbsY, 32768), event.Sync(),
+	)
+}
+
+func TestLosingFocusAfterAPositionWithoutASyncReleasesWhatIsHeldAndSyncsOnce(t *testing.T) {
+	leaves := func(t *testing.T, sharerSide *transport.Conn) { send(t, sharerSide, event.Leave()) }
+	isKilled := func(_ *testing.T, sharerSide *transport.Conn) { sharerSide.Close() }
+	cases := []struct {
+		name      string
+		loseFocus func(t *testing.T, sharerSide *transport.Conn)
+	}{
+		{"leave", leaves},
+		{"a killed connection", isKilled},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, _, sharerSide := connectedDesk(t)
+			dragging := []event.Event{
+				event.Key(leftShift, pressed), event.Key(event.ButtonLeft, pressed), event.Sync(),
+				event.Absolute(event.AbsX, 100), event.Absolute(event.AbsY, 200),
+			}
+			send(t, sharerSide, event.Enter())
+			send(t, sharerSide, dragging...)
+			d.replay.expect(t, dragging...)
+
+			c.loseFocus(t, sharerSide)
+
+			d.replay.expect(t, append(dragging,
+				event.Key(leftShift, released), event.Key(event.ButtonLeft, released), event.Sync(),
+			)...)
+		})
+	}
+}
+
 func TestLeaveReleasesEveryKeyAndButtonStillHeldAndNothingElse(t *testing.T) {
 	d, _, sharerSide := connectedDesk(t)
 
@@ -344,6 +397,7 @@ func TestLosingFocusSyncsInputThatWasReplayedWithoutASync(t *testing.T) {
 	isKilled := func(_ *testing.T, sharerSide *transport.Conn) { sharerSide.Close() }
 	tapWithoutSync := []event.Event{event.Key(event.KeyA, pressed), event.Sync(), event.Key(event.KeyA, released)}
 	movementWithoutSync := []event.Event{event.Relative(event.RelX, 7)}
+	positionWithoutSync := []event.Event{event.Absolute(event.AbsX, 100), event.Absolute(event.AbsY, 200)}
 	cases := []struct {
 		name      string
 		unsynced  []event.Event
@@ -353,6 +407,8 @@ func TestLosingFocusSyncsInputThatWasReplayedWithoutASync(t *testing.T) {
 		{"a release, then a killed connection", tapWithoutSync, isKilled},
 		{"a movement, then leave", movementWithoutSync, leaves},
 		{"a movement, then a killed connection", movementWithoutSync, isKilled},
+		{"a position, then leave", positionWithoutSync, leaves},
+		{"a position, then a killed connection", positionWithoutSync, isKilled},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
