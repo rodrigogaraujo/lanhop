@@ -14,5 +14,5 @@ A spec is agreed on before its code is written. To propose a feature, open an is
 | 003 | Windows | Not started | |
 | 004 | Automatic discovery on the local network | Not started | |
 | 005 | Clipboard sharing | Not started | |
-| 006 | Packages and services (systemd, udev, launchd, Homebrew) | Not started | |
+| [006](006-packages) | Packages and services (systemd, udev, launchd, Homebrew) | Draft | |
 | [007](007-layout-editor) | A drag-and-drop editor for the layout file | Draft | |
