@@ -75,6 +75,7 @@ Each release also has the archives themselves, one per system and architecture, 
 - [x] Linux: virtual device (`uinput`) and device reader (`evdev`)
 - [x] First release: Linux and macOS in any combination, encrypted with device pairing
   - [x] Switching with a hotkey ([spec 001](specs/001-hotkey-switching/spec.md))
+    - [ ] A setting for the hotkey, and one to swap Alt and Super between Linux and macOS
   - [ ] Switching through the screen edges, with a layout file ([spec 002](specs/002-edge-switching/spec.md))
     - [x] The layout file, and crossing between the machines that are being controlled
     - [x] The edges of the own screen of a Mac that has the keyboard
