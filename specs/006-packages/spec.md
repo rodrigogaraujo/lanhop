@@ -105,6 +105,7 @@ As the maintainer, I push a version tag and the release appears with its archive
 - lanhop is updated on a Mac where it was already allowed under Accessibility.
 - The archive of a Mac is downloaded with a browser instead of the installer.
 - `LANHOP_CONFIG_DIR` is set in the shell that runs the installer, and the service does not see it.
+- `lanhop pair` or the layout editor is stopped with Ctrl+C while the installer runs it.
 
 ## Requirements
 

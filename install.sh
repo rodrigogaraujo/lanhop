@@ -127,6 +127,14 @@ lanhop_as_the_service_runs_it() {
   )
 }
 
+outliving_ctrl_c() {
+  trap : INT
+  ended=0
+  "$@" || ended=$?
+  trap - INT
+  return "$ended"
+}
+
 find_system() {
   system_name=${LANHOP_SYSTEM:-$(uname -s)}
   machine_name=${LANHOP_MACHINE:-$(uname -m)}
@@ -516,7 +524,7 @@ EOF
     fi
     say ""
     if agrees "Run \"lanhop pair\" now? It waits for the other machine, and Ctrl+C stops it."; then
-      lanhop_as_the_service_runs_it pair <&3 || problem "the machines are not paired. Run \"lanhop pair\" again when both are ready."
+      outliving_ctrl_c lanhop_as_the_service_runs_it pair <&3 || problem "the machines are not paired. Run \"lanhop pair\" again when both are ready."
     fi
     return 0
   fi
@@ -537,7 +545,7 @@ EOF
   printf 'Then type its address here, or press Enter to pair later: '
   ask
   if [ -n "$reply" ]; then
-    lanhop_as_the_service_runs_it pair "$reply" <&3 || problem "the machines are not paired. Run \"lanhop pair $reply\" again when both are ready."
+    outliving_ctrl_c lanhop_as_the_service_runs_it pair "$reply" <&3 || problem "the machines are not paired. Run \"lanhop pair $reply\" again when both are ready."
   fi
 }
 
@@ -551,7 +559,7 @@ explain_layout() {
   fi
   say "To switch by pushing the cursor through an edge of the screen, say where each machine sits: \"lanhop layout --edit\" opens a page to arrange them by dragging."
   if [ "$someone_answers" = yes ] && agrees "Open it now?"; then
-    lanhop_as_the_service_runs_it layout --edit <&3 || problem "the editor did not finish. Run \"lanhop layout --edit\" again."
+    outliving_ctrl_c lanhop_as_the_service_runs_it layout --edit <&3 || problem "the editor did not finish. Run \"lanhop layout --edit\" again."
   fi
 }
 

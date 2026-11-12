@@ -18,7 +18,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const (
@@ -184,6 +186,17 @@ func (r *releases) damage(name string) {
 	writeFile(r.t, path, append(content, 0), 0o644)
 }
 
+func (r *releases) lanhopStarts(call string) bool {
+	r.t.Helper()
+	for patience := 10 * time.Second; patience > 0; patience -= 10 * time.Millisecond {
+		if slices.Contains(r.lanhopWasRunWith(), call) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
 func (r *releases) lanhopWasRunWith() []string {
 	r.t.Helper()
 	content, err := os.ReadFile(r.calls)
@@ -325,7 +338,22 @@ func (m *machine) typing(lines ...string) {
 	m.settings["LANHOP_TERMINAL"] = terminal
 }
 
-func (m *machine) run(arguments ...string) (string, int) {
+func (m *machine) terminalThatWaitsForTyping() *os.File {
+	m.t.Helper()
+	path := filepath.Join(m.aside, "terminal that waits")
+	if output, err := exec.Command("mkfifo", path).CombinedOutput(); err != nil {
+		m.t.Fatalf("mkfifo: %v\n%s", err, output)
+	}
+	terminal, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	m.t.Cleanup(func() { terminal.Close() })
+	m.settings["LANHOP_TERMINAL"] = path
+	return terminal
+}
+
+func (m *machine) installerPipedIntoTheShell(arguments ...string) *exec.Cmd {
 	m.t.Helper()
 	script, err := os.ReadFile(installer)
 	if err != nil {
@@ -339,7 +367,12 @@ func (m *machine) run(arguments ...string) (string, int) {
 	for name, value := range m.settings {
 		command.Env = append(command.Env, name+"="+value)
 	}
-	output, err := command.CombinedOutput()
+	return command
+}
+
+func (m *machine) run(arguments ...string) (string, int) {
+	m.t.Helper()
+	output, err := m.installerPipedIntoTheShell(arguments...).CombinedOutput()
 	var failed *exec.ExitError
 	switch {
 	case err == nil:
@@ -749,6 +782,50 @@ func TestShowsTheCommandsOfAStepBeforeAskingToRunThem(t *testing.T) {
 				expectSame(t, "system commands", commandsIn(output), []string{})
 			})
 		}
+	})
+}
+
+func TestCtrlCWhileLanhopPairWaitsStopsLanhopAndNotTheInstaller(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		terminal := m.terminalThatWaitsForTyping()
+		if _, err := terminal.WriteString("y\nn\nn\ny\n"); err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		installing := m.installerPipedIntoTheShell()
+		installing.Stdout = &output
+		installing.Stderr = &output
+		installing.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := installing.Start(); err != nil {
+			t.Fatal(err)
+		}
+		everyProcessOfTheInstaller := -installing.Process.Pid
+		ended := make(chan error, 1)
+		go func() { ended <- installing.Wait() }()
+		giveUp := time.AfterFunc(time.Minute, func() { syscall.Kill(everyProcessOfTheInstaller, syscall.SIGKILL) })
+		defer giveUp.Stop()
+
+		if !published.lanhopStarts("pair [configuration default]") {
+			syscall.Kill(everyProcessOfTheInstaller, syscall.SIGKILL)
+			t.Fatalf("lanhop pair did not start: %v\n%s", <-ended, output.String())
+		}
+		if err := syscall.Kill(everyProcessOfTheInstaller, syscall.SIGINT); err != nil {
+			t.Fatal(err)
+		}
+		if !published.lanhopStarts("help [configuration default]") {
+			syscall.Kill(everyProcessOfTheInstaller, syscall.SIGKILL)
+			t.Fatalf("the installer did not carry on after Ctrl+C: %v\n%s", <-ended, output.String())
+		}
+		if _, err := terminal.WriteString("n\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-ended; err != nil {
+			t.Fatalf("the installer ended with %v\n%s", err, output.String())
+		}
+		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "pair", "help"))
+		expectMention(t, output.String(), `the machines are not paired. Run "lanhop pair" again`, "Open it now? [y/N] ", "To remove lanhop:")
 	})
 }
 
