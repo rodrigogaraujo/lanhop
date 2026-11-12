@@ -128,6 +128,32 @@ func TestAxisThatAReportDoesNotCarryIsTheOneLastPlacedAndAfterAPauseTheOneRead(t
 	)
 }
 
+func TestAxisCarriedByOneReportIsNotCarriedByTheNext(t *testing.T) {
+	cases := []struct {
+		name    string
+		carried event.Event
+		want    MouseEvent
+	}{
+		{"the horizontal axis alone", event.Absolute(event.AbsX, event.AbsoluteMax), MouseEvent{Action: MouseMoved, At: Point{X: 99, Y: 30}, DX: 79}},
+		{"the vertical axis alone", event.Absolute(event.AbsY, event.AbsoluteMax), MouseEvent{Action: MouseMoved, At: Point{X: 20, Y: 99}, DY: 69}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			screen := oneDisplay()
+			replay, clock := newReplayOn(screen)
+			replay.Emit(position(0, 0)...)
+			screen.cursor = Point{X: 20, Y: 30}
+			clock.advance(cursorMemory + time.Millisecond)
+
+			replay.Emit(c.carried, event.Sync())
+
+			if last := screen.posted[len(screen.posted)-1]; last != c.want {
+				t.Errorf("the next report was posted as %+v, want %+v", last, c.want)
+			}
+		})
+	}
+}
+
 func TestAxisThatAReportDoesNotCarryStaysBetweenTwoPointsAtTheFarEdge(t *testing.T) {
 	screen := &fakeScreen{cursor: Point{X: 10, Y: 99.5}, displays: []Rect{{Width: 100, Height: 100}}}
 	replay, _ := newReplayOn(screen)
@@ -376,14 +402,28 @@ func TestPositionOutsideTheRangeIsClampedToItsNearestEnd(t *testing.T) {
 }
 
 func TestPositionOutsideTheRangeIsClampedBeforeTheNearestDisplayIsChosen(t *testing.T) {
-	wideAboveNarrower := []Rect{{Width: 300, Height: 100}, {Y: 150, Width: 298, Height: 100}}
-	screen := &fakeScreen{cursor: Point{X: 7, Y: 7}, displays: wideAboveNarrower}
-	replay, _ := newReplayOn(screen)
+	wideAboveOneThatEndsSooner := []Rect{{Width: 300, Height: 100}, {Y: 150, Width: 298, Height: 100}}
+	wideAboveOneThatStartsLater := []Rect{{Width: 300, Height: 100}, {X: 2, Y: 150, Width: 298, Height: 100}}
+	cases := []struct {
+		name     string
+		displays []Rect
+		x        int32
+		want     Point
+	}{
+		{"far over the end", wideAboveOneThatEndsSooner, math.MaxInt32, Point{X: 297, Y: 240}},
+		{"far under the start", wideAboveOneThatStartsLater, math.MinInt32, Point{X: 2, Y: 240}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			screen := &fakeScreen{cursor: Point{X: 7, Y: 7}, displays: c.displays}
+			replay, _ := newReplayOn(screen)
 
-	replay.Emit(position(math.MaxInt32, 63166)...)
+			replay.Emit(position(c.x, 63166)...)
 
-	if want := (Point{X: 297, Y: 240}); screen.cursor != want {
-		t.Errorf("cursor at %+v, want %+v", screen.cursor, want)
+			if screen.cursor != c.want {
+				t.Errorf("cursor at %+v, want %+v", screen.cursor, c.want)
+			}
+		})
 	}
 }
 
