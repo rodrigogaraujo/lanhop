@@ -3,6 +3,7 @@ package layout
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
@@ -69,8 +70,9 @@ func (p Problems) Error() string {
 type place struct{ row, column, line int }
 
 type Layout struct {
-	rows   [][]string
-	places map[string]place
+	rows      [][]string
+	places    map[string]place
+	commented bool
 }
 
 func Parse(source io.Reader, known func(name string) bool) (*Layout, error) {
@@ -83,7 +85,8 @@ func Parse(source io.Reader, known func(name string) bool) (*Layout, error) {
 	named := false
 	for index, text := range strings.Split(string(contents), "\n") {
 		line := index + 1
-		cells := cellsOf(text)
+		cells, commented := cellsOf(text)
+		parsed.commented = parsed.commented || commented
 		if len(cells) == 0 {
 			continue
 		}
@@ -118,11 +121,11 @@ func Parse(source io.Reader, known func(name string) bool) (*Layout, error) {
 	return parsed, nil
 }
 
-func cellsOf(text string) []string {
-	drawn, _, _ := strings.Cut(strings.TrimSuffix(text, "\r"), commentSign)
+func cellsOf(text string) (cells []string, commented bool) {
+	drawn, _, commented := strings.Cut(strings.TrimSuffix(text, "\r"), commentSign)
 	return strings.FieldsFunc(drawn, func(character rune) bool {
 		return strings.ContainsRune(separators, character)
-	})
+	}), commented
 }
 
 func (l *Layout) Neighbour(name string, side Side) (string, bool) {
@@ -173,10 +176,22 @@ func (l *Layout) Has(name string) bool {
 	return placed
 }
 
-func (l *Layout) Describe() string {
+func (l *Layout) HasComments() bool {
+	return l.commented
+}
+
+func (l *Layout) Rows() [][]string {
+	rows := make([][]string, len(l.rows))
+	for i, row := range l.rows {
+		rows[i] = slices.Clone(row)
+	}
+	return rows
+}
+
+func Draw(rows [][]string) string {
 	var text strings.Builder
-	widths := l.columnWidths()
-	for _, row := range l.rows {
+	widths := columnWidths(rows)
+	for _, row := range rows {
 		for column, machine := range row {
 			cell := machine
 			if cell == "" {
@@ -189,16 +204,21 @@ func (l *Layout) Describe() string {
 			fmt.Fprintf(&text, "%-*s", widths[column]+columnGap, cell)
 		}
 	}
-	text.WriteString("\n")
+	return text.String()
+}
+
+func (l *Layout) Describe() string {
+	var text strings.Builder
+	text.WriteString(Draw(l.rows) + "\n")
 	for _, machine := range l.Machines() {
-		fmt.Fprintf(&text, "%s: %s\n", machine, l.neighboursOf(machine))
+		fmt.Fprintf(&text, "%s: %s\n", machine, l.NeighboursOf(machine))
 	}
 	return text.String()
 }
 
-func (l *Layout) columnWidths() []int {
+func columnWidths(rows [][]string) []int {
 	var widths []int
-	for _, row := range l.rows {
+	for _, row := range rows {
 		for column, machine := range row {
 			if column == len(widths) {
 				widths = append(widths, len(hole))
@@ -209,7 +229,7 @@ func (l *Layout) columnWidths() []int {
 	return widths
 }
 
-func (l *Layout) neighboursOf(machine string) string {
+func (l *Layout) NeighboursOf(machine string) string {
 	var around []string
 	for _, side := range []Side{Left, Right, Above, Below} {
 		if neighbour, found := l.Neighbour(machine, side); found {

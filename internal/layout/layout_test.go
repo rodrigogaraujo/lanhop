@@ -595,3 +595,136 @@ c: no neighbours
 		})
 	}
 }
+
+func TestRowsGivesTheDeskPlaceByPlaceWithAnEmptyNameForAHole(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want [][]string
+	}{
+		{
+			name: "the example of the plan",
+			text: planExample,
+			want: [][]string{{"laptop", "desktop", "macbook"}, {"", "server", ""}},
+		},
+		{
+			name: "rows keep the length they were written with",
+			text: "a b c\nd\n. e\n",
+			want: [][]string{{"a", "b", "c"}, {"d"}, {"", "e"}},
+		},
+		{
+			name: "a row of holes is a row",
+			text: "a\n. .\nb\n",
+			want: [][]string{{"a"}, {"", ""}, {"b"}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parse(t, c.text).Rows()
+
+			if !slices.EqualFunc(got, c.want, slices.Equal[[]string]) {
+				t.Errorf("Rows() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestChangingTheRowsDoesNotChangeTheLayout(t *testing.T) {
+	parsed := parse(t, "laptop desktop\n")
+
+	parsed.Rows()[0][1] = "tablet"
+
+	if right := neighbourOn(t, parsed, "laptop", Right); right != "desktop" {
+		t.Errorf("right of laptop = %q, want desktop", right)
+	}
+	if got := parsed.Rows()[0][1]; got != "desktop" {
+		t.Errorf("the second place of the first row = %q, want desktop", got)
+	}
+}
+
+func TestALayoutKnowsWhetherItsFileHadComments(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "no comment", text: "laptop desktop\n. server\n", want: false},
+		{name: "a comment line", text: "# my desk\nlaptop desktop\n", want: true},
+		{name: "a comment after a row", text: "laptop desktop # the long table\n", want: true},
+		{name: "a comment after the last row", text: "laptop\n\n   # nothing below\n", want: true},
+		{name: "a comment sign with nothing after it", text: "laptop\n#", want: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parse(t, c.text).HasComments(); got != c.want {
+				t.Errorf("HasComments() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestDrawWritesOneRowPerLineInColumnsWithADotForAnEmptyPlace(t *testing.T) {
+	cases := []struct {
+		name string
+		rows [][]string
+		want string
+	}{
+		{
+			name: "the example of the plan",
+			rows: [][]string{{"laptop", "desktop", "macbook"}, {"", "server", ""}},
+			want: "laptop  desktop  macbook\n.       server   .\n",
+		},
+		{
+			name: "a machine alone",
+			rows: [][]string{{"laptop"}},
+			want: "laptop\n",
+		},
+		{
+			name: "a column",
+			rows: [][]string{{"a"}, {""}, {"b"}},
+			want: "a\n.\nb\n",
+		},
+		{
+			name: "the longest name sets the width of its column",
+			rows: [][]string{{"", "b"}, {longestName, ""}},
+			want: "." + strings.Repeat(" ", len(longestName)+1) + "b\n" + longestName + "  .\n",
+		},
+		{
+			name: "no row",
+			rows: nil,
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Draw(c.rows); got != c.want {
+				t.Errorf("Draw(%q) =\n%s\nwant:\n%s", c.rows, got, c.want)
+			}
+		})
+	}
+}
+
+func TestADeskThatIsDrawnIsReadBackAsTheSameDesk(t *testing.T) {
+	desks := [][][]string{
+		{{"a"}},
+		{{"a", "b", "c", "d", "e"}},
+		{{"a"}, {"b"}, {"c"}},
+		{{"a", "", "b"}},
+		{{"a"}, {""}, {"b"}},
+		{{"", "a"}, {"b", ""}},
+		{{"a", ""}, {"", "b"}},
+		{{"a", "b", "c"}, {"", "", ""}, {"d", "", "e"}},
+		{{"", "", "a"}, {"", "b", ""}, {"c", "", ""}},
+		{{"laptop", "desktop", "macbook"}, {"", "server", ""}},
+		{{"Mac_Book-2", longestName}, {longestName[1:], ""}},
+	}
+	for _, desk := range desks {
+		drawn := Draw(desk)
+
+		read := parse(t, drawn).Rows()
+
+		if !slices.EqualFunc(read, desk, slices.Equal[[]string]) {
+			t.Errorf("the desk %q was drawn as\n%s\nand read back as %q", desk, drawn, read)
+		}
+	}
+}

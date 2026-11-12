@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lanhop layout</title>
+<style>
+body {
+  margin: 1rem;
+  font: 16px/1.4 system-ui, sans-serif;
+  color: #111;
+  background: #fff;
+}
+h1 {
+  font-size: 1.25rem;
+}
+h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+#editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+#desk-area {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+#desk {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.25rem;
+}
+#tray {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.25rem;
+}
+.machine,
+.place {
+  box-sizing: border-box;
+  min-width: 8rem;
+  min-height: 3rem;
+  padding: 0.5rem;
+  overflow-wrap: anywhere;
+}
+.place {
+  border: 1px dashed #767676;
+}
+.machine {
+  border: 2px solid #111;
+  background: #eee;
+  cursor: grab;
+}
+.machine[aria-pressed="true"] {
+  color: #fff;
+  background: #111;
+}
+.machine:focus-visible,
+.place:focus-visible,
+button:focus-visible {
+  outline: 3px solid #0055cc;
+  outline-offset: 2px;
+}
+#neighbours {
+  padding-left: 1.25rem;
+}
+#problem {
+  color: #a40000;
+  white-space: pre-line;
+}
+button {
+  font: inherit;
+  padding: 0.25rem 0.75rem;
+}
+</style>
+</head>
+<body>
+<h1>Layout of the desk</h1>
+<p id="comments" hidden>The layout file has comments. Saving does not keep them.</p>
+<div id="editor">
+  <section id="desk-area" aria-labelledby="desk-title">
+    <h2 id="desk-title">Desk</h2>
+    <div id="desk"></div>
+  </section>
+  <section aria-labelledby="tray-title">
+    <h2 id="tray-title">Not on the desk</h2>
+    <div id="tray"></div>
+  </section>
+</div>
+<div role="status">
+  <ul id="neighbours"></ul>
+  <p id="problem"></p>
+</div>
+<p>
+  <button id="save" type="button" disabled>Save</button>
+  <button id="done" type="button">Done</button>
+  <span id="saved" role="status"></span>
+</p>
+<p>Save writes the layout file. A running "lanhop share" uses the new layout at once, with no restart.</p>
+<script>
+const token = new URLSearchParams(location.search).get('token');
+const notAnswering = 'lanhop is not answering. Run "lanhop layout --edit" again.';
+const desk = document.getElementById('desk');
+const tray = document.getElementById('tray');
+const neighbours = document.getElementById('neighbours');
+const problem = document.getElementById('problem');
+const comments = document.getElementById('comments');
+const saved = document.getElementById('saved');
+const saveButton = document.getElementById('save');
+const doneButton = document.getElementById('done');
+
+let own = '';
+let machines = [];
+let rows = [];
+let held = '';
+
+async function ask(method, path, body) {
+  const response = await fetch(path + '?token=' + encodeURIComponent(token), {
+    method: method,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const answer = await response.json();
+  answer.ok = response.ok;
+  return answer;
+}
+
+function unlessLanhopStopped(request) {
+  request.catch(function () {
+    problem.textContent = notAnswering;
+  });
+}
+
+function pressable(element, press) {
+  element.tabIndex = 0;
+  element.setAttribute('role', 'button');
+  element.addEventListener('click', press);
+  element.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      press();
+    }
+  });
+}
+
+function acceptsDrops(element, put) {
+  element.addEventListener('dragover', function (event) {
+    event.preventDefault();
+  });
+  element.addEventListener('drop', function (event) {
+    event.preventDefault();
+    put();
+  });
+}
+
+function markHeld() {
+  document.querySelectorAll('.machine').forEach(function (box) {
+    box.setAttribute('aria-pressed', String(box.dataset.name === held));
+  });
+}
+
+function boxOf(name) {
+  const box = document.createElement('div');
+  box.className = 'machine';
+  box.dataset.name = name;
+  box.textContent = name === own ? name + ' (this machine)' : name;
+  box.draggable = true;
+  box.addEventListener('dragstart', function (event) {
+    event.dataTransfer.setData('text/plain', name);
+    held = name;
+  });
+  box.addEventListener('dragend', function () {
+    held = '';
+    markHeld();
+  });
+  pressable(box, function () {
+    held = held === name ? '' : name;
+    markHeld();
+  });
+  return box;
+}
+
+function freePlace(label, put) {
+  const place = document.createElement('div');
+  place.className = 'place';
+  place.setAttribute('aria-label', label);
+  pressable(place, put);
+  return place;
+}
+
+function focusOn(name) {
+  document.querySelectorAll('.machine').forEach(function (box) {
+    if (box.dataset.name === name) {
+      box.focus();
+    }
+  });
+}
+
+function putHeld(place) {
+  if (held === '') {
+    return;
+  }
+  const name = held;
+  held = '';
+  const moved = rows.map(function (row) {
+    return row.map(function (cell) {
+      return cell === name ? '' : cell;
+    });
+  });
+  if (place !== null) {
+    moved[place.row][place.column] = name;
+  }
+  unlessLanhopStopped(ask('POST', '/arrange', {rows: moved}).then(function (view) {
+    show(view);
+    focusOn(name);
+  }));
+}
+
+function putHeldInTray() {
+  putHeld(null);
+}
+
+function draw() {
+  desk.style.gridTemplateColumns = 'repeat(' + rows[0].length + ', minmax(8rem, 1fr))';
+  desk.replaceChildren();
+  rows.forEach(function (cells, row) {
+    cells.forEach(function (name, column) {
+      if (name !== '') {
+        desk.append(boxOf(name));
+        return;
+      }
+      const putHere = function () {
+        putHeld({row: row, column: column});
+      };
+      const place = freePlace('Free place, row ' + (row + 1) + ', column ' + (column + 1), putHere);
+      acceptsDrops(place, putHere);
+      desk.append(place);
+    });
+  });
+  const placed = rows.flat();
+  tray.replaceChildren();
+  machines.forEach(function (name) {
+    if (!placed.includes(name)) {
+      tray.append(boxOf(name));
+    }
+  });
+  tray.append(freePlace('Back to the tray', putHeldInTray));
+  markHeld();
+}
+
+function show(view) {
+  rows = view.rows;
+  problem.textContent = view.problem;
+  neighbours.replaceChildren();
+  view.neighbours.forEach(function (line) {
+    const item = document.createElement('li');
+    item.textContent = line;
+    neighbours.append(item);
+  });
+  saveButton.disabled = view.problem !== '';
+  saved.textContent = '';
+  draw();
+}
+
+acceptsDrops(tray, putHeldInTray);
+
+saveButton.addEventListener('click', function () {
+  unlessLanhopStopped(ask('POST', '/save', {rows: rows}).then(function (answer) {
+    if (!answer.ok) {
+      problem.textContent = answer.problem;
+      return;
+    }
+    comments.hidden = true;
+    saved.textContent = 'Saved.';
+  }));
+});
+
+doneButton.addEventListener('click', function () {
+  unlessLanhopStopped(ask('POST', '/done').then(function () {
+    document.body.textContent = 'The editor has stopped. You can close this page.';
+  }));
+});
+
+unlessLanhopStopped(ask('GET', '/desk').then(function (found) {
+  if (!found.ok) {
+    problem.textContent = found.problem;
+    return;
+  }
+  own = found.own;
+  machines = found.machines;
+  comments.hidden = !found.comments;
+  show(found);
+}));
+</script>
+</body>
+</html>

@@ -71,6 +71,21 @@ Here `desktop` has `laptop` on its left, `macbook` on its right and `server` bel
 
 **A Linux machine with the keyboard does not cross the edges of its own screen yet**, because lanhop cannot find where its cursor is. Leave it with a hotkey. From there on the edges work: between the machines it controls, and back to it.
 
+### Arranging the desk by dragging
+
+Instead of writing the file, you can drag the machines to their places:
+
+```sh
+lanhop layout --edit
+```
+
+- lanhop prints an address and opens it in the browser of this machine. The page shows one box for this machine and one for each machine `lanhop peers` lists.
+- Drag each box to its place on the desk, or back to "Not on the desk". With the keyboard alone, press Enter or Space on a box to pick it up, and again on a free place to put it down.
+- The page says the neighbours of each machine as you move them. Save writes the layout file, and a running `lanhop share` uses it at once. Comments in the file are not kept.
+- Press Done on the page, or Ctrl+C in the terminal, to stop.
+- The page is served to this machine alone, at an address with a secret that changes on every run, and it works with no internet connection.
+- On a machine with no browser, write the file by hand.
+
 ## Permissions
 
 lanhop reads and creates keyboard and mouse input, and every system asks you to allow that first:
