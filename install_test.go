@@ -206,7 +206,7 @@ func packed(t *testing.T, name, binary string) []byte {
 		content string
 		mode    int64
 	}{
-		{name + "/lanhop", binary, 0o755},
+		{name + "/lanhop", binary, 0o700},
 		{name + "/LICENSE", "MIT License\n", 0o644},
 		{name + "/README.md", "# lanhop\n", 0o644},
 	} {
@@ -435,6 +435,10 @@ func inEveryShell(t *testing.T, behaviour func(t *testing.T, shell string)) {
 	}
 }
 
+func shownToTheUser(commands ...string) string {
+	return "    " + strings.Join(commands, "\n    ") + "\n\n"
+}
+
 func expectSame(t *testing.T, what string, got, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
@@ -569,6 +573,14 @@ func TestSetsUpTheRoleThatWasAnswered(t *testing.T) {
 			lanhop:   configured("version"),
 		},
 		{
+			name:     "Linux with Enter alone about the keyboard gets the binary and nothing else",
+			system:   "Linux",
+			typed:    []string{"", "y", "y", "y", "y"},
+			commands: []string{},
+			files:    []string{binaryFile},
+			lanhop:   configured("version"),
+		},
+		{
 			name:     "Linux with only the role given, and nobody to ask, writes the unit and runs nothing",
 			system:   "Linux",
 			settings: map[string]string{"LANHOP_ROLE": "receive"},
@@ -651,6 +663,90 @@ func TestSetsUpTheRoleThatWasAnswered(t *testing.T) {
 				if strings.Contains(output, "lanhop installer:") {
 					t.Errorf("the installer reports a problem:\n%s", output)
 				}
+			})
+		}
+	})
+}
+
+func TestOnlyAClearYesAgreesToAStep(t *testing.T) {
+	answers := []struct {
+		typed  string
+		agrees bool
+	}{
+		{"y", true},
+		{"Y", true},
+		{"yes", true},
+		{"Yes", true},
+		{"YES", true},
+		{"", false},
+		{"n", false},
+		{"no", false},
+		{"maybe", false},
+		{"yes please", false},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, answer := range answers {
+			t.Run(fmt.Sprintf("typing %q", answer.typed), func(t *testing.T) {
+				m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+				m.settings["LANHOP_ROLE"] = "share"
+				m.typing(answer.typed)
+				want := []string{}
+				if answer.agrees {
+					want = []string{joinTheInputGroup}
+				}
+				expectSame(t, "system commands", commandsIn(m.mustRun()), want)
+			})
+		}
+	})
+}
+
+func TestShowsTheCommandsOfAStepBeforeAskingToRunThem(t *testing.T) {
+	steps := []struct {
+		name     string
+		role     string
+		groups   string
+		commands []string
+		question string
+	}{
+		{
+			name:     "joining the input group",
+			role:     "share",
+			groups:   notInTheInputGroup,
+			commands: []string{joinTheInputGroup},
+			question: "Run it now? [y/N] ",
+		},
+		{
+			name:     "the udev rule",
+			role:     "receive",
+			groups:   notInTheInputGroup,
+			commands: []string{writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules},
+			question: "Run them now? [y/N] ",
+		},
+		{
+			name:     "enabling the unit for the next login",
+			role:     "share",
+			groups:   notInTheInputGroup,
+			commands: []string{reloadTheUnits, enableTheUnit},
+			question: "Run them now, so that lanhop starts every time you log in? [y/N] ",
+		},
+		{
+			name:     "enabling the unit and starting it at once",
+			role:     "share",
+			groups:   alreadyInInputGroup,
+			commands: []string{reloadTheUnits, enableTheUnit, restartTheUnit},
+			question: "Run them now, so that lanhop starts every time you log in? [y/N] ",
+		},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, step := range steps {
+			t.Run(step.name, func(t *testing.T) {
+				m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+				m.settings["LANHOP_ROLE"] = step.role
+				m.withGroups(step.groups)
+				m.typing("n")
+				output := m.mustRun()
+				expectMention(t, output, shownToTheUser(m.named(step.commands...)...)+step.question)
+				expectSame(t, "system commands", commandsIn(output), []string{})
 			})
 		}
 	})
@@ -1135,7 +1231,7 @@ func TestUninstallRemovesWhatWasInstalledAndKeepsTheConfiguration(t *testing.T) 
 			kept:     linuxPeersFile,
 			commands: []string{disableTheUnit, reloadTheUnits},
 			files:    []string{linuxPeersFile, ruleRecordFile},
-			says:     []string{"The rule stays."},
+			says:     []string{shownToTheUser(deleteTheUdevRule, reloadTheUdevRules) + "Run them now? [y/N] ", "The rule stays."},
 		},
 		{
 			name:     "on Linux, leaving the udev rule when there is nobody to ask",
