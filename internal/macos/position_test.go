@@ -263,6 +263,23 @@ func TestPositionWhereTheCursorAlreadyIsPostsNothing(t *testing.T) {
 	expectPosted(t, screen, MouseEvent{Action: MouseMoved, At: Point{X: 99, Y: 0}, DX: 99, DY: -99})
 }
 
+func TestPositionThatPostsNothingDoesNotExtendTheCursorMemory(t *testing.T) {
+	screen := oneDisplay()
+	replay, clock := newReplayOn(screen)
+	replay.Emit(position(0, 0)...)
+
+	clock.advance(cursorMemory - time.Millisecond)
+	replay.Emit(position(0, 0)...)
+	screen.cursor = Point{X: 10, Y: 10}
+	clock.advance(2 * time.Millisecond)
+	replay.Emit(event.Relative(event.RelX, 1), event.Sync())
+
+	expectPosted(t, screen,
+		MouseEvent{Action: MouseMoved, At: Point{X: 0, Y: 0}, DX: -50, DY: -50},
+		MouseEvent{Action: MouseMoved, At: Point{X: 11, Y: 10}, DX: 1},
+	)
+}
+
 func TestRelativeMovementOfTheSameReportIsAppliedAfterThePosition(t *testing.T) {
 	screen := oneDisplay()
 	replay, _ := newReplayOn(screen)
