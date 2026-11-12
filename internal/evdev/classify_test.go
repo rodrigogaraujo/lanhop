@@ -42,11 +42,13 @@ type absoluteAxisSetup struct {
 var uinputSetAbsoluteAxis = request(directionWrite, 'U', 4, unsafe.Sizeof(absoluteAxisSetup{}))
 
 type deviceSpec struct {
-	name         string
-	id           inputID
-	keys         []uint16
-	relativeAxes []uint16
-	absoluteAxes []uint16
+	name                     string
+	id                       inputID
+	keys                     []uint16
+	keysWithoutKeyEvents     []uint16
+	relativeAxes             []uint16
+	axesWithoutRelativeMoves []uint16
+	absoluteAxes             []uint16
 }
 
 func TestDevicesAreClassifiedByWhatTheyCanDo(t *testing.T) {
@@ -58,6 +60,11 @@ func TestDevicesAreClassifiedByWhatTheyCanDo(t *testing.T) {
 		{
 			name: "a device with the typing keys is a keyboard",
 			spec: deviceSpec{keys: typingKeys},
+			want: Keyboard,
+		},
+		{
+			name: "the letter A and Enter are enough to be a keyboard",
+			spec: deviceSpec{keys: []uint16{event.KeyA, event.KeyEnter}},
 			want: Keyboard,
 		},
 		{
@@ -86,6 +93,21 @@ func TestDevicesAreClassifiedByWhatTheyCanDo(t *testing.T) {
 			want: Other,
 		},
 		{
+			name: "typing keys on a device that reports no key events is not a keyboard",
+			spec: deviceSpec{keysWithoutKeyEvents: typingKeys},
+			want: Other,
+		},
+		{
+			name: "relative X and Y on a device that reports no relative movement is not a mouse",
+			spec: deviceSpec{keys: mouseButtons, axesWithoutRelativeMoves: []uint16{event.RelX, event.RelY}},
+			want: Other,
+		},
+		{
+			name: "relative X and Y with a left button is a mouse even with absolute axes",
+			spec: deviceSpec{keys: mouseButtons, relativeAxes: []uint16{event.RelX, event.RelY}, absoluteAxes: []uint16{absoluteX, absoluteY}},
+			want: Mouse,
+		},
+		{
 			name: "absolute axes with a left button is not a mouse",
 			spec: deviceSpec{keys: []uint16{event.ButtonLeft, buttonTouch}, absoluteAxes: []uint16{absoluteX, absoluteY}},
 			want: Other,
@@ -98,6 +120,11 @@ func TestDevicesAreClassifiedByWhatTheyCanDo(t *testing.T) {
 		{
 			name: "relative X without Y is not a mouse",
 			spec: deviceSpec{keys: mouseButtons, relativeAxes: []uint16{event.RelX}},
+			want: Other,
+		},
+		{
+			name: "relative Y without X is not a mouse",
+			spec: deviceSpec{keys: mouseButtons, relativeAxes: []uint16{event.RelY}},
 			want: Other,
 		},
 		{
@@ -227,6 +254,12 @@ func (s deviceSpec) register(file *os.File) error {
 	if err := enableCodes(file, event.TypeRelative, uinputSetRel, s.relativeAxes); err != nil {
 		return err
 	}
+	if err := setCodes(file, uinputSetKey, s.keysWithoutKeyEvents); err != nil {
+		return err
+	}
+	if err := setCodes(file, uinputSetRel, s.axesWithoutRelativeMoves); err != nil {
+		return err
+	}
 	if err := enableAbsoluteAxes(file, s.absoluteAxes); err != nil {
 		return err
 	}
@@ -245,8 +278,12 @@ func enableCodes(file *os.File, eventType uint16, enable uintptr, codes []uint16
 	if err := ioctlValue(file, uinputSetType, uintptr(eventType)); err != nil {
 		return err
 	}
+	return setCodes(file, enable, codes)
+}
+
+func setCodes(file *os.File, set uintptr, codes []uint16) error {
 	for _, code := range codes {
-		if err := ioctlValue(file, enable, uintptr(code)); err != nil {
+		if err := ioctlValue(file, set, uintptr(code)); err != nil {
 			return err
 		}
 	}
