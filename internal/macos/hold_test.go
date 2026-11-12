@@ -16,6 +16,9 @@ type fakePointer struct {
 	cursor   Point
 	displays []Rect
 	putBack  int
+	hidden   bool
+	hides    int
+	shows    int
 }
 
 func (p *fakePointer) Cursor() Point {
@@ -39,6 +42,26 @@ func (p *fakePointer) PutCursorBack(at Point) {
 	defer p.mutex.Unlock()
 	p.cursor = at
 	p.putBack++
+}
+
+func (p *fakePointer) HideCursor() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.hidden = true
+	p.hides++
+}
+
+func (p *fakePointer) ShowCursor() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.hidden = false
+	p.shows++
+}
+
+func (p *fakePointer) visibility() (hidden bool, hides, shows int) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	return p.hidden, p.hides, p.shows
 }
 
 func (p *fakePointer) timesPutBack() int {
@@ -258,5 +281,33 @@ func TestDigitOfTheHotkeyThatLanhopPostedPassesOnAndKeepsNothingAfterIt(t *testi
 	}
 	if keptReleaseByTheUser {
 		t.Error("the release of a digit by the user was kept from this Mac after lanhop posted that digit with the hotkey")
+	}
+}
+
+func TestCursorIsHiddenWhileTheInputIsTakenAndShownWhenItIsGivenBack(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+
+	if hidden, hides, shows := mac.pointer.visibility(); hidden || hides != 0 || shows != 0 {
+		t.Fatalf("before the input is taken: hidden %v, hides %d, shows %d, want a visible cursor nobody touched", hidden, hides, shows)
+	}
+	mac.hold.take()
+	mac.hold.take()
+	if hidden, hides, _ := mac.pointer.visibility(); !hidden || hides != 1 {
+		t.Errorf("with the input taken twice: hidden %v after %d hides, want it hidden once", hidden, hides)
+	}
+	mac.hold.letGo()
+	mac.hold.letGo()
+	if hidden, _, shows := mac.pointer.visibility(); hidden || shows != 1 {
+		t.Errorf("with the input given back twice: hidden %v after %d shows, want it shown once", hidden, shows)
+	}
+}
+
+func TestGivingBackInputThatWasNotTakenDoesNotShowTheCursor(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+
+	mac.hold.letGo()
+
+	if _, hides, shows := mac.pointer.visibility(); hides != 0 || shows != 0 {
+		t.Errorf("hides %d, shows %d, want the cursor left alone", hides, shows)
 	}
 }
