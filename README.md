@@ -40,6 +40,13 @@ Design decisions are recorded in [docs/adr](docs/adr). Features are specified in
 - [ ] Clipboard sharing
 - [ ] Packages: systemd unit, udev rule, launch agent, Homebrew formula
 
+## Permissions
+
+lanhop reads and creates keyboard and mouse input, and every system asks you to allow that first:
+
+- **macOS:** the Accessibility permission. See [Setting up lanhop on macOS](docs/setup-macos.md).
+- **Linux:** access to the input devices and to `uinput`. See [Setting up lanhop on Linux](docs/setup-linux.md).
+
 ## Building
 
 Requires Go 1.23 or newer.
