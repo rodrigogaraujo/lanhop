@@ -18,6 +18,7 @@ Usage:
   lanhop receive         on the other machine: let the machine with the keyboard control this one
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
+  lanhop layout          show where the layout file is and how lanhop understands it
   lanhop devices         list the input devices this machine can read
   lanhop version         print the version
 
@@ -31,8 +32,13 @@ Option of share:
 Option of receive:
   --from NAME         receive from the trusted machine NAME, when more than one has an address
 
-lanhop keeps the key of this machine and the list of trusted machines in its
-configuration directory. Set LANHOP_CONFIG_DIR to use another directory.
+The layout file draws the desk, so that pushing the cursor through an edge of a
+screen reaches the machine on that side. Each line is a row of machines, from
+left to right, by the names "lanhop peers" lists, with a dot for an empty place.
+
+lanhop keeps the key of this machine, the list of trusted machines and the
+layout in its configuration directory. Set LANHOP_CONFIG_DIR to use another
+directory.
 `
 
 type usageError string
@@ -81,6 +87,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return listPeers(stdout)
 	case "forget":
 		return forget(args, stdout)
+	case "layout":
+		return showLayout(args, stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil

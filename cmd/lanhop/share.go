@@ -13,8 +13,10 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/pairing"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
@@ -99,7 +101,21 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	}
 	defer listener.Close()
 
-	machine := sharer.New(capture, trusted, detector)
+	own := pairing.OwnName()
+	desk := &deskOnDisk{
+		path:      filepath.Join(directory, layoutFileName),
+		peersPath: peersPath,
+		own:       own,
+		known:     knownOnThisDesk(own, trusted),
+		stdout:    stdout,
+	}
+	machine := sharer.New(capture, trusted, detector, sharer.EdgeSwitching{
+		Name:   own,
+		Layout: desk.Layout,
+		Speed:  sharer.DefaultSpeed(),
+		Watch:  edge.DefaultSettings(),
+	})
+	desk.ownEdges = machine.OwnScreenHasEdges()
 	go func() {
 		for {
 			receiver, err := listener.Accept()
@@ -110,5 +126,16 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		}
 	}()
 	fmt.Fprintf(stdout, sharing, listener.Addr().(*net.TCPAddr).Port, hotkey.DefaultModifiers)
+	desk.start()
+	following, stopFollowing := context.WithCancel(done)
+	stoppedFollowing := make(chan struct{})
+	go func() {
+		defer close(stoppedFollowing)
+		desk.follow(following, layoutCheckInterval)
+	}()
+	defer func() {
+		stopFollowing()
+		<-stoppedFollowing
+	}()
 	return machine.Run(done)
 }

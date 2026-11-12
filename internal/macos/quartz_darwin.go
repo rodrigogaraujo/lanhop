@@ -101,6 +101,10 @@ func (Quartz) Cursor() Point {
 	return Point{X: float64(x), Y: float64(y)}
 }
 
+func (Quartz) PlaceCursor(at Point) {
+	C.lanhopPlaceCursor(C.double(at.X), C.double(at.Y))
+}
+
 func (Quartz) Displays() []Rect {
 	var raw [maxDisplays * 4]C.double
 	count := int(C.lanhopDisplays(&raw[0], maxDisplays))

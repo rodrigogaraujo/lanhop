@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/keymap"
 )
@@ -83,6 +84,14 @@ func (c *Capture) GiveBack() error {
 	c.taken.Store(false)
 	followMouse(true)
 	return nil
+}
+
+func (c *Capture) Cursor() (x, y int, desktop edge.Bounds, known bool) {
+	return cursorOn(Quartz{})
+}
+
+func (c *Capture) PlaceCursor(x, y int) {
+	placeCursorOn(Quartz{}, x, y)
 }
 
 func (c *Capture) giveUp() {

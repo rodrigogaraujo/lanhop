@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 
@@ -73,11 +72,10 @@ func pair(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	hostname, _ := os.Hostname()
 	config := pairing.Config{
 		Identity: local,
 		Store:    trusted,
-		Name:     pairing.NameFrom(hostname),
+		Name:     pairing.OwnName(),
 		As:       *as,
 		Asker:    terminal{stdin: stdin, stdout: stdout},
 	}

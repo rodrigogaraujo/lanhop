@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -585,5 +586,21 @@ func TestProposedNameIsTheHostnameReducedToWhatTrustAccepts(t *testing.T) {
 		if !trust.ValidName(got) {
 			t.Errorf("NameFrom(%q) = %q, which trust refuses", hostname, got)
 		}
+	}
+}
+
+func TestOwnNameIsTheNameProposedFromTheHostnameOfThisMachine(t *testing.T) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Skipf("this machine does not tell its hostname: %v", err)
+	}
+
+	got := OwnName()
+
+	if want := NameFrom(hostname); got != want {
+		t.Errorf("OwnName() = %q, want %q, the name proposed from the hostname %q", got, want, hostname)
+	}
+	if !trust.ValidName(got) {
+		t.Errorf("OwnName() = %q, which trust refuses", got)
 	}
 }
