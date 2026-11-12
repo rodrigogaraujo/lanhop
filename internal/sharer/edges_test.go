@@ -1,6 +1,7 @@
 package sharer
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -169,7 +170,7 @@ func TestPushingThroughAnEdgeGivesFocusToTheNeighbourOnThatSideAndPushingBackRet
 		gets(desk, typing...),
 		gets(desk, times(reportsToCross, positioned(0, 16384)...)...),
 		gets(desk, event.Leave()),
-		then(cursorPlacedAt(1000, 125), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(1000, 125)),
 	))
 	s.expectInputAtThisMachine()
 }
@@ -208,7 +209,7 @@ func TestCursorArrivesOnTheOppositeEdgeAtTheSameProportionAlongIt(t *testing.T) 
 				gets(desk, enteredAt(test.arrivesAtX, test.arrivesAtY)...),
 				gets(desk, times(reportsToCross, positioned(test.arrivesAtX, test.arrivesAtY)...)...),
 				gets(desk, event.Leave()),
-				then(cursorPlacedAt(test.comesBackToX, test.comesBackToY), gaveInputBack),
+				then(gaveInputBack, cursorPlacedAt(test.comesBackToX, test.comesBackToY)),
 			))
 		})
 	}
@@ -224,7 +225,7 @@ func TestFiftyCrossingsBackAndForthArriveAtTheSamePlaceEveryTime(t *testing.T) {
 		gets(desk, enteredAt(0, 43646)...),
 		gets(desk, times(reportsToCross, positioned(0, 43646)...)...),
 		gets(desk, event.Leave()),
-		then(cursorPlacedAt(1000, 333), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(1000, 333)),
 	)
 	var want []string
 
@@ -347,7 +348,7 @@ func TestPushWithAButtonHeldDoesNotCross(t *testing.T) {
 			gets(desk, dropping...),
 			gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
 			gets(desk, event.Leave()),
-			then(cursorPlacedAt(0, 250), gaveInputBack),
+			then(gaveInputBack, cursorPlacedAt(0, 250)),
 		))
 	})
 }
@@ -386,7 +387,7 @@ func TestCrossingWithAKeyHeldOnAReceiverReleasesItThereBeforeLeaving(t *testing.
 		gets(desk, holding...),
 		gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
 		gets(desk, release(keyLeftShift), event.Sync(), event.Leave()),
-		then(cursorPlacedAt(0, 250), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(0, 250)),
 	))
 }
 
@@ -625,7 +626,7 @@ func TestLayoutThatAppearsWhileAReceiverHasFocusAppliesFromItsNextVisit(t *testi
 		gets(desk, enteredAt(centre, centre)...),
 		gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
 		gets(desk, event.Leave()),
-		then(cursorPlacedAt(0, 250), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(0, 250)),
 	))
 }
 
@@ -750,6 +751,28 @@ func TestReceiverThatCannotBeEnteredThroughAnEdgeIsLostAndTheInputIsGivenBack(t 
 
 	s.expectJournal(then(tookInput, gaveInputBack, closed(desk)))
 	s.expectInputAtThisMachine()
+}
+
+func TestSharerStopsWithoutPlacingTheCursorWhenTheInputCannotBeGivenBackOnTheWayBackThroughAnEdge(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk", desk)
+	s.connect(desk)
+	s.screen.cursorIsAt(1000, 125)
+	s.pushes(1, 0, reportsToCross)
+	s.capture.giveBackFails.Store(true)
+
+	s.pushes(-1, 0, reportsToCross)
+	result := s.outcome()
+
+	if !errors.Is(result.err, errGiveBackFailed) {
+		t.Errorf("the sharer stopped with %+v, want %v", result, errGiveBackFailed)
+	}
+	s.expectJournal(story(
+		then(tookInput),
+		gets(desk, enteredAt(0, 16384)...),
+		gets(desk, times(reportsToCross, positioned(0, 16384)...)...),
+		gets(desk, event.Leave()),
+		then(gaveInputBack, gaveInputBack, closed(desk)),
+	))
 }
 
 func TestReceiverThatCannotBeSentAPositionIsLostAndTheSharerKeepsWorking(t *testing.T) {

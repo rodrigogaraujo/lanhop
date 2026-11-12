@@ -130,8 +130,8 @@ var deskEdges = []deskEdge{
 	{Bottom, 2000, func(along int) motion { return motion{x: along, y: 1000, dy: 5} }},
 }
 
-func TestDefaultsArePushFor150msWithA50msGapAndA32UnitCorner(t *testing.T) {
-	want := Settings{PushTime: 150 * time.Millisecond, PushGap: 50 * time.Millisecond, CornerSize: 32}
+func TestDefaultsArePushFor150msWithA50msGapA700msPauseAndA32UnitCorner(t *testing.T) {
+	want := Settings{PushTime: 150 * time.Millisecond, PushGap: 50 * time.Millisecond, PushPause: 700 * time.Millisecond, CornerSize: 32}
 	if got := DefaultSettings(); got != want {
 		t.Errorf("DefaultSettings = %+v, want %+v", got, want)
 	}
@@ -293,12 +293,105 @@ func TestSequencesWithTheDefaultSettings(t *testing.T) {
 			want: []crossed{{270, Right, 0.5}},
 		},
 		{
-			name: "a pause longer than the gap starts the count over",
+			name: "a short pause does not count as pushing, and what was pushed before it is kept",
 			steps: script(
 				repeat(pushRight, 0, 100),
 				repeat(pushRight, 160, 310),
 			),
-			want: []crossed{{310, Right, 0.5}},
+			want: []crossed{{210, Right, 0.5}},
+		},
+		{
+			name: "two short pushes with the finger lifted in between add up",
+			steps: script(
+				repeat(pushRight, 0, 80),
+				repeat(pushRight, 500, 600),
+			),
+			want: []crossed{{570, Right, 0.5}},
+		},
+		{
+			name: "a pause as long as the longest allowed keeps what was pushed",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 800, 900),
+			),
+			want: []crossed{{850, Right, 0.5}},
+		},
+		{
+			name: "a pause longer than the longest allowed starts the count over",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 810, 1000),
+			),
+			want: []crossed{{960, Right, 0.5}},
+		},
+		{
+			name: "one quick touch never crosses, however long ago it was",
+			steps: script(
+				repeat(pushRight, 0, 60),
+				move(3000, pushRight),
+			),
+			want: nil,
+		},
+		{
+			name:  "single nudges, each within the longest pause of the one before, never add up",
+			steps: repeatEvery(pushRight, 100, 0, 3000),
+			want:  none,
+		},
+		{
+			name: "touches of the edge with the cursor leaving it in between never add up",
+			steps: script(
+				repeat(pushRight, 0, 80),
+				move(200, motion{x: 1990, y: 500, dx: -10}),
+				repeat(pushRight, 400, 480),
+				move(600, motion{x: 1990, y: 500, dx: -10}),
+				repeat(pushRight, 800, 880),
+			),
+			want: none,
+		},
+		{
+			name: "moving away while still at the edge between two short pushes starts the count over",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				move(300, motion{x: 2000, y: 500, dx: -1}),
+				repeat(pushRight, 500, 600),
+			),
+			want: none,
+		},
+		{
+			name: "a click between two short pushes starts the count over",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				press(300, buttonLeft),
+				release(350, buttonLeft),
+				repeat(pushRight, 500, 600),
+			),
+			want: none,
+		},
+		{
+			name: "a push that passes through a corner between two short pushes starts the count over",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				move(300, motion{x: 2000, y: 990, dx: 5}),
+				repeat(pushRight, 500, 600),
+			),
+			want: none,
+		},
+		{
+			name: "a slide along the edge into a corner between two short pushes starts the count over",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				move(300, motion{x: 2000, y: 990, dy: 5}),
+				repeat(pushRight, 500, 600),
+			),
+			want: none,
+		},
+		{
+			name: "short pushes against two edges do not add up to a crossing through either",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(motion{x: 1000, y: 1000, dy: 5}, 300, 400),
+			),
+			want: none,
 		},
 		{
 			name: "a pause as long as the gap keeps the count",
@@ -571,6 +664,42 @@ func TestSequencesWithCustomSettings(t *testing.T) {
 				move(250, pushRight),
 			),
 			want: []crossed{{250, Right, 0.5}},
+		},
+		{
+			name:     "with no pause set, a pause longer than the gap starts the count over",
+			settings: Settings{PushTime: 150 * ms, PushGap: 50 * ms, CornerSize: 32},
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 160, 310),
+			),
+			want: []crossed{{310, Right, 0.5}},
+		},
+		{
+			name:     "a pause set shorter than the gap changes nothing",
+			settings: Settings{PushTime: 150 * ms, PushGap: 50 * ms, PushPause: 20 * ms, CornerSize: 32},
+			steps: script(
+				repeat(pushRight, 0, 100),
+				move(150, pushRight),
+			),
+			want: []crossed{{150, Right, 0.5}},
+		},
+		{
+			name:     "a longer pause keeps what was pushed through a longer rest",
+			settings: Settings{PushTime: 150 * ms, PushGap: 50 * ms, PushPause: 2000 * ms, CornerSize: 32},
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 2100, 2200),
+			),
+			want: []crossed{{2150, Right, 0.5}},
+		},
+		{
+			name:     "a shorter pause starts the count over after a shorter rest",
+			settings: Settings{PushTime: 150 * ms, PushGap: 50 * ms, PushPause: 200 * ms, CornerSize: 32},
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 310, 500),
+			),
+			want: []crossed{{460, Right, 0.5}},
 		},
 		{
 			name:     "a shorter gap starts the count over between sparse movements",

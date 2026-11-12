@@ -38,6 +38,7 @@ func (b Bounds) empty() bool {
 type Settings struct {
 	PushTime   time.Duration
 	PushGap    time.Duration
+	PushPause  time.Duration
 	CornerSize int
 }
 
@@ -45,6 +46,7 @@ func DefaultSettings() Settings {
 	return Settings{
 		PushTime:   150 * time.Millisecond,
 		PushGap:    50 * time.Millisecond,
+		PushPause:  700 * time.Millisecond,
 		CornerSize: 32,
 	}
 }
@@ -55,8 +57,8 @@ type Crossing struct {
 }
 
 type push struct {
-	started time.Time
-	latest  time.Time
+	pushedFor time.Duration
+	latest    time.Time
 }
 
 type Watcher struct {
@@ -114,12 +116,15 @@ func (w *Watcher) Move(now time.Time, x, y, dx, dy int) (Crossing, bool) {
 
 func (w *Watcher) pushedLongEnough(side Side, now time.Time) bool {
 	p, pushing := w.pushes[side]
-	if !pushing || now.Sub(p.latest) > w.settings.PushGap {
-		p.started = now
+	switch pause := now.Sub(p.latest); {
+	case !pushing || pause > max(w.settings.PushGap, w.settings.PushPause):
+		p = push{}
+	case pause <= w.settings.PushGap:
+		p.pushedFor += pause
 	}
 	p.latest = now
 	w.pushes[side] = p
-	return now.Sub(p.started) >= w.settings.PushTime
+	return p.pushedFor >= w.settings.PushTime
 }
 
 type contact struct {
