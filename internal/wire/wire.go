@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/rodrigogaraujo/vaivem/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
 
 const FrameSize = 8

@@ -7,7 +7,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/rodrigogaraujo/vaivem/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
 
 func TestWriteThenReadReturnsTheSameEvents(t *testing.T) {

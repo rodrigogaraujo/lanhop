@@ -7,7 +7,7 @@ import (
 	"os"
 	"unsafe"
 
-	"github.com/rodrigogaraujo/vaivem/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
 
 const (
@@ -15,7 +15,7 @@ const (
 	uinputNameLength = 80
 	sysNameLength    = 64
 	busVirtual       = 0x06
-	virtualVendor    = 0x7661
+	virtualVendor    = 0x6c68
 	virtualProduct   = 0x0001
 )
 

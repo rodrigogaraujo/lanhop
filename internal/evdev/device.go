@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"unsafe"
 
-	"github.com/rodrigogaraujo/vaivem/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
 
 const (

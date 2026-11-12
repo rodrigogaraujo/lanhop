@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rodrigogaraujo/vaivem/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
 
-const virtualDeviceName = "vaivem test device"
+const virtualDeviceName = "lanhop test device"
 
 func TestEventsEmittedByTheVirtualDeviceAreReadBack(t *testing.T) {
 	virtual := createVirtualDevice(t)

@@ -11,7 +11,7 @@ func TestVersionCommandPrintsTheVersion(t *testing.T) {
 	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
 	}
-	if got, want := stdout.String(), "vaivem "+version+"\n"; got != want {
+	if got, want := stdout.String(), "lanhop "+version+"\n"; got != want {
 		t.Errorf("stdout = %q, want %q", got, want)
 	}
 }

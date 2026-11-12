@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/rodrigogaraujo/vaivem/internal/evdev"
+	"github.com/rodrigogaraujo/lanhop/internal/evdev"
 )
 
 func listDevices(out io.Writer) error {

@@ -1,8 +1,6 @@
-# vaivem
+# lanhop
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
-
-*Vaivém* is Portuguese for "back and forth", which is what your cursor does.
 
 > **Status: early development.** Nothing here is usable day to day yet. See [Roadmap](#roadmap) for what works.
 
@@ -10,7 +8,7 @@ Share one keyboard and mouse across the computers on your desk, over the local n
 
 [Deskflow](https://github.com/deskflow/deskflow) and [lan-mouse](https://github.com/feschber/lan-mouse) already solve this, and they are good. If you need something that works today, use one of them.
 
-vaivem explores a narrower design:
+lanhop explores a narrower design:
 
 - **Kernel-level input on Linux.** It reads from `evdev` and writes to `uinput`, so the same code works on X11, on any Wayland compositor and on a text console. It does not depend on what the desktop environment exposes.
 - **One static binary, no runtime dependencies.** The Linux build uses only the Go standard library.
@@ -47,7 +45,7 @@ Design decisions are recorded in [docs/adr](docs/adr).
 Requires Go 1.23 or newer.
 
 ```sh
-go build ./cmd/vaivem
+go build ./cmd/lanhop
 go test ./...
 ```
 

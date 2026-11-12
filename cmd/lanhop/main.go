@@ -8,11 +8,11 @@ import (
 
 var version = "dev"
 
-const usage = `vaivem shares one keyboard and mouse across computers on the same network.
+const usage = `lanhop shares one keyboard and mouse across computers on the same network.
 
 Usage:
-  vaivem version    print the version
-  vaivem devices    list the input devices this machine can read
+  lanhop version    print the version
+  lanhop devices    list the input devices this machine can read
 `
 
 func main() {
@@ -26,11 +26,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, "vaivem", version)
+		fmt.Fprintln(stdout, "lanhop", version)
 		return 0
 	case "devices":
 		if err := listDevices(stdout); err != nil {
-			fmt.Fprintln(stderr, "vaivem:", err)
+			fmt.Fprintln(stderr, "lanhop:", err)
 			return 1
 		}
 		return 0
@@ -38,6 +38,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
-	fmt.Fprintf(stderr, "vaivem: unknown command %q\n\n%s", args[0], usage)
+	fmt.Fprintf(stderr, "lanhop: unknown command %q\n\n%s", args[0], usage)
 	return 2
 }

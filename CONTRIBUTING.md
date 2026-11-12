@@ -1,4 +1,4 @@
-# Contributing to vaivem
+# Contributing to lanhop
 
 Thanks for your interest. This document says how to get a change merged.
 
@@ -13,8 +13,8 @@ Thanks for your interest. This document says how to get a change merged.
 You need Go 1.23 or newer. There are no other dependencies.
 
 ```sh
-git clone https://github.com/rodrigogaraujo/vaivem
-cd vaivem
+git clone https://github.com/rodrigogaraujo/lanhop
+cd lanhop
 go test ./...
 ```
 
@@ -50,7 +50,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/): `feat: ...`, `
 
 ## Code you did not write
 
-- **Do not copy code from Deskflow, Synergy, Barrier, Input Leap or lan-mouse.** They are GPL projects and vaivem is MIT. You may read their documentation and describe their behaviour. Their source must not end up here.
+- **Do not copy code from Deskflow, Synergy, Barrier, Input Leap or lan-mouse.** They are GPL projects and lanhop is MIT. You may read their documentation and describe their behaviour. Their source must not end up here.
 - You are responsible for every line you submit, whatever tool helped you write it. Be ready to explain any of it in review.
 
 ## Licensing

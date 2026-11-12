@@ -18,8 +18,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: vaivem version
-      description: Output of `vaivem version`, or the commit you built.
+      label: lanhop version
+      description: Output of `lanhop version`, or the commit you built.
     validations:
       required: true
   - type: input
