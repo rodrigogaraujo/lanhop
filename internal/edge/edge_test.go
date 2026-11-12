@@ -558,6 +558,12 @@ func TestSequencesWithCustomSettings(t *testing.T) {
 			want: []crossed{{150, Bottom, 1}},
 		},
 		{
+			name:     "with a corner size of zero one push into both edges of the corner crosses once, through the right edge",
+			settings: noCorner,
+			steps:    repeat(motion{x: 2000, y: 1000, dx: 5, dy: 5}, 0, 300),
+			want:     []crossed{{150, Right, 1}},
+		},
+		{
 			name:     "a longer gap keeps the count through a longer pause",
 			settings: Settings{PushTime: 150 * ms, PushGap: 200 * ms, CornerSize: 32},
 			steps: script(
