@@ -110,6 +110,8 @@ lanhop share
 
 `lanhop share` prints the hotkeys. Control+Option+2 gives the keyboard and mouse to the first machine that `lanhop peers` lists, and Control+Option+1 brings them back.
 
+While another machine has focus, lanhop hides the cursor of the Mac, and shows it again when focus comes back. To hide it, lanhop calls two functions of macOS that Apple does not document: [ADR 5](adr/0005-private-macos-functions-to-hide-the-cursor.md) says why. If a version of macOS stops honouring them, the cursor stays visible and still, and everything else works as before.
+
 `lanhop devices` shows whether the Mac allows lanhop to read and to control the keyboard and mouse.
 
 ### Switching through the screen edges
@@ -122,7 +124,7 @@ With a [layout file](../README.md#layout) in `~/Library/Application Support/lanh
 
 ### If the keyboard and mouse stop answering
 
-While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 10 seconds, and when its permission is taken away.
+While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 10 seconds, and when its permission is taken away. Whenever it gives them back, it also shows the cursor again.
 
 If they are still held:
 
