@@ -6,6 +6,9 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/rodrigogaraujo/lanhop/internal/macos"
+	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 )
 
 func TestShareWithoutThePermissionSaysHowToGrantIt(t *testing.T) {
@@ -15,6 +18,14 @@ func TestShareWithoutThePermissionSaysHowToGrantIt(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "System Settings > Privacy & Security > Accessibility") || !strings.Contains(err.Error(), "docs/setup-macos.md") {
 		t.Errorf("error = %v, want it to name the System Settings pane and the setup guide", err)
+	}
+}
+
+func TestCaptureOfAMacTellsAndPlacesItsCursorSoTheEdgesOfItsOwnScreenCanCross(t *testing.T) {
+	var capture sharer.Capture = &macos.Capture{}
+
+	if _, tellsTheCursor := capture.(sharer.CursorCapture); !tellsTheCursor {
+		t.Error("the capture of a Mac lacks the cursor ability the sharer looks for, so the edges of its own screen would never cross")
 	}
 }
 
