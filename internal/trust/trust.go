@@ -14,11 +14,16 @@ import (
 )
 
 const (
+	MaxNameLength = 32
 	directoryMode = 0o700
 	fileMode      = 0o600
 )
 
-var validName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+var validName = regexp.MustCompile(fmt.Sprintf(`^[A-Za-z0-9_-]{1,%d}$`, MaxNameLength))
+
+func ValidName(name string) bool {
+	return validName.MatchString(name)
+}
 
 type Peer struct {
 	Name        string               `json:"name"`
@@ -71,6 +76,9 @@ func (s *Store) Find(fingerprint identity.Fingerprint) (Peer, bool) {
 }
 
 func (s *Store) Add(peer Peer) error {
+	if err := s.reload(); err != nil {
+		return err
+	}
 	if err := s.check(peer); err != nil {
 		return err
 	}
@@ -78,6 +86,9 @@ func (s *Store) Add(peer Peer) error {
 }
 
 func (s *Store) Remove(name string) error {
+	if err := s.reload(); err != nil {
+		return err
+	}
 	remaining := slices.DeleteFunc(s.Peers(), func(peer Peer) bool { return peer.Name == name })
 	if len(remaining) == len(s.peers) {
 		return fmt.Errorf("trust: no machine is named %q", name)
@@ -85,9 +96,18 @@ func (s *Store) Remove(name string) error {
 	return s.replace(remaining)
 }
 
+func (s *Store) reload() error {
+	saved, err := Open(s.path)
+	if err != nil {
+		return err
+	}
+	s.peers = saved.peers
+	return nil
+}
+
 func (s *Store) check(candidate Peer) error {
-	if !validName.MatchString(candidate.Name) {
-		return fmt.Errorf("trust: name %q must have 1 to 32 letters, digits, hyphens or underscores", candidate.Name)
+	if !ValidName(candidate.Name) {
+		return fmt.Errorf("trust: name %q must have 1 to %d letters, digits, hyphens or underscores", candidate.Name, MaxNameLength)
 	}
 	for _, peer := range s.peers {
 		if peer.Name == candidate.Name {

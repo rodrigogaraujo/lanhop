@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,33 +12,66 @@ var version = "dev"
 const usage = `lanhop shares one keyboard and mouse across computers on the same network.
 
 Usage:
-  lanhop version    print the version
-  lanhop devices    list the input devices this machine can read
+  lanhop pair            on the machine with the keyboard: wait for another machine and pair with it
+  lanhop pair ADDRESS    on the other machine: pair with the machine that waits at ADDRESS
+  lanhop peers           list the machines this one trusts
+  lanhop forget NAME     stop trusting a machine
+  lanhop devices         list the input devices this machine can read
+  lanhop version         print the version
+
+Options of pair, before ADDRESS:
+  --as NAME           call the other machine NAME here, when the name it proposes is taken
+  --listen ADDRESS    wait on ADDRESS instead of port 24746 of every network interface
+
+lanhop keeps the key of this machine and the list of trusted machines in its
+configuration directory. Set LANHOP_CONFIG_DIR to use another directory.
 `
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+type usageError string
+
+func (e usageError) Error() string {
+	return string(e)
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
-	switch args[0] {
+	var misuse usageError
+	err := dispatch(args[0], args[1:], stdin, stdout)
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &misuse):
+		fmt.Fprintf(stderr, "lanhop: %s\n\n%s", misuse, usage)
+		return 2
+	default:
+		fmt.Fprintln(stderr, "lanhop:", err)
+		return 1
+	}
+}
+
+func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) error {
+	switch command {
 	case "version":
 		fmt.Fprintln(stdout, "lanhop", version)
-		return 0
+		return nil
 	case "devices":
-		if err := listDevices(stdout); err != nil {
-			fmt.Fprintln(stderr, "lanhop:", err)
-			return 1
-		}
-		return 0
+		return listDevices(stdout)
+	case "pair":
+		return pair(args, stdin, stdout)
+	case "peers":
+		return listPeers(stdout)
+	case "forget":
+		return forget(args, stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
-		return 0
+		return nil
 	}
-	fmt.Fprintf(stderr, "lanhop: unknown command %q\n\n%s", args[0], usage)
-	return 2
+	return usageError(fmt.Sprintf("unknown command %q", command))
 }
