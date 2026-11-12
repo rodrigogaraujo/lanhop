@@ -9,12 +9,15 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 )
 
-const virtualDeviceName = "lanhop"
+const (
+	virtualDeviceName  = "lanhop"
+	virtualPointerName = "lanhop pointer"
+)
 
 func openReplay() (receiver.Replay, error) {
-	device, err := evdev.CreateVirtualDevice(virtualDeviceName)
+	replay, err := evdev.NewReplay(virtualDeviceName, virtualPointerName)
 	if err != nil {
-		return nil, fmt.Errorf("cannot create the virtual keyboard and mouse: %w", err)
+		return nil, fmt.Errorf("cannot create the virtual keyboard, mouse and pointer: %w", err)
 	}
-	return device, nil
+	return replay, nil
 }

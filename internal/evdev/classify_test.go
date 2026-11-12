@@ -14,32 +14,18 @@ import (
 )
 
 const (
-	typeAbsolute uint16 = 0x03
-	absoluteX    uint16 = 0x00
-	absoluteY    uint16 = 0x01
-	keyPower     uint16 = 116
-	buttonTouch  uint16 = 0x14a
-	busUSB       uint16 = 0x03
+	keyPower    uint16 = 116
+	buttonTouch uint16 = 0x14a
+	busUSB      uint16 = 0x03
 )
 
 var (
-	someUSBDevice = inputID{bus: busUSB, vendor: 0x1234, product: 0x5678, version: 1}
-	lanhopsDevice = inputID{bus: busVirtual, vendor: virtualVendor, product: virtualProduct, version: 1}
-	typingKeys    = codesBetween(event.KeyFirst, event.KeyLast)
-	mouseButtons  = []uint16{event.ButtonLeft, event.ButtonRight, event.ButtonMiddle}
+	someUSBDevice  = inputID{bus: busUSB, vendor: 0x1234, product: 0x5678, version: 1}
+	lanhopsDevice  = inputID{bus: busVirtual, vendor: virtualVendor, product: virtualProduct, version: 1}
+	lanhopsPointer = inputID{bus: busVirtual, vendor: virtualVendor, product: pointerProduct, version: 1}
+	typingKeys     = codesBetween(event.KeyFirst, event.KeyLast)
+	mouseButtons   = []uint16{event.ButtonLeft, event.ButtonRight, event.ButtonMiddle}
 )
-
-type absoluteAxisSetup struct {
-	axis       uint16
-	value      int32
-	minimum    int32
-	maximum    int32
-	fuzz       int32
-	flat       int32
-	resolution int32
-}
-
-var uinputSetAbsoluteAxis = request(directionWrite, 'U', 4, unsafe.Sizeof(absoluteAxisSetup{}))
 
 type deviceSpec struct {
 	name                     string
@@ -104,12 +90,12 @@ func TestDevicesAreClassifiedByWhatTheyCanDo(t *testing.T) {
 		},
 		{
 			name: "relative X and Y with a left button is a mouse even with absolute axes",
-			spec: deviceSpec{keys: mouseButtons, relativeAxes: []uint16{event.RelX, event.RelY}, absoluteAxes: []uint16{absoluteX, absoluteY}},
+			spec: deviceSpec{keys: mouseButtons, relativeAxes: []uint16{event.RelX, event.RelY}, absoluteAxes: []uint16{event.AbsX, event.AbsY}},
 			want: Mouse,
 		},
 		{
 			name: "absolute axes with a left button is not a mouse",
-			spec: deviceSpec{keys: []uint16{event.ButtonLeft, buttonTouch}, absoluteAxes: []uint16{absoluteX, absoluteY}},
+			spec: deviceSpec{keys: []uint16{event.ButtonLeft, buttonTouch}, absoluteAxes: []uint16{event.AbsX, event.AbsY}},
 			want: Other,
 		},
 		{
@@ -157,10 +143,11 @@ func TestOnlyLanhopsBusVendorAndProductMarkADeviceAsItsOwn(t *testing.T) {
 		want bool
 	}{
 		{"lanhop's bus, vendor and product", lanhopsDevice, true},
+		{"lanhop's bus and vendor with the product of its pointer", lanhopsPointer, true},
 		{"another version of lanhop's device", inputID{bus: busVirtual, vendor: virtualVendor, product: virtualProduct, version: 7}, true},
 		{"another bus", inputID{bus: busUSB, vendor: virtualVendor, product: virtualProduct, version: 1}, false},
 		{"another vendor", inputID{bus: busVirtual, vendor: 0x1234, product: virtualProduct, version: 1}, false},
-		{"another product", inputID{bus: busVirtual, vendor: virtualVendor, product: 0x0002, version: 1}, false},
+		{"another product", inputID{bus: busVirtual, vendor: virtualVendor, product: 0x0003, version: 1}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -294,11 +281,11 @@ func enableAbsoluteAxes(file *os.File, axes []uint16) error {
 	if len(axes) == 0 {
 		return nil
 	}
-	if err := ioctlValue(file, uinputSetType, uintptr(typeAbsolute)); err != nil {
+	if err := ioctlValue(file, uinputSetType, uintptr(event.TypeAbsolute)); err != nil {
 		return err
 	}
 	for _, axis := range axes {
-		setup := absoluteAxisSetup{axis: axis, maximum: 1023}
+		setup := absoluteAxisSetup{axis: axis, info: absoluteAxisInfo{maximum: 1023}}
 		if err := ioctlPointer(file, uinputSetAbsoluteAxis, unsafe.Pointer(&setup)); err != nil {
 			return err
 		}
