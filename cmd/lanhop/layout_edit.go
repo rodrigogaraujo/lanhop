@@ -64,6 +64,7 @@ func launchBrowser(done context.Context, address string) error {
 }
 
 func launch(done context.Context, command *exec.Cmd, patience time.Duration) error {
+	inAProcessGroupOfItsOwn(command)
 	if err := command.Start(); err != nil {
 		return err
 	}
