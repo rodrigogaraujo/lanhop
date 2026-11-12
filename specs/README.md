@@ -9,9 +9,8 @@ A spec is agreed on before its code is written. To propose a feature, open an is
 
 | # | Feature | Status |
 |---|---|---|
-| [001](001-linux-to-linux) | Linux to Linux with hotkey switching | Draft |
-| 002 | macOS replay and capture | Not started |
-| 003 | Switching through a screen edge | Not started |
-| 004 | Automatic discovery on the local network | Not started |
-| 005 | Clipboard sharing | Not started |
-| 006 | Packages and services (systemd, udev, Homebrew) | Not started |
+| [001](001-hotkey-switching) | Linux and macOS with hotkey switching | Draft |
+| 002 | Switching through a screen edge | Not started |
+| 003 | Automatic discovery on the local network | Not started |
+| 004 | Clipboard sharing | Not started |
+| 005 | Packages and services (systemd, udev, launchd, Homebrew) | Not started |

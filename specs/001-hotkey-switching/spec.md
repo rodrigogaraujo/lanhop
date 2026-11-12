@@ -1,8 +1,8 @@
-# Feature Specification: Linux to Linux with hotkey switching
+# Feature Specification: Linux and macOS with hotkey switching
 
 **Created**: 2026-11-11 · **Status**: Draft
 
-The first version of lanhop that a person can use every day: one keyboard and one mouse, plugged into one Linux machine, control the other Linux machines on the desk.
+The first version of lanhop that a person can use every day: one keyboard and one mouse, plugged into one machine, control the other machines on the desk. Linux and macOS machines work together in any combination: either system can be the sharer or a receiver.
 
 ## Terms
 
@@ -27,6 +27,8 @@ I press a hotkey and my keyboard and mouse start controlling the other machine. 
 2. **Given** focus is on the receiver, **When** I press the hotkey for the sharer, **Then** typing and mouse movement act on the sharer again.
 3. **Given** focus is on the receiver, **When** I type with modifiers, hold a key, scroll and drag with a button held, **Then** each of them works as it would with a keyboard and mouse plugged into the receiver.
 4. **Given** the sharer and the receiver use different keyboard layouts, **When** I type on the receiver, **Then** the receiver applies its own layout.
+5. **Given** a Linux sharer and a macOS receiver, or a macOS sharer and a Linux receiver, **When** I switch focus and use the keyboard and mouse, **Then** scenarios 1 to 4 hold, including double click, drag and key repeat.
+6. **Given** one machine runs Linux and the other macOS, **When** I press a modifier key, **Then** it acts as its counterpart on the other system: Control as Control, Alt as Option and Super as Command.
 
 ### Story 2 - Pair two machines safely (Priority: P1)
 
@@ -78,14 +80,15 @@ I have more than two machines, and sometimes I plug in another keyboard or mouse
 
 When the setup is incomplete, lanhop tells me what to fix.
 
-**Why this priority**: reading input devices needs permissions that most users have never set. A clear message decides whether a newcomer gets through the first run.
+**Why this priority**: reading input needs permissions that most users have never set. A clear message decides whether a newcomer gets through the first run.
 
-**Independent test**: run lanhop as a user without access to the input devices and read the message.
+**Independent test**: run lanhop on Linux as a user without access to the input devices, and on macOS without the Accessibility permission, and read the message.
 
 **Acceptance scenarios**:
 
-1. **Given** my user cannot read the input devices or create a virtual device, **When** I start lanhop, **Then** it names the missing permission and the command that grants it.
-2. **Given** I want to see what lanhop would share, **When** I list the devices, **Then** I see each keyboard and mouse it found.
+1. **Given** my Linux user cannot read the input devices or create a virtual device, **When** I start lanhop, **Then** it names the missing permission and the command that grants it.
+2. **Given** lanhop has no Accessibility permission on macOS, **When** I start it, **Then** it names the permission and the System Settings pane where I grant it.
+3. **Given** I want to see what lanhop would share, **When** I list the devices, **Then** I see each keyboard and mouse it found.
 
 ## Edge cases
 
@@ -95,6 +98,8 @@ When the setup is incomplete, lanhop tells me what to fix.
 - The receiver is suspended or its lid is closed while it has focus.
 - The same machine is started as sharer twice.
 - A machine changes its IP address between sessions.
+- A macOS sharer has a password field in front, which makes macOS hide the keyboard from every other program.
+- A macOS receiver is at its login window or lock screen.
 
 ## Requirements
 
@@ -111,19 +116,23 @@ When the setup is incomplete, lanhop tells me what to fix.
 - **FR-009**: A machine that loses focus or its connection MUST end with no key or button held.
 - **FR-010**: A receiver MUST reconnect by itself after losing its connection.
 - **FR-011**: The sharer MUST pick up keyboards and mice plugged in while it runs.
-- **FR-012**: lanhop MUST work the same on X11, on Wayland and on a text console.
-- **FR-013**: lanhop MUST run without root when the user has permission on the input devices, and MUST say which permission is missing when it does not.
+- **FR-012**: On Linux, lanhop MUST work the same on X11, on Wayland and on a text console.
+- **FR-013**: lanhop MUST run without root when the user has granted it access to input (device permissions on Linux, Accessibility on macOS), and MUST say which permission is missing when it does not.
 - **FR-014**: The private key of a machine MUST be readable only by its owner.
+- **FR-015**: A Linux machine and a macOS machine MUST be able to take either role, sharer or receiver, with each other.
+- **FR-016**: Keys MUST be translated between the two systems by their meaning, and the user MUST be able to swap Alt and Super so that the keys next to the space bar match the keyboard in use.
+- **FR-017**: Held keys MUST repeat on a macOS receiver as they do with a keyboard plugged into it.
 
 ### Out of scope for this feature
 
-- macOS (spec 002)
-- Switching by pushing the cursor through a screen edge (spec 003)
-- Finding machines automatically (spec 004). The receiver is given the sharer's address.
-- Clipboard sharing (spec 005)
-- Running as a system service, packages and udev rules (spec 006). Setup is documented by hand.
+- Switching by pushing the cursor through a screen edge (spec 002)
+- Finding machines automatically (spec 003). The receiver is given the sharer's address.
+- Clipboard sharing (spec 004)
+- Running as a system service, packages, udev rules and launch agents (spec 005). Setup is documented by hand.
 - Touchpads, touchscreens, tablets and game controllers. Only keyboards and relative mice are shared.
 - Keyboard LEDs (Caps Lock and Num Lock state) on the sharer.
+- Controlling the macOS login window and lock screen.
+- Capturing the keyboard on a macOS sharer while a password field has secure input on.
 - Connections across the internet. Machines are on the same local network.
 
 ## Success criteria
@@ -133,15 +142,18 @@ When the setup is incomplete, lanhop tells me what to fix.
 - **SC-003**: Typing 1,000 keys and moving the mouse for 60 seconds on a receiver loses and duplicates no event.
 - **SC-004**: After the network cable is pulled, the user controls the sharer again in 3 seconds or less, with no key held on either machine.
 - **SC-005**: An unpaired machine cannot make a receiver replay a single event.
-- **SC-006**: The same binary passes its end-to-end tests on a text console, with no desktop session.
+- **SC-006**: The Linux binary passes its end-to-end tests on a text console, with no desktop session.
+- **SC-007**: Every acceptance scenario passes in the four combinations: Linux to Linux, Linux to macOS, macOS to Linux and macOS to macOS.
 
 ## Assumptions
 
-- Both machines run Linux with a kernel that offers `evdev` and `uinput` (version 4.5 or newer).
+- Linux machines have a kernel that offers `evdev` and `uinput` (version 4.5 or newer).
+- macOS machines run macOS 13 or newer, and the user can grant the Accessibility permission.
 - The machines sit on the same desk, so a person can read both screens while pairing.
 - The local network is not trusted: other devices on it may listen or try to connect.
 
 ## Open questions
 
 1. **Default hotkey.** The proposal is `Ctrl+Alt+<number>`. Does it collide with anything you use daily?
-2. **Hotkey leak.** In this version the hotkey is also seen by the application in front on the sharer (see the plan). Is that acceptable for a first release?
+2. **Hotkey leak.** In this version, on a Linux sharer the hotkey is also seen by the application in front (see the plan). Is that acceptable for a first release?
+3. **Which machine has the keyboard.** It decides whether macOS capture or macOS replay is built first.
