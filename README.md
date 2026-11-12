@@ -24,7 +24,7 @@ Events travel as Linux input events (`type`, `code`, `value`). Linux machines us
 | | Capture | Replay |
 |---|---|---|
 | Linux | `evdev`, with an exclusive grab while another machine has focus | `uinput` virtual device |
-| macOS | `CGEventTap` (planned) | `CGEventPost` (planned) |
+| macOS | `CGEventTap` (planned) | `CGEventPost` |
 
 Design decisions are recorded in [docs/adr](docs/adr). Features are specified in [specs](specs) before they are built.
 

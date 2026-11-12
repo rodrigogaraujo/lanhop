@@ -1,6 +1,6 @@
 # Setting up lanhop on macOS
 
-> **macOS support is being built.** This page explains the permission lanhop needs on a Mac, so you know what to expect. The commands will be added here when macOS support lands.
+> **macOS support is partly built.** A Mac can already be controlled from another machine with `lanhop receive`. Sharing the Mac's own keyboard and mouse (`lanhop share`) is not built yet.
 
 ## Why lanhop needs a permission
 
@@ -44,6 +44,22 @@ macOS gives the permission to the program that starts lanhop, not always to lanh
 - **You granted it and nothing changed.** Quit the terminal completely (Cmd+Q, not only closing the window) and open it again.
 - **The + button is greyed out, or the list cannot be changed.** The Mac is managed by an organisation that blocks this setting. Ask whoever manages it.
 - **macOS also asks for "Input Monitoring".** Allow it for the same program, in **Privacy & Security → Input Monitoring**.
+
+## Letting another machine control the Mac
+
+After granting the permission, pair the Mac with the machine that has the keyboard and mouse, then start receiving:
+
+```sh
+lanhop pair ADDRESS-OF-THE-OTHER-MACHINE
+lanhop receive
+```
+
+`lanhop pair` shows two codes on each machine. Check that they match, swapped, and type `yes` on both.
+
+Not done yet on a Mac that is being controlled:
+
+- A key held down does not repeat.
+- Alt and Super cannot be swapped yet, so Alt acts as Option and Super as Command.
 
 ## What lanhop cannot do on a Mac
 
