@@ -2,6 +2,7 @@ package macos
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"time"
 
@@ -113,6 +114,11 @@ type repeat struct {
 	timer    stopper
 }
 
+type axisPosition struct {
+	value   int32
+	carried bool
+}
+
 type lastPress struct {
 	button int
 	count  int
@@ -130,6 +136,8 @@ type Replay struct {
 	closed        bool
 	heldModifiers map[uint16]Flags
 	heldButtons   map[int]int
+	positionX     axisPosition
+	positionY     axisPosition
 	moveX, moveY  int32
 	wheel, hwheel int32
 	previous      lastPress
@@ -160,6 +168,8 @@ func (r *Replay) Emit(events ...event.Event) error {
 			r.key(e.Code, e.Value)
 		case event.TypeRelative:
 			r.accumulate(e.Code, e.Value)
+		case event.TypeAbsolute:
+			r.aim(e.Code, e.Value)
 		case event.TypeSync:
 			r.flush()
 		}
@@ -290,7 +300,21 @@ func (r *Replay) accumulate(axis uint16, delta int32) {
 	}
 }
 
+func (r *Replay) aim(axis uint16, position int32) {
+	aimed := axisPosition{value: min(max(position, 0), event.AbsoluteMax), carried: true}
+	switch axis {
+	case event.AbsX:
+		r.positionX = aimed
+	case event.AbsY:
+		r.positionY = aimed
+	}
+}
+
 func (r *Replay) flush() {
+	if r.positionX.carried || r.positionY.carried {
+		r.place(r.positionX, r.positionY)
+		r.positionX, r.positionY = axisPosition{}, axisPosition{}
+	}
 	if r.moveX != 0 || r.moveY != 0 {
 		r.move(r.moveX, r.moveY)
 		r.moveX, r.moveY = 0, 0
@@ -301,9 +325,34 @@ func (r *Replay) flush() {
 	}
 }
 
+func (r *Replay) place(x, y axisPosition) {
+	displays := r.screen.Displays()
+	if len(displays) == 0 {
+		return
+	}
+	from := r.cursor()
+	desktop := boxAround(displays)
+	to := from
+	if x.carried {
+		to.X = along(desktop.X, desktop.Width, x.value)
+	}
+	if y.carried {
+		to.Y = along(desktop.Y, desktop.Height, y.value)
+	}
+	to = nearestOnDisplays(to, displays)
+	if to == from {
+		return
+	}
+	r.moveTo(to, int32(math.Round(to.X-from.X)), int32(math.Round(to.Y-from.Y)))
+}
+
 func (r *Replay) move(dx, dy int32) {
 	from := r.cursor()
 	to := keepOnDisplays(from, Point{X: from.X + float64(dx), Y: from.Y + float64(dy)}, r.screen.Displays())
+	r.moveTo(to, dx, dy)
+}
+
+func (r *Replay) moveTo(to Point, dx, dy int32) {
 	moved := MouseEvent{Action: MouseMoved, At: to, DX: dx, DY: dy, Flags: r.flags()}
 	if button, dragging := r.lowestHeldButton(); dragging {
 		moved.Action = MouseDragged
@@ -340,6 +389,34 @@ func keepOnDisplays(from, to Point, displays []Rect) Point {
 		}
 	}
 	return home.nearestInside(to)
+}
+
+func boxAround(displays []Rect) Rect {
+	left, top := math.Inf(1), math.Inf(1)
+	right, bottom := math.Inf(-1), math.Inf(-1)
+	for _, display := range displays {
+		left, top = min(left, display.X), min(top, display.Y)
+		right, bottom = max(right, display.X+display.Width), max(bottom, display.Y+display.Height)
+	}
+	return Rect{X: left, Y: top, Width: right - left, Height: bottom - top}
+}
+
+func along(origin, size float64, position int32) float64 {
+	return origin + math.Round(float64(position)*(size-1)/float64(event.AbsoluteMax))
+}
+
+func nearestOnDisplays(p Point, displays []Rect) Point {
+	nearest, shortest := p, math.Inf(1)
+	for _, display := range displays {
+		if display.contains(p) {
+			return p
+		}
+		inside := display.nearestInside(p)
+		if distance := math.Hypot(inside.X-p.X, inside.Y-p.Y); distance < shortest {
+			nearest, shortest = inside, distance
+		}
+	}
+	return nearest
 }
 
 func (r *Replay) lowestHeldButton() (int, bool) {
