@@ -100,6 +100,19 @@ func TestHelpNamesReceiveAndItsOption(t *testing.T) {
 	}
 }
 
+func TestReceiveAskedForHelpPrintsTheUsageAndDoesNotStart(t *testing.T) {
+	trustAlready(t, useConfigDirectory(t), trustedDesk)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"receive", "--help"}, nobodyTyping(), &stdout, &stderr); code != 0 {
+		t.Errorf("exit code = %d, stderr = %q, want 0", code, stderr.String())
+	}
+
+	if stdout.String() != usage {
+		t.Errorf("stdout = %q, want only the usage", stdout.String())
+	}
+}
+
 func TestAFailureThatRepeatsIsPrintedOnceUntilTheConnectionComesBack(t *testing.T) {
 	refused := errors.New("connection refused")
 	lost := errors.New("connection lost")
