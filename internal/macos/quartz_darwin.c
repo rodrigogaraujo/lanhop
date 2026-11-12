@@ -1,6 +1,7 @@
 #include "quartz_darwin.h"
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hidsystem/IOLLEvent.h>
 #include <dispatch/dispatch.h>
 #include <stdlib.h>
 
@@ -10,6 +11,19 @@ _Static_assert(kCGEventFlagMaskShift == 0x20000, "the Shift flag changed");
 _Static_assert(kCGEventFlagMaskControl == 0x40000, "the Control flag changed");
 _Static_assert(kCGEventFlagMaskAlternate == 0x80000, "the Option flag changed");
 _Static_assert(kCGEventFlagMaskCommand == 0x100000, "the Command flag changed");
+_Static_assert(NX_DEVICELCTLKEYMASK == 0x0001, "the side bit of left Control changed");
+_Static_assert(NX_DEVICELSHIFTKEYMASK == 0x0002, "the side bit of left Shift changed");
+_Static_assert(NX_DEVICERSHIFTKEYMASK == 0x0004, "the side bit of right Shift changed");
+_Static_assert(NX_DEVICELCMDKEYMASK == 0x0008, "the side bit of left Command changed");
+_Static_assert(NX_DEVICERCMDKEYMASK == 0x0010, "the side bit of right Command changed");
+_Static_assert(NX_DEVICELALTKEYMASK == 0x0020, "the side bit of left Option changed");
+_Static_assert(NX_DEVICERALTKEYMASK == 0x0040, "the side bit of right Option changed");
+_Static_assert(NX_DEVICERCTLKEYMASK == 0x2000, "the side bit of right Control changed");
+_Static_assert(kCGEventLeftMouseDown == 1 && kCGEventLeftMouseUp == 2 && kCGEventRightMouseDown == 3 && kCGEventRightMouseUp == 4, "a mouse button event type changed");
+_Static_assert(kCGEventMouseMoved == 5 && kCGEventLeftMouseDragged == 6 && kCGEventRightMouseDragged == 7, "a mouse movement event type changed");
+_Static_assert(kCGEventKeyDown == 10 && kCGEventKeyUp == 11 && kCGEventFlagsChanged == 12, "a keyboard event type changed");
+_Static_assert(kCGEventScrollWheel == 22 && kCGEventOtherMouseDown == 25 && kCGEventOtherMouseUp == 26 && kCGEventOtherMouseDragged == 27, "an event type changed");
+_Static_assert(kCGEventTapDisabledByTimeout == 0xFFFFFFFE, "the type that reports a disabled tap changed");
 
 struct lanhopTap {
 	CFMachPortRef port;
@@ -126,6 +140,7 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
 		if (!tap->stopping) {
 			CGEventTapEnable(tap->port, true);
+			lanhopTapMissedInput(tap->handle);
 		}
 		return event;
 	}
@@ -156,6 +171,14 @@ void lanhopFollowMouse(bool follow) {
 	CGAssociateMouseAndMouseCursorPosition(follow);
 }
 
+bool lanhopKeyIsDown(uint16_t keyCode) {
+	return CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, keyCode);
+}
+
+bool lanhopButtonIsDown(int button) {
+	return CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, (CGMouseButton)button);
+}
+
 lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last) {
 	lanhopTap *tap = calloc(1, sizeof(lanhopTap));
 	if (tap == NULL) {
@@ -174,6 +197,7 @@ lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last) {
 		free(tap);
 		return NULL;
 	}
+	CGEventTapEnable(tap->port, false);
 	tap->source = CFMachPortCreateRunLoopSource(NULL, tap->port, 0);
 	CFRunLoopSourceContext idle = {.perform = doNothing};
 	tap->keepsLoopAlive = CFRunLoopSourceCreate(NULL, 0, &idle);

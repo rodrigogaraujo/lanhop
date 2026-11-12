@@ -11,6 +11,16 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/keymap"
 )
 
+const (
+	linuxF18 uint16 = 188
+	macOSF18 uint16 = 0x4F
+)
+
+func waitUntilNothingArrives(tap *Tap) {
+	for len(replayedWithin(tap, 300*time.Millisecond)) > 0 {
+	}
+}
+
 func onlyWhatLanhopPosts(seen Observation) bool {
 	return seen.Marker == Marker
 }
@@ -72,51 +82,46 @@ func TestTakenCaptureKeepsItsInputFromTheRestOfTheSystem(t *testing.T) {
 		t.Fatalf("startTap: %v", err)
 	}
 	defer afterTheCapture.Close()
-	tapF19 := []event.Event{event.Key(linuxF19, event.KeyPressed), event.Sync(), event.Key(linuxF19, event.KeyReleased), event.Sync()}
+	waitUntilNothingArrives(afterTheCapture)
+	tapF18 := []event.Event{event.Key(linuxF18, event.KeyPressed), event.Sync(), event.Key(linuxF18, event.KeyReleased), event.Sync()}
 
 	if err := capture.Take(); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
-	replay(t, replayed, tapF19...)
-	whileTaken := captured(t, capture, len(tapF19))
+	replay(t, replayed, tapF18...)
+	whileTaken := captured(t, capture, len(tapF18))
 	leaked := replayedWithin(afterTheCapture, 300*time.Millisecond)
 
 	if err := capture.GiveBack(); err != nil {
 		t.Fatalf("GiveBack: %v", err)
 	}
-	replay(t, replayed, tapF19...)
-	afterGivingBack := captured(t, capture, len(tapF19))
+	replay(t, replayed, tapF18...)
+	afterGivingBack := captured(t, capture, len(tapF18))
 	passedOn := replayedWithin(afterTheCapture, 300*time.Millisecond)
 
-	if !slices.Equal(whileTaken, tapF19) || !slices.Equal(afterGivingBack, tapF19) {
-		t.Errorf("captured %+v while taken and %+v after, want %+v both times", whileTaken, afterGivingBack, tapF19)
+	if !slices.Equal(whileTaken, tapF18) || !slices.Equal(afterGivingBack, tapF18) {
+		t.Errorf("captured %+v while taken and %+v after, want %+v both times", whileTaken, afterGivingBack, tapF18)
 	}
 	for _, seen := range leaked {
-		if seen.KeyCode == macOSF19 {
-			t.Errorf("while the input was taken the rest of the system still saw F19, type %d", seen.Type)
+		if seen.KeyCode == macOSF18 {
+			t.Errorf("while the input was taken the rest of the system still saw F18, type %d", seen.Type)
 		} else {
 			t.Logf("an event this test did not post arrived: type %d, key %d, flags %#x", seen.Type, seen.KeyCode, uint64(seen.Flags))
 		}
 	}
-	passedF19 := 0
+	passedF18 := 0
 	for _, seen := range passedOn {
-		if seen.KeyCode == macOSF19 {
-			passedF19++
+		if seen.KeyCode == macOSF18 {
+			passedF18++
 		}
 	}
-	if passedF19 != 2 {
-		t.Errorf("after giving the input back the rest of the system saw F19 %d times, want the key down and up", passedF19)
+	if passedF18 != 2 {
+		t.Errorf("after giving the input back the rest of the system saw F18 %d times, want the key down and up", passedF18)
 	}
 }
 
 func TestClosedCaptureEndsItsEvents(t *testing.T) {
-	if !CanListen() || !CanPost() {
-		t.Skip("this program has no Accessibility permission, see docs/setup-macos.md")
-	}
-	capture, err := startCapture(keymap.Translator{}, onlyWhatLanhopPosts)
-	if err != nil {
-		t.Fatalf("startCapture: %v", err)
-	}
+	_, capture := captureOfReplayedInput(t)
 	if err := capture.Take(); err != nil {
 		t.Fatalf("Take: %v", err)
 	}

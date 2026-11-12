@@ -9,7 +9,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/macos"
 )
 
-var errNotAllowedToShare = errors.New("lanhop is not allowed to read the keyboard and mouse of this Mac yet: grant the Accessibility permission to the program that starts lanhop, as docs/setup-macos.md explains, then start it again")
+var errNotAllowedToShare = errors.New("lanhop is not allowed to read the keyboard and mouse of this Mac yet: in System Settings > Privacy & Security > Accessibility, allow the program that starts lanhop, as docs/setup-macos.md explains, then start it again")
 
 func startCapture() (inputCapture, error) {
 	return captureWhenAllowed(macos.CanListen() && macos.CanPost())

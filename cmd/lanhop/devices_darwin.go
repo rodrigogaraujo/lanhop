@@ -16,7 +16,7 @@ const permissions = `On a Mac, lanhop reads and controls the keyboard and mouse 
 `
 
 const howToAllow = `
-To allow what says no, grant the Accessibility permission to the program that starts lanhop.
+To allow what says no, open System Settings > Privacy & Security > Accessibility and allow the program that starts lanhop.
 docs/setup-macos.md explains how.
 `
 

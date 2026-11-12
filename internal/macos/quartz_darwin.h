@@ -37,6 +37,8 @@ void lanhopCursor(double *x, double *y);
 int lanhopDisplays(double *rects, int capacity);
 lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last);
 void lanhopFollowMouse(bool follow);
+bool lanhopKeyIsDown(uint16_t keyCode);
+bool lanhopButtonIsDown(int button);
 void lanhopTapRun(lanhopTap *tap);
 void lanhopTapStop(lanhopTap *tap);
 void lanhopTapFree(lanhopTap *tap);

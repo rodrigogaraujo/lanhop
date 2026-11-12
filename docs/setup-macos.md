@@ -76,7 +76,22 @@ lanhop share
 
 `lanhop devices` shows whether the Mac allows lanhop to read and to control the keyboard and mouse.
 
+### If the keyboard and mouse stop answering
+
+While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 3 seconds, and when its permission is taken away.
+
+If they are still held:
+
+- From another machine, connect to the Mac with `ssh` and run `pkill lanhop`. The input comes back the moment lanhop ends.
+- Without another way in, hold the power button to restart the Mac.
+
+Until you have used lanhop for a while, keep a second way in, such as Remote Login turned on.
+
+Stop lanhop before you remove its permission in System Settings.
+
 ## What lanhop cannot do on a Mac
+
+- **Media keys and trackpad gestures.** While another machine has focus, the brightness, volume and playback keys and the trackpad gestures still act on the Mac that has the keyboard. They are not sent to the other machine.
 
 These are rules of macOS, not settings:
 

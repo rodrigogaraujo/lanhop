@@ -13,8 +13,8 @@ func TestShareWithoutThePermissionSaysHowToGrantIt(t *testing.T) {
 	if capture != nil {
 		t.Error("a capture was started without the permission")
 	}
-	if err == nil || !strings.Contains(err.Error(), "Accessibility") || !strings.Contains(err.Error(), "docs/setup-macos.md") {
-		t.Errorf("error = %v, want it to name the Accessibility permission and the setup guide", err)
+	if err == nil || !strings.Contains(err.Error(), "System Settings > Privacy & Security > Accessibility") || !strings.Contains(err.Error(), "docs/setup-macos.md") {
+		t.Errorf("error = %v, want it to name the System Settings pane and the setup guide", err)
 	}
 }
 

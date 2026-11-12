@@ -40,6 +40,7 @@ func observeRealInput(t *testing.T) (*Replay, *Tap) {
 		t.Fatalf("StartTap: %v", err)
 	}
 	t.Cleanup(func() { tap.Close() })
+	waitUntilNothingArrives(tap)
 	return NewReplay(Quartz{}, keymap.Translator{}), tap
 }
 

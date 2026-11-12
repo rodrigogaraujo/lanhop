@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	Marker           = int64(C.LANHOP_MARKER)
 	maxDisplays      = 32
 	observationQueue = 4096
 )
+
+var _ [0]struct{} = [Marker - C.LANHOP_MARKER]struct{}{}
 
 var ErrNotPermitted = errors.New("macos: this program is not allowed to observe the keyboard and mouse")
 
@@ -58,6 +59,14 @@ func (Quartz) PostScroll(scroll Scroll) {
 	C.lanhopPostScroll(C.int32_t(scroll.Vertical), C.int32_t(scroll.Horizontal), C.uint64_t(scroll.Flags))
 }
 
+func (Quartz) KeyDown(macOSKey uint16) bool {
+	return bool(C.lanhopKeyIsDown(C.uint16_t(macOSKey)))
+}
+
+func (Quartz) ButtonDown(number int) bool {
+	return bool(C.lanhopButtonIsDown(C.int(number)))
+}
+
 func (Quartz) Cursor() Point {
 	var x, y C.double
 	C.lanhopCursor(&x, &y)
@@ -79,6 +88,7 @@ type Tap struct {
 	handle   cgo.Handle
 	keeps    func(Observation) bool
 	observed chan Observation
+	missed   chan struct{}
 	ready    chan struct{}
 	stopped  chan struct{}
 	closing  sync.Once
@@ -99,6 +109,7 @@ func startTap(place tapPlace, keeps func(Observation) bool) (*Tap, error) {
 	tap := &Tap{
 		keeps:    keeps,
 		observed: make(chan Observation, observationQueue),
+		missed:   make(chan struct{}, 1),
 		ready:    make(chan struct{}),
 		stopped:  make(chan struct{}),
 	}
@@ -120,6 +131,17 @@ func startTap(place tapPlace, keeps func(Observation) bool) (*Tap, error) {
 
 func (t *Tap) Observed() <-chan Observation {
 	return t.observed
+}
+
+func (t *Tap) Overflowed() <-chan struct{} {
+	return t.missed
+}
+
+func (t *Tap) reportOverflow() {
+	select {
+	case t.missed <- struct{}{}:
+	default:
+	}
 }
 
 func (t *Tap) Close() error {
@@ -161,8 +183,20 @@ func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) C.bool {
 	select {
 	case tap.observed <- observation:
 	default:
+		tap.reportOverflow()
+		return false
 	}
 	return C.bool(tap.keeps != nil && tap.keeps(observation))
+}
+
+//export lanhopTapMissedInput
+func lanhopTapMissedInput(handle C.uintptr_t) {
+	tap := cgo.Handle(handle).Value().(*Tap)
+	select {
+	case tap.observed <- Observation{Type: TypeTapDisabled}:
+	default:
+		tap.reportOverflow()
+	}
 }
 
 func followMouse(follow bool) {
