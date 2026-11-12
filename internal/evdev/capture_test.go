@@ -4,10 +4,14 @@ package evdev
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -42,46 +46,115 @@ func startCaptureIn(t *testing.T, directory string) *Capture {
 	return capture
 }
 
-var keysSafeToPressOnTheMachineRunningTheTests = []uint16{event.KeyA, event.ButtonLeft, event.ButtonRight, event.ButtonMiddle}
+var keysSafeToPressOnTheMachineRunningTheTests = []uint16{event.KeyA, event.ButtonLeft}
 
-func firstUnsafeKey(events []event.Event) (uint16, bool) {
+func firstUnsafeEvent(events []event.Event) (event.Event, bool) {
 	for _, e := range events {
-		if e.Type == event.TypeKey && !slices.Contains(keysSafeToPressOnTheMachineRunningTheTests, e.Code) {
-			return e.Code, true
+		switch e.Type {
+		case event.TypeSync, event.TypeRelative:
+		case event.TypeKey:
+			if !slices.Contains(keysSafeToPressOnTheMachineRunningTheTests, e.Code) {
+				return e, true
+			}
+		default:
+			return e, true
 		}
 	}
-	return 0, false
+	return event.Event{}, false
 }
 
 func emit(t *testing.T, device *VirtualDevice, events ...event.Event) {
 	t.Helper()
-	if code, unsafe := firstUnsafeKey(events); unsafe {
-		t.Fatalf("refusing to press key %d: the machine running the tests would act on it, press only %v", code, keysSafeToPressOnTheMachineRunningTheTests)
+	if unsafe, found := firstUnsafeEvent(events); found {
+		t.Fatalf("refusing to emit %+v: the machine running the tests would act on it", unsafe)
 	}
 	if err := device.Emit(events...); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 }
 
-func TestOnlyKeysTheMachineIgnoresMayBePressedByTests(t *testing.T) {
-	const keyDelete uint16 = 111
+func TestTestsMayPressOnlyTheLetterAAndTheLeftButton(t *testing.T) {
+	const lastKeyCode uint16 = 0x2ff
+	for code := uint16(0); code <= lastKeyCode; code++ {
+		_, refused := firstUnsafeEvent([]event.Event{event.Key(code, event.KeyPressed)})
+		safe := code == event.KeyA || code == event.ButtonLeft
+		if refused == safe {
+			t.Errorf("key %d: refused = %v, want %v", code, refused, !safe)
+		}
+	}
+}
+
+func TestUnsafeEventsAreRefusedWhereverAndHoweverTheyAppear(t *testing.T) {
+	const (
+		typeAbsolute uint16 = 0x03
+		typeSwitch   uint16 = 0x05
+	)
+	safe := event.Key(event.KeyA, event.KeyPressed)
 	for name, events := range map[string][]event.Event{
-		"power key":               {event.Key(keyPower, event.KeyPressed)},
-		"power key released":      {event.Key(keyPower, event.KeyReleased)},
-		"enter":                   {event.Key(event.KeyEnter, event.KeyPressed)},
-		"delete after a safe key": {event.Key(event.KeyA, event.KeyPressed), event.Sync(), event.Key(keyDelete, event.KeyPressed)},
+		"unsafe key after a safe one":  {safe, event.Sync(), event.Key(keyPower, event.KeyPressed)},
+		"unsafe key before a safe one": {event.Key(keyPower, event.KeyPressed), event.Sync(), safe},
+		"unsafe key released":          {event.Key(keyPower, event.KeyReleased)},
+		"unsafe key repeated":          {event.Key(keyPower, event.KeyRepeated)},
+		"switch such as the lid":       {{Type: typeSwitch, Code: 0, Value: 1}},
+		"absolute position":            {{Type: typeAbsolute, Code: absoluteX, Value: 10}},
+		"control event":                {event.Enter()},
 	} {
-		if _, unsafe := firstUnsafeKey(events); !unsafe {
+		if _, refused := firstUnsafeEvent(events); !refused {
 			t.Errorf("%s was allowed", name)
 		}
 	}
+}
+
+func TestSafeEventsAreAllowed(t *testing.T) {
 	allowed := []event.Event{
-		event.Key(event.KeyA, event.KeyPressed), event.Key(event.KeyA, event.KeyReleased),
-		event.Key(event.ButtonLeft, event.KeyPressed), event.Key(event.ButtonRight, event.KeyPressed), event.Key(event.ButtonMiddle, event.KeyPressed),
-		event.Relative(event.RelX, 7), event.Relative(event.RelWheel, 1), event.Sync(),
+		event.Key(event.KeyA, event.KeyPressed), event.Key(event.KeyA, event.KeyRepeated), event.Key(event.KeyA, event.KeyReleased),
+		event.Key(event.ButtonLeft, event.KeyPressed), event.Key(event.ButtonLeft, event.KeyReleased),
+		event.Relative(event.RelX, 7), event.Relative(event.RelY, -3), event.Relative(event.RelWheel, 1), event.Sync(),
 	}
-	if code, unsafe := firstUnsafeKey(allowed); unsafe {
-		t.Errorf("key %d was refused", code)
+	if unsafe, refused := firstUnsafeEvent(allowed); refused {
+		t.Errorf("%+v was refused", unsafe)
+	}
+}
+
+func TestTestsReachDevicesOnlyThroughTheGuardedHelper(t *testing.T) {
+	const guardedHelper = "emit"
+	files := token.NewFileSet()
+	packages, err := parser.ParseDir(files, ".", func(file fs.FileInfo) bool { return strings.HasSuffix(file.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if len(packages) == 0 {
+		t.Skip("the test files are not in the working directory")
+	}
+	guardedCalls := 0
+	for _, parsed := range packages {
+		for _, file := range parsed.Files {
+			for _, declaration := range file.Decls {
+				function, isFunction := declaration.(*ast.FuncDecl)
+				if !isFunction || function.Body == nil {
+					continue
+				}
+				ast.Inspect(function.Body, func(node ast.Node) bool {
+					call, isCall := node.(*ast.CallExpr)
+					if !isCall {
+						return true
+					}
+					selector, isSelector := call.Fun.(*ast.SelectorExpr)
+					if !isSelector || selector.Sel.Name != "Emit" {
+						return true
+					}
+					if function.Name.Name == guardedHelper {
+						guardedCalls++
+						return true
+					}
+					t.Errorf("%s: %s calls Emit directly, use the %s helper", files.Position(call.Pos()), function.Name.Name, guardedHelper)
+					return true
+				})
+			}
+		}
+	}
+	if guardedCalls != 1 {
+		t.Errorf("found %d Emit calls inside the %s helper, want exactly 1", guardedCalls, guardedHelper)
 	}
 }
 
