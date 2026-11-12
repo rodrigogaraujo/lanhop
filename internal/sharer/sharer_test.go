@@ -143,13 +143,21 @@ type fakeReceiver struct {
 	peer       trust.Peer
 	lost       chan struct{}
 	losing     sync.Once
+	shut       chan struct{}
+	shutting   sync.Once
+	closes     atomic.Int32
 	sendFails  atomic.Bool
 	sendPanics atomic.Bool
+	sendHangs  atomic.Bool
 }
 
 func (r *fakeReceiver) Send(events ...event.Event) error {
 	if r.sendPanics.Load() {
 		panic("the connection exploded")
+	}
+	if r.sendHangs.Load() {
+		<-r.shut
+		return errConnectionLost
 	}
 	if r.sendFails.Load() {
 		return errConnectionLost
@@ -166,9 +174,17 @@ func (r *fakeReceiver) Receive() (event.Event, error) {
 }
 
 func (r *fakeReceiver) Close() error {
-	r.journal.note(closed(r.peer))
+	r.shutting.Do(func() {
+		r.journal.note(closed(r.peer))
+		close(r.shut)
+	})
+	r.closes.Add(1)
 	r.loseConnection()
 	return nil
+}
+
+func (r *fakeReceiver) closedByItsReaderAndThenByTheSharer() bool {
+	return r.closes.Load() == 2
 }
 
 func (r *fakeReceiver) Peer() trust.Peer {
@@ -242,14 +258,19 @@ func startSharing(t *testing.T, peers ...trust.Peer) *sharing {
 }
 
 func (s *sharing) connect(peer trust.Peer) *fakeReceiver {
-	receiver := &fakeReceiver{journal: s.journal, peer: peer, lost: make(chan struct{})}
+	receiver := &fakeReceiver{journal: s.journal, peer: peer, lost: make(chan struct{}), shut: make(chan struct{})}
 	s.sharer.Connect(receiver)
 	return receiver
 }
 
 func (s *sharing) captures(events ...event.Event) {
 	s.t.Helper()
-	for _, e := range append(slices.Clone(events), ignored) {
+	s.capturesWithoutWaitingForTheLast(append(slices.Clone(events), ignored)...)
+}
+
+func (s *sharing) capturesWithoutWaitingForTheLast(events ...event.Event) {
+	s.t.Helper()
+	for _, e := range events {
 		select {
 		case s.capture.events <- e:
 		case <-s.sharer.stopped:
@@ -593,7 +614,7 @@ func TestReceiverLostWithoutFocusLeavesTheFocusWhereItIs(t *testing.T) {
 	typing := eachFollowedBySync(press(event.KeyA), release(event.KeyA))
 
 	other.loseConnection()
-	s.eventually("disconnecting the laptop", func() bool { return s.journal.has(closed(laptop)) })
+	s.eventually("dropping the laptop", other.closedByItsReaderAndThenByTheSharer)
 	s.captures(typing...)
 	s.focusOn(3)
 
@@ -617,6 +638,24 @@ func TestReceiverThatCannotBeSentToIsLostAndTheInputIsGivenBack(t *testing.T) {
 	s.expectJournal(story(
 		then(tookInput),
 		gets(desk, event.Enter()),
+		then(gaveInputBack, closed(desk)),
+	))
+	s.expectInputAtThisMachine()
+}
+
+func TestReceiverLostWhileASendToItHangsGivesTheInputBackAtOnce(t *testing.T) {
+	s := startSharing(t, desk)
+	receiver := s.connect(desk)
+	s.focusOn(2)
+	receiver.sendHangs.Store(true)
+	s.capturesWithoutWaitingForTheLast(press(event.KeyA), event.Sync())
+
+	receiver.loseConnection()
+	s.eventually("giving the input back", func() bool { return s.journal.has(gaveInputBack) })
+
+	s.expectJournal(story(
+		then(tookInput),
+		gets(desk, event.Enter()),
 		then(closed(desk), gaveInputBack),
 	))
 	s.expectInputAtThisMachine()
@@ -629,7 +668,7 @@ func TestReceiverThatCannotBeEnteredIsLostAndTheInputIsGivenBack(t *testing.T) {
 
 	s.focusOn(2)
 
-	s.expectJournal(then(tookInput, closed(desk), gaveInputBack))
+	s.expectJournal(then(tookInput, gaveInputBack, closed(desk)))
 	s.expectInputAtThisMachine()
 }
 
@@ -694,7 +733,7 @@ func TestReceiverThatReconnectsWhileItHasFocusGivesTheInputBackUntilTheHotkeyIsP
 		then(tookInput),
 		gets(desk, event.Enter()),
 		gets(desk, press(event.KeyA), event.Sync()),
-		then(closed(desk), gaveInputBack, tookInput),
+		then(gaveInputBack, closed(desk), tookInput),
 		gets(desk, event.Enter()),
 		gets(desk, typing...),
 	))
@@ -738,7 +777,7 @@ func TestMachineRemovedFromTheTrustStoreIsDisconnectedAndLosesItsNumber(t *testi
 	s.expectJournal(story(
 		then(tookInput),
 		gets(desk, event.Enter()),
-		then(closed(desk), gaveInputBack, tookInput),
+		then(gaveInputBack, closed(desk), tookInput),
 		gets(laptop, event.Enter()),
 	))
 }

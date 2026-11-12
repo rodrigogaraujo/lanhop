@@ -209,13 +209,13 @@ func (s *Sharer) admit(conn Conn) error {
 	if !reconnecting {
 		return nil
 	}
-	previous.Close()
-	return s.takeFocusFrom(previous)
+	return s.giveInputBackThenClose(previous)
 }
 
 func (s *Sharer) watch(conn Conn) {
 	for {
 		if _, err := conn.Receive(); err != nil {
+			conn.Close()
 			select {
 			case s.losses <- conn:
 			case <-s.stopped:
@@ -226,11 +226,18 @@ func (s *Sharer) watch(conn Conn) {
 }
 
 func (s *Sharer) drop(conn Conn) error {
-	if s.receivers[conn.Peer().Fingerprint] != conn {
+	fingerprint := conn.Peer().Fingerprint
+	if s.receivers[fingerprint] != conn {
 		return nil
 	}
-	s.forget(conn)
-	return s.takeFocusFrom(conn)
+	delete(s.receivers, fingerprint)
+	return s.giveInputBackThenClose(conn)
+}
+
+func (s *Sharer) giveInputBackThenClose(conn Conn) error {
+	err := s.takeFocusFrom(conn)
+	conn.Close()
+	return err
 }
 
 func (s *Sharer) forget(conn Conn) {
