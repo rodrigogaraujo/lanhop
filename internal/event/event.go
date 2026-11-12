@@ -39,6 +39,7 @@ const (
 
 const (
 	KeyFirst uint16 = 1
+	KeyEnter uint16 = 28
 	KeyA     uint16 = 30
 	KeyLast  uint16 = 248
 )

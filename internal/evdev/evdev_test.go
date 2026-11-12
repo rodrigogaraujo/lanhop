@@ -106,6 +106,16 @@ func openEventNode(t *testing.T, virtual *VirtualDevice) *Device {
 
 func eventNode(t *testing.T, virtual *VirtualDevice) string {
 	t.Helper()
+	sysPath := sysEventPath(t, virtual)
+	node := filepath.Join("/dev/input", filepath.Base(sysPath))
+	if _, err := os.Stat(node); err == nil {
+		return node
+	}
+	return makeNodeFromSysfs(t, t.TempDir(), sysPath)
+}
+
+func sysEventPath(t *testing.T, virtual *VirtualDevice) string {
+	t.Helper()
 	sysName, err := virtual.SysName()
 	if err != nil {
 		t.Fatalf("SysName: %v", err)
@@ -114,14 +124,10 @@ func eventNode(t *testing.T, virtual *VirtualDevice) string {
 	if err != nil || len(matches) != 1 {
 		t.Fatalf("event node of %s: matches=%v err=%v", sysName, matches, err)
 	}
-	node := filepath.Join("/dev/input", filepath.Base(matches[0]))
-	if _, err := os.Stat(node); err == nil {
-		return node
-	}
-	return makeNodeFromSysfs(t, matches[0])
+	return matches[0]
 }
 
-func makeNodeFromSysfs(t *testing.T, sysPath string) string {
+func makeNodeFromSysfs(t *testing.T, directory, sysPath string) string {
 	t.Helper()
 	numbers, err := os.ReadFile(filepath.Join(sysPath, "dev"))
 	if err != nil {
@@ -136,7 +142,7 @@ func makeNodeFromSysfs(t *testing.T, sysPath string) string {
 	if majorErr != nil || minorErr != nil {
 		t.Fatalf("unexpected device numbers %q", numbers)
 	}
-	node := filepath.Join(t.TempDir(), filepath.Base(sysPath))
+	node := filepath.Join(directory, filepath.Base(sysPath))
 	if err := syscall.Mknod(node, syscall.S_IFCHR|0o600, int(deviceNumber(major, minor))); err != nil {
 		t.Skipf("cannot create a device node here: %v", err)
 	}
