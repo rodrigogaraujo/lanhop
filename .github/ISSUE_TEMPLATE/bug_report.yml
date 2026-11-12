@@ -1,0 +1,36 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: vaivem version
+      description: Output of `vaivem version`, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and session
+      description: For example "Fedora 43, GNOME on Wayland" or "macOS 26.5".
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: text
