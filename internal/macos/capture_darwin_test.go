@@ -144,3 +144,39 @@ func TestClosedCaptureEndsItsEvents(t *testing.T) {
 		t.Error("a closed capture still keeps the input taken")
 	}
 }
+
+func TestCursorStaysWhereItWasWhileTheInputIsTaken(t *testing.T) {
+	replayed, capture := captureOfReplayedInput(t)
+	start := Quartz{}.Cursor()
+	defer Quartz{}.PlaceCursor(start)
+
+	if err := capture.Take(); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	replay(t, replayed, event.Relative(event.RelX, 40), event.Relative(event.RelY, 25), event.Sync())
+	moved := captured(t, capture, 3)
+	time.Sleep(100 * time.Millisecond)
+	whileTaken := Quartz{}.Cursor()
+
+	if err := capture.GiveBack(); err != nil {
+		t.Fatalf("GiveBack: %v", err)
+	}
+	replay(t, replayed, event.Relative(event.RelX, 40), event.Relative(event.RelY, 25), event.Sync())
+	captured(t, capture, 3)
+	time.Sleep(100 * time.Millisecond)
+	afterGivingBack := Quartz{}.Cursor()
+
+	if want := []event.Event{event.Relative(event.RelX, 40), event.Relative(event.RelY, 25), event.Sync()}; !slices.Equal(moved, want) {
+		t.Errorf("captured %+v while taken, want the movement %+v", moved, want)
+	}
+	if !withinOnePoint(whileTaken, start) {
+		t.Errorf("the cursor went to %+v while the input was taken, want it to stay at %+v", whileTaken, start)
+	}
+	if withinOnePoint(afterGivingBack, start) {
+		t.Errorf("the cursor stayed at %+v after the input was given back, want it to follow the movement", start)
+	}
+}
+
+func withinOnePoint(a, b Point) bool {
+	return abs(a.X-b.X) <= 1 && abs(a.Y-b.Y) <= 1
+}

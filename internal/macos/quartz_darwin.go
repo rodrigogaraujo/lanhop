@@ -235,6 +235,6 @@ func lanhopTapMissedInput(handle C.uintptr_t) {
 	}
 }
 
-func followMouse(follow bool) {
-	C.lanhopFollowMouse(C.bool(follow))
+func (t *Tap) holdCursor(hold bool) {
+	C.lanhopTapHoldCursor(t.native, C.bool(hold))
 }

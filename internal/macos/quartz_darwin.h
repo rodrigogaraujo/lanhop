@@ -55,7 +55,7 @@ void lanhopPlaceCursor(double x, double y);
 int lanhopDisplays(double *rects, int capacity);
 bool lanhopKeyRepeat(int64_t *delayNanoseconds, int64_t *intervalNanoseconds);
 lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last);
-void lanhopFollowMouse(bool follow);
+void lanhopTapHoldCursor(lanhopTap *tap, bool hold);
 bool lanhopKeyIsDown(uint16_t keyCode);
 bool lanhopButtonIsDown(int button);
 void lanhopTapRun(lanhopTap *tap);

@@ -23,6 +23,7 @@ type Capture struct {
 	taken   atomic.Bool
 	state   sync.Mutex
 	closed  bool
+	tapGone bool
 	events  chan event.Event
 	stop    chan struct{}
 	closing sync.Once
@@ -73,16 +74,22 @@ func (c *Capture) Take() error {
 	if c.closed {
 		return nil
 	}
+	c.tap.holdCursor(true)
 	c.taken.Store(true)
-	followMouse(false)
 	return nil
+}
+
+func (c *Capture) letGo() {
+	c.taken.Store(false)
+	if !c.tapGone {
+		c.tap.holdCursor(false)
+	}
 }
 
 func (c *Capture) GiveBack() error {
 	c.state.Lock()
 	defer c.state.Unlock()
-	c.taken.Store(false)
-	followMouse(true)
+	c.letGo()
 	return nil
 }
 
@@ -98,16 +105,15 @@ func (c *Capture) giveUp() {
 	c.state.Lock()
 	defer c.state.Unlock()
 	c.closed = true
-	c.taken.Store(false)
-	followMouse(true)
+	c.letGo()
 }
 
 func (c *Capture) Close() error {
 	c.closing.Do(func() {
 		c.state.Lock()
 		c.closed = true
-		c.taken.Store(false)
-		followMouse(true)
+		c.letGo()
+		c.tapGone = true
 		c.state.Unlock()
 		close(c.stop)
 		c.tap.Close()

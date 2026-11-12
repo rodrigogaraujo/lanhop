@@ -5,6 +5,7 @@
 #include <IOKit/hidsystem/IOHIDEventSystemClient.h>
 #include <IOKit/hidsystem/IOLLEvent.h>
 #include <dispatch/dispatch.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 
 #include "_cgo_export.h"
@@ -45,6 +46,8 @@ struct lanhopTap {
 	uintptr_t handle;
 	bool active;
 	bool stopping;
+	CGPoint held;
+	atomic_bool holdsCursor;
 };
 
 static void doNothing(void *info) {
@@ -215,11 +218,24 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 	};
 	bool keep = lanhopObserved(tap->handle, &seen);
-	return tap->active && keep ? NULL : event;
+	if (!tap->active || !keep) {
+		return event;
+	}
+	bool moved = type == kCGEventMouseMoved || type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDragged || type == kCGEventOtherMouseDragged;
+	if (moved && atomic_load(&tap->holdsCursor)) {
+		CGWarpMouseCursorPosition(tap->held);
+		CGAssociateMouseAndMouseCursorPosition(true);
+	}
+	return NULL;
 }
 
-void lanhopFollowMouse(bool follow) {
-	CGAssociateMouseAndMouseCursorPosition(follow);
+void lanhopTapHoldCursor(lanhopTap *tap, bool hold) {
+	if (hold) {
+		double x, y;
+		lanhopCursor(&x, &y);
+		tap->held = CGPointMake(x, y);
+	}
+	atomic_store(&tap->holdsCursor, hold);
 }
 
 bool lanhopKeyIsDown(uint16_t keyCode) {
