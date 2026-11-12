@@ -54,7 +54,7 @@ On macOS, the tests that post real input are off by default, because they act on
 - `LANHOP_TEST_REAL_INPUT=1 go test ./internal/macos/` presses Shift and F19, moves the cursor by 3 pixels and scrolls one line, and undoes each of them.
 - `LANHOP_TEST_REAL_INPUT=clicks go test ./internal/macos/` also clicks, double clicks and drags by 3 pixels where the cursor is. Leave the cursor over something a click cannot harm, such as an empty text field.
 
-Both need the Accessibility permission (see [docs/setup-macos.md](docs/setup-macos.md)). Every event lanhop posts carries a marker, and the tests count only marked events, so typing while they run does not confuse them.
+Both need the Accessibility permission, and macOS may also ask for Input Monitoring (see [docs/setup-macos.md](docs/setup-macos.md)). Every event lanhop posts carries a marker, and the tests count only marked events, so typing while they run does not confuse them.
 
 ## Code style
 

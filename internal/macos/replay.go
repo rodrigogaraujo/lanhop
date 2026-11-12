@@ -28,6 +28,7 @@ const (
 const (
 	doubleClickInterval = 500 * time.Millisecond
 	doubleClickDistance = 4.0
+	cursorMemory        = 500 * time.Millisecond
 )
 
 var modifierFlags = map[uint16]Flags{
@@ -105,6 +106,8 @@ type Replay struct {
 	moveX, moveY  int32
 	wheel, hwheel int32
 	previous      lastPress
+	placed        Point
+	placedAt      time.Time
 }
 
 func NewReplay(screen Screen, keys keymap.Translator) *Replay {
@@ -147,6 +150,9 @@ func (r *Replay) key(code uint16, value int32) {
 	down := value != event.KeyReleased
 	flag, modifier := modifierFlags[macOSKey]
 	if modifier {
+		if value == event.KeyRepeated {
+			return
+		}
 		if down {
 			r.heldModifiers[macOSKey] = flag
 		} else {
@@ -158,7 +164,8 @@ func (r *Replay) key(code uint16, value int32) {
 
 func (r *Replay) button(button int, value int32) {
 	r.flush()
-	at := r.screen.Cursor()
+	at := r.cursor()
+	r.remember(at)
 	switch value {
 	case event.KeyPressed:
 		clicks := r.clicksFor(button, at)
@@ -210,14 +217,28 @@ func (r *Replay) flush() {
 }
 
 func (r *Replay) move(dx, dy int32) {
-	from := r.screen.Cursor()
+	from := r.cursor()
 	to := keepOnDisplays(from, Point{X: from.X + float64(dx), Y: from.Y + float64(dy)}, r.screen.Displays())
 	moved := MouseEvent{Action: MouseMoved, At: to, DX: dx, DY: dy, Flags: r.flags()}
 	if button, dragging := r.lowestHeldButton(); dragging {
 		moved.Action = MouseDragged
 		moved.Button = button
+		moved.Clicks = r.heldButtons[button]
 	}
 	r.screen.PostMouse(moved)
+	r.remember(to)
+}
+
+func (r *Replay) cursor() Point {
+	if !r.placedAt.IsZero() && r.now().Sub(r.placedAt) <= cursorMemory {
+		return r.placed
+	}
+	return r.screen.Cursor()
+}
+
+func (r *Replay) remember(at Point) {
+	r.placed = at
+	r.placedAt = r.now()
 }
 
 func keepOnDisplays(from, to Point, displays []Rect) Point {

@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin && cgo
 
 package macos
 
@@ -37,8 +37,20 @@ func (Quartz) PostKey(key KeyPress) {
 	C.lanhopPostKey(C.uint16_t(key.Code), C.bool(key.Down), C.bool(key.Modifier), C.uint64_t(key.Flags))
 }
 
+func nativeAction(action MouseAction) C.int {
+	switch action {
+	case MouseDragged:
+		return C.lanhopActionDragged
+	case MouseDown:
+		return C.lanhopActionDown
+	case MouseUp:
+		return C.lanhopActionUp
+	}
+	return C.lanhopActionMoved
+}
+
 func (Quartz) PostMouse(mouse MouseEvent) {
-	C.lanhopPostMouse(C.int(mouse.Action), C.double(mouse.At.X), C.double(mouse.At.Y), C.int(mouse.Button),
+	C.lanhopPostMouse(nativeAction(mouse.Action), C.double(mouse.At.X), C.double(mouse.At.Y), C.int(mouse.Button),
 		C.int64_t(mouse.Clicks), C.int64_t(mouse.DX), C.int64_t(mouse.DY), C.uint64_t(mouse.Flags))
 }
 
@@ -116,6 +128,7 @@ func (t *Tap) Close() error {
 		<-t.stopped
 		C.lanhopTapFree(t.native)
 		t.handle.Delete()
+		close(t.observed)
 	})
 	return nil
 }

@@ -356,3 +356,279 @@ func TestMovementAndScrollOfOneReportAreBothPosted(t *testing.T) {
 		Scroll{Vertical: -1},
 	)
 }
+
+const (
+	linuxRightCtrl    uint16 = 97
+	linuxRightAlt     uint16 = 100
+	linuxRightSuper   uint16 = 126
+	linuxButtonTask   uint16 = 0x117
+	linuxWheelHighRes uint16 = 0x0b
+)
+
+type laggingScreen struct {
+	fakeScreen
+	reported Point
+}
+
+func (s *laggingScreen) Cursor() Point {
+	return s.reported
+}
+
+func TestFlagValuesAreTheOnesMacOSUses(t *testing.T) {
+	for name, check := range map[string]struct{ got, want Flags }{
+		"Shift":   {FlagShift, 0x20000},
+		"Control": {FlagControl, 0x40000},
+		"Option":  {FlagOption, 0x80000},
+		"Command": {FlagCommand, 0x100000},
+	} {
+		if check.got != check.want {
+			t.Errorf("%s flag = %#x, want %#x", name, uint64(check.got), uint64(check.want))
+		}
+	}
+}
+
+func TestModifiersOfBothSidesSetTheirFlag(t *testing.T) {
+	for linuxKey, want := range map[uint16]KeyPress{
+		linuxLeftCtrl:   {Code: 0x3B, Down: true, Modifier: true, Flags: FlagControl},
+		linuxRightCtrl:  {Code: 0x3E, Down: true, Modifier: true, Flags: FlagControl},
+		linuxLeftAlt:    {Code: 0x3A, Down: true, Modifier: true, Flags: FlagOption},
+		linuxRightAlt:   {Code: 0x3D, Down: true, Modifier: true, Flags: FlagOption},
+		linuxLeftSuper:  {Code: 0x37, Down: true, Modifier: true, Flags: FlagCommand},
+		linuxRightSuper: {Code: 0x36, Down: true, Modifier: true, Flags: FlagCommand},
+		linuxShiftRight: {Code: macOSShiftRight, Down: true, Modifier: true, Flags: FlagShift},
+	} {
+		screen := oneDisplay()
+		replay, _ := newReplayOn(screen)
+
+		replay.Emit(press(linuxKey))
+
+		expectPosted(t, screen, want)
+	}
+}
+
+func TestRepeatOfAModifierIsNotPosted(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(press(linuxShiftLeft), event.Key(linuxShiftLeft, event.KeyRepeated), press(linuxKeyA))
+
+	expectPosted(t, screen,
+		KeyPress{Code: macOSShiftLeft, Down: true, Modifier: true, Flags: FlagShift},
+		KeyPress{Code: macOSKeyA, Down: true, Flags: FlagShift},
+	)
+}
+
+func TestHeldModifierIsCarriedByMovementDragAndRelease(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(
+		press(linuxShiftLeft),
+		event.Relative(event.RelX, 1), event.Sync(),
+		press(event.ButtonLeft), event.Sync(),
+		event.Relative(event.RelX, 1), event.Sync(),
+		release(event.ButtonLeft), event.Sync(),
+	)
+
+	expectPosted(t, screen,
+		KeyPress{Code: macOSShiftLeft, Down: true, Modifier: true, Flags: FlagShift},
+		MouseEvent{Action: MouseMoved, At: Point{X: 51, Y: 50}, DX: 1, Flags: FlagShift},
+		MouseEvent{Action: MouseDown, At: Point{X: 51, Y: 50}, Clicks: 1, Flags: FlagShift},
+		MouseEvent{Action: MouseDragged, At: Point{X: 52, Y: 50}, Clicks: 1, DX: 1, Flags: FlagShift},
+		MouseEvent{Action: MouseUp, At: Point{X: 52, Y: 50}, Clicks: 1, Flags: FlagShift},
+	)
+}
+
+func TestReleaseCarriesTheNumberOfItsButton(t *testing.T) {
+	for linuxButton, want := range map[uint16]int{event.ButtonLeft: 0, event.ButtonRight: 1, event.ButtonMiddle: 2, linuxButtonSide: 3, linuxButtonTask: 7} {
+		screen := oneDisplay()
+		replay, _ := newReplayOn(screen)
+
+		replay.Emit(press(linuxButton), event.Sync(), release(linuxButton), event.Sync())
+
+		down, up := screen.posted[0].(MouseEvent), screen.posted[1].(MouseEvent)
+		if down.Action != MouseDown || down.Button != want || up.Action != MouseUp || up.Button != want {
+			t.Errorf("Linux button %#x posted as %+v then %+v, want down and up of button %d", linuxButton, down, up, want)
+		}
+	}
+}
+
+func TestMovementAfterTheButtonIsReleasedIsNotADrag(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(press(event.ButtonLeft), event.Sync(), release(event.ButtonLeft), event.Sync(), event.Relative(event.RelX, 2), event.Sync())
+
+	if last := screen.posted[len(screen.posted)-1].(MouseEvent); last.Action != MouseMoved {
+		t.Errorf("movement after the release posted as %+v, want a plain move", last)
+	}
+}
+
+func TestDragCarriesTheClickCountOfItsPress(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(
+		press(event.ButtonLeft), event.Sync(), release(event.ButtonLeft), event.Sync(),
+		press(event.ButtonLeft), event.Sync(),
+		event.Relative(event.RelX, 6), event.Sync(),
+	)
+
+	if dragged := screen.posted[len(screen.posted)-1].(MouseEvent); dragged.Action != MouseDragged || dragged.Clicks != 2 {
+		t.Errorf("drag after a double click posted as %+v, want a drag with click count 2", dragged)
+	}
+}
+
+func TestRepeatOfAButtonIsNotPosted(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(event.Key(event.ButtonLeft, event.KeyRepeated), event.Sync())
+
+	expectPosted(t, screen)
+}
+
+func TestReleaseOfAButtonHappensWhereThePendingMovementEnds(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(press(event.ButtonLeft), event.Sync(), event.Relative(event.RelX, 5), release(event.ButtonLeft), event.Sync())
+
+	expectPosted(t, screen,
+		MouseEvent{Action: MouseDown, At: Point{X: 50, Y: 50}, Clicks: 1},
+		MouseEvent{Action: MouseDragged, At: Point{X: 55, Y: 50}, Clicks: 1, DX: 5},
+		MouseEvent{Action: MouseUp, At: Point{X: 55, Y: 50}, Clicks: 1},
+	)
+}
+
+func TestEveryAxisAddsUpWithinAReport(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(
+		event.Relative(event.RelY, 1), event.Relative(event.RelY, 2),
+		event.Relative(event.RelWheel, 1), event.Relative(event.RelWheel, 1),
+		event.Relative(event.RelHWheel, 2), event.Relative(event.RelHWheel, 1),
+		event.Sync(),
+	)
+
+	expectPosted(t, screen,
+		MouseEvent{Action: MouseMoved, At: Point{X: 50, Y: 53}, DY: 3},
+		Scroll{Vertical: 2, Horizontal: -3},
+	)
+}
+
+func TestHorizontalWheelAloneScrolls(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(event.Relative(event.RelHWheel, 1), event.Sync())
+
+	expectPosted(t, screen, Scroll{Horizontal: -1})
+}
+
+func TestHighResolutionWheelIsIgnored(t *testing.T) {
+	screen := oneDisplay()
+	replay, _ := newReplayOn(screen)
+
+	replay.Emit(event.Relative(linuxWheelHighRes, 120), event.Sync())
+
+	expectPosted(t, screen)
+}
+
+func TestDoubleClickNeedsTheSameSpotOnBothAxes(t *testing.T) {
+	for name, check := range map[string]struct {
+		axis  uint16
+		delta int32
+		want  []int
+	}{
+		"a little down": {event.RelY, 4, []int{1, 1, 2, 2}},
+		"far down":      {event.RelY, 5, []int{1, 1, 1, 1}},
+		"far up":        {event.RelY, -5, []int{1, 1, 1, 1}},
+		"far left":      {event.RelX, -5, []int{1, 1, 1, 1}},
+	} {
+		screen := oneDisplay()
+		replay, _ := newReplayOn(screen)
+		click := []event.Event{press(event.ButtonLeft), event.Sync(), release(event.ButtonLeft), event.Sync()}
+
+		replay.Emit(click...)
+		replay.Emit(event.Relative(check.axis, check.delta), event.Sync())
+		replay.Emit(click...)
+
+		if got := clicksOf(screen); !slices.Equal(got, check.want) {
+			t.Errorf("%s: click counts = %v, want %v", name, got, check.want)
+		}
+	}
+}
+
+func TestCursorStaysOnDisplaysThatDoNotStartAtZero(t *testing.T) {
+	leftOfMain := []Rect{{Width: 100, Height: 100}, {X: -100, Width: 100, Height: 100}}
+	aboveMain := []Rect{{Width: 100, Height: 100}, {Y: -100, Width: 100, Height: 100}}
+	away := []Rect{{X: 100, Y: 200, Width: 100, Height: 100}}
+	cases := []struct {
+		name     string
+		displays []Rect
+		from     Point
+		dx, dy   int32
+		want     Point
+	}{
+		{"crosses to a display on the left of the main one", leftOfMain, Point{X: 2, Y: 50}, -10, 0, Point{X: -8, Y: 50}},
+		{"stops at the outer edge of a display on the left", leftOfMain, Point{X: -98, Y: 50}, -10, 0, Point{X: -100, Y: 50}},
+		{"crosses to a display above the main one", aboveMain, Point{X: 50, Y: 2}, 0, -10, Point{X: 50, Y: -8}},
+		{"stops at the outer edge of a display above", aboveMain, Point{X: 50, Y: -98}, 0, -10, Point{X: 50, Y: -100}},
+		{"stops at the near edges of a display away from zero", away, Point{X: 105, Y: 205}, -10, -10, Point{X: 100, Y: 200}},
+		{"stops at the far edges of a display away from zero", away, Point{X: 195, Y: 295}, 10, 10, Point{X: 199, Y: 299}},
+		{"the far edge itself is outside", away[:1], Point{X: 198, Y: 250}, 2, 0, Point{X: 199, Y: 250}},
+		{"the bottom edge itself is outside", away[:1], Point{X: 150, Y: 298}, 0, 2, Point{X: 150, Y: 299}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			screen := &fakeScreen{cursor: c.from, displays: c.displays}
+			replay, _ := newReplayOn(screen)
+
+			replay.Emit(event.Relative(event.RelX, c.dx), event.Relative(event.RelY, c.dy), event.Sync())
+
+			if screen.cursor != c.want {
+				t.Errorf("cursor at %+v, want %+v", screen.cursor, c.want)
+			}
+		})
+	}
+}
+
+func TestQuickReportsBuildOnWhatWasPostedEvenIfTheSystemLags(t *testing.T) {
+	screen := &laggingScreen{fakeScreen: fakeScreen{displays: []Rect{{Width: 1000, Height: 1000}}}, reported: Point{X: 500, Y: 500}}
+	replay, _ := newReplayOn(&screen.fakeScreen)
+	replay.screen = screen
+
+	replay.Emit(
+		event.Relative(event.RelX, 5), event.Sync(),
+		event.Relative(event.RelX, 5), event.Sync(),
+		press(event.ButtonLeft), event.Sync(),
+	)
+
+	expectPosted(t, &screen.fakeScreen,
+		MouseEvent{Action: MouseMoved, At: Point{X: 505, Y: 500}, DX: 5},
+		MouseEvent{Action: MouseMoved, At: Point{X: 510, Y: 500}, DX: 5},
+		MouseEvent{Action: MouseDown, At: Point{X: 510, Y: 500}, Clicks: 1},
+	)
+}
+
+func TestCursorMovedLocallyIsPickedUpAfterAPause(t *testing.T) {
+	screen := oneDisplay()
+	replay, clock := newReplayOn(screen)
+	replay.Emit(event.Relative(event.RelX, 5), event.Sync())
+
+	screen.cursor = Point{X: 10, Y: 10}
+	clock.advance(cursorMemory)
+	replay.Emit(event.Relative(event.RelX, 1), event.Sync())
+	if want := (Point{X: 56, Y: 50}); screen.cursor != want {
+		t.Errorf("within the memory the cursor went to %+v, want %+v", screen.cursor, want)
+	}
+
+	screen.cursor = Point{X: 10, Y: 10}
+	clock.advance(cursorMemory + time.Millisecond)
+	replay.Emit(event.Relative(event.RelX, 1), event.Sync())
+	if want := (Point{X: 11, Y: 10}); screen.cursor != want {
+		t.Errorf("after a pause the cursor went to %+v, want %+v", screen.cursor, want)
+	}
+}

@@ -5,6 +5,8 @@
 
 #define LANHOP_MARKER 0x6c68
 
+enum { lanhopActionMoved, lanhopActionDragged, lanhopActionDown, lanhopActionUp };
+
 typedef struct {
 	uint32_t type;
 	uint16_t keyCode;

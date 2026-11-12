@@ -6,7 +6,10 @@
 
 #include "_cgo_export.h"
 
-enum { actionMoved, actionDragged, actionDown, actionUp };
+_Static_assert(kCGEventFlagMaskShift == 0x20000, "the Shift flag changed");
+_Static_assert(kCGEventFlagMaskControl == 0x40000, "the Control flag changed");
+_Static_assert(kCGEventFlagMaskAlternate == 0x80000, "the Option flag changed");
+_Static_assert(kCGEventFlagMaskCommand == 0x100000, "the Command flag changed");
 
 struct lanhopTap {
 	CFMachPortRef port;
@@ -37,11 +40,11 @@ static void post(CGEventRef event, uint64_t flags) {
 
 static CGEventType mouseType(int action, int button) {
 	switch (action) {
-	case actionMoved:
+	case lanhopActionMoved:
 		return kCGEventMouseMoved;
-	case actionDragged:
+	case lanhopActionDragged:
 		return button == 0 ? kCGEventLeftMouseDragged : button == 1 ? kCGEventRightMouseDragged : kCGEventOtherMouseDragged;
-	case actionDown:
+	case lanhopActionDown:
 		return button == 0 ? kCGEventLeftMouseDown : button == 1 ? kCGEventRightMouseDown : kCGEventOtherMouseDown;
 	default:
 		return button == 0 ? kCGEventLeftMouseUp : button == 1 ? kCGEventRightMouseUp : kCGEventOtherMouseUp;
@@ -69,9 +72,10 @@ void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks,
 	if (event == NULL) {
 		return;
 	}
-	if (action == actionDown || action == actionUp) {
+	if (action != lanhopActionMoved) {
 		CGEventSetIntegerValueField(event, kCGMouseEventClickState, clicks);
-	} else {
+	}
+	if (action == lanhopActionMoved || action == lanhopActionDragged) {
 		CGEventSetIntegerValueField(event, kCGMouseEventDeltaX, deltaX);
 		CGEventSetIntegerValueField(event, kCGMouseEventDeltaY, deltaY);
 	}
@@ -156,6 +160,11 @@ lanhopTap *lanhopTapCreate(uintptr_t handle) {
 		return NULL;
 	}
 	tap->source = CFMachPortCreateRunLoopSource(NULL, tap->port, 0);
+	if (tap->source == NULL) {
+		CFRelease(tap->port);
+		free(tap);
+		return NULL;
+	}
 	return tap;
 }
 
@@ -169,11 +178,14 @@ void lanhopTapRun(lanhopTap *tap) {
 }
 
 void lanhopTapStop(lanhopTap *tap) {
-	tap->stopping = true;
-	CGEventTapEnable(tap->port, false);
-	CFRunLoopRemoveSource(tap->loop, tap->source, kCFRunLoopCommonModes);
-	CFMachPortInvalidate(tap->port);
-	CFRunLoopStop(tap->loop);
+	CFRunLoopPerformBlock(tap->loop, kCFRunLoopCommonModes, ^{
+		tap->stopping = true;
+		CGEventTapEnable(tap->port, false);
+		CFRunLoopRemoveSource(tap->loop, tap->source, kCFRunLoopCommonModes);
+		CFMachPortInvalidate(tap->port);
+		CFRunLoopStop(tap->loop);
+	});
+	CFRunLoopWakeUp(tap->loop);
 }
 
 void lanhopTapFree(lanhopTap *tap) {

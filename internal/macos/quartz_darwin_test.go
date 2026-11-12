@@ -48,7 +48,10 @@ func nextReplayed(t *testing.T, tap *Tap) Observation {
 	deadline := time.After(observePatience)
 	for {
 		select {
-		case seen := <-tap.Observed():
+		case seen, open := <-tap.Observed():
+			if !open {
+				t.Fatal("the tap was closed before the replayed event arrived")
+			}
 			if seen.Marker == Marker {
 				return seen
 			}
@@ -160,7 +163,10 @@ func replayedWithin(tap *Tap, window time.Duration) []Observation {
 	deadline := time.After(window)
 	for {
 		select {
-		case observation := <-tap.Observed():
+		case observation, open := <-tap.Observed():
+			if !open {
+				return seen
+			}
 			if observation.Marker == Marker {
 				seen = append(seen, observation)
 			}
@@ -255,5 +261,79 @@ func TestMovementWithAButtonHeldIsADrag(t *testing.T) {
 	}
 	if released.Type != typeLeftMouseUp {
 		t.Errorf("release = %+v, want left button up", released)
+	}
+}
+
+func TestTapClosedRightAfterItStartsAlwaysStops(t *testing.T) {
+	if !CanListen() {
+		t.Skip("this program is not allowed to observe input, see docs/setup-macos.md")
+	}
+	const rounds = 300
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for round := 0; round < rounds; round++ {
+			tap, err := StartTap()
+			if err != nil {
+				t.Errorf("StartTap in round %d: %v", round, err)
+				return
+			}
+			tap.Close()
+		}
+	}()
+	select {
+	case <-finished:
+	case <-time.After(60 * time.Second):
+		t.Fatal("closing a tap right after starting it did not return")
+	}
+}
+
+func TestClosedTapEndsItsStreamOfObservations(t *testing.T) {
+	if !CanListen() {
+		t.Skip("this program is not allowed to observe input, see docs/setup-macos.md")
+	}
+	tap, err := StartTap()
+	if err != nil {
+		t.Fatalf("StartTap: %v", err)
+	}
+	tap.Close()
+
+	deadline := time.After(observePatience)
+	for {
+		select {
+		case _, open := <-tap.Observed():
+			if !open {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the stream of a closed tap never ended")
+		}
+	}
+}
+
+func TestQuickMovementsAddUpWithoutWaitingForTheSystem(t *testing.T) {
+	replayed, tap := observeRealInput(t)
+	const steps = 20
+	start := Quartz{}.Cursor()
+
+	for range steps {
+		replay(t, replayed, event.Relative(event.RelX, 1), event.Sync())
+	}
+	var last Observation
+	for range steps {
+		last = nextReplayed(t, tap)
+	}
+	for range steps {
+		replay(t, replayed, event.Relative(event.RelX, -1), event.Sync())
+	}
+	for range steps {
+		nextReplayed(t, tap)
+	}
+
+	if want := (Point{X: start.X + steps, Y: start.Y}); last.At != want {
+		t.Errorf("after %d quick steps the cursor was at %+v, want %+v", steps, last.At, want)
+	}
+	if end := (Quartz{}).Cursor(); end != start {
+		t.Errorf("the cursor ended at %+v, want %+v", end, start)
 	}
 }
