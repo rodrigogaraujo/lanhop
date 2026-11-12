@@ -221,6 +221,64 @@ func TestDialRefusesAListenerWithAnotherIdentity(t *testing.T) {
 	}
 }
 
+func sharerThatNeverGreets(t *testing.T, machine *identity.Identity, trusted Trusted) (address string, secured <-chan struct{}) {
+	t.Helper()
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", acceptOnlyPaired(machine, trusted))
+	if err != nil {
+		t.Fatalf("tls.Listen: %v", err)
+	}
+	handshakeDone, testEnded := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		close(testEnded)
+		listener.Close()
+	})
+	go func() {
+		raw, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer raw.Close()
+		if raw.(*tls.Conn).Handshake() == nil {
+			close(handshakeDone)
+		}
+		<-testEnded
+	}()
+	return listener.Addr().String(), handshakeDone
+}
+
+func TestDialGivesUpAtOnceWhenCancelledWhileItWaitsForTheGreeting(t *testing.T) {
+	sharer, receiver := newIdentity(t), newIdentity(t)
+	address, secured := sharerThatNeverGreets(t, sharer, pairedWithMachine("laptop", receiver))
+	patient := configFor(receiver)
+	patient.HandshakeTimeout = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() {
+		conn, err := Dial(ctx, patient, trust.Peer{Name: "desktop", Fingerprint: sharer.Fingerprint, Address: address})
+		if err == nil {
+			conn.Close()
+		}
+		failed <- err
+	}()
+	select {
+	case <-secured:
+	case <-time.After(testPatience):
+		t.Fatal("the receiver did not reach the sharer")
+	}
+
+	cancel()
+
+	select {
+	case err := <-failed:
+		if err == nil {
+			t.Error("Dial connected to a sharer that never greeted")
+		}
+	case <-time.After(testPatience):
+		t.Fatal("Dial kept waiting for the greeting after it was cancelled")
+	}
+}
+
 func TestListenerRefusesOlderTLSVersions(t *testing.T) {
 	sharer, receiver := newIdentity(t), newIdentity(t)
 	listener, _ := listen(t, sharer, pairedWithMachine("laptop", receiver))

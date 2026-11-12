@@ -13,15 +13,17 @@ import (
 func Dial(ctx context.Context, config Config, peer trust.Peer) (*Conn, error) {
 	config = config.withDefaults()
 	deadline := time.Now().Add(config.HandshakeTimeout)
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	untilDeadline, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	dialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: connectOnlyTo(config.Identity, peer.Fingerprint)}
-	raw, err := dialer.DialContext(ctx, "tcp", peer.Address)
+	raw, err := dialer.DialContext(untilDeadline, "tcp", peer.Address)
 	if err != nil {
 		return nil, fmt.Errorf("transport: cannot connect to %s at %s: %w", peer.Name, peer.Address, err)
 	}
 	secured := raw.(*tls.Conn)
+	stopWatching := context.AfterFunc(ctx, func() { secured.Close() })
+	defer stopWatching()
 
 	if err := greet(secured, deadline); err != nil {
 		secured.Close()
