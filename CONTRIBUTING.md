@@ -43,6 +43,7 @@ sudo go test ./internal/evdev/
 - Prefer names that explain the code over comments that explain it. If a line needs prose to be understood, rename or restructure it.
 - Platform code lives behind build tags, in its own package under `internal/`.
 - Significant design decisions get a short record in [docs/adr](docs/adr).
+- A feature gets a spec and a plan in [specs](specs) before its code is written.
 
 ## Commit messages
 
