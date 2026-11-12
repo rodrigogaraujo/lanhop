@@ -9,6 +9,16 @@ You can run lanhop with `sudo` to try it. For daily use, give your own user the 
 
 > These steps follow the usual udev conventions. If they do not work on your distribution, please [open an issue](https://github.com/rodrigogaraujo/lanhop/issues) and say which one you use.
 
+## The quick way: the installer
+
+The [installer](../README.md#install) downloads lanhop and then does steps 1 and 2 of this page for you. It shows each command that needs `sudo` and asks before running it, and it skips a step that is already done. A machine that shares its keyboard needs only step 1, so the installer offers step 2 only on a machine that receives.
+
+It also writes the unit of [Starting lanhop with your session](#starting-lanhop-with-your-session) and offers to enable it.
+
+Step 3 stays with you: log out and log in again.
+
+The rest of this page is the same setup by hand.
+
 ## 1. Let your user read the input devices
 
 ```sh
@@ -21,7 +31,7 @@ sudo usermod -aG input "$USER"
 echo 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
   | sudo tee /etc/udev/rules.d/60-lanhop.rules
 
-echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+echo uinput | sudo tee /etc/modules-load.d/lanhop.conf
 
 sudo modprobe uinput
 sudo udevadm control --reload-rules
@@ -48,6 +58,38 @@ It lists the input devices lanhop can read and the kind of each one:
 
 The kind `other` covers what lanhop does not share, such as power buttons, touchpads and touchscreens. A "permission denied" error means step 1 or step 3 is missing.
 
+## Starting lanhop with your session
+
+A systemd user unit starts lanhop when you log in and stops it when you log out. Nothing runs as root. The installer writes it to `~/.config/systemd/user/lanhop.service`:
+
+```ini
+[Unit]
+Description=lanhop share
+Documentation=https://github.com/rodrigogaraujo/lanhop
+
+[Service]
+ExecStart="/home/YOU/.local/bin/lanhop" share
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+On a machine that receives, both `share` become `receive`.
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now lanhop.service
+```
+
+- `journalctl --user -u lanhop.service -f` shows what lanhop prints.
+- `systemctl --user disable --now lanhop.service` stops it and keeps it from starting again.
+- When lanhop ends with an error, systemd starts it again after 10 seconds. So a machine that is not paired yet starts receiving by itself soon after `lanhop pair`.
+- lanhop can read the input devices only in a session that began after step 3.
+
+`install.sh --uninstall` stops and removes the unit, the binary and, after asking, the files of step 2 when the installer wrote them. It keeps `~/.config/lanhop`, with the key of the machine and its trusted machines.
+
 ## Switching through the screen edges
 
 A Linux machine that is being controlled needs nothing more: the machine with the keyboard places its cursor, and pushing the cursor through an edge of its screen moves on to the machine on that side of the [layout](../README.md#layout).
@@ -64,5 +106,5 @@ A member of the `input` group can read every key typed on that machine, in any p
 
 ```sh
 sudo gpasswd -d "$USER" input
-sudo rm /etc/udev/rules.d/60-lanhop.rules /etc/modules-load.d/uinput.conf
+sudo rm /etc/udev/rules.d/60-lanhop.rules /etc/modules-load.d/lanhop.conf
 ```

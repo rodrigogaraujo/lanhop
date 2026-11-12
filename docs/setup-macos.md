@@ -2,6 +2,12 @@
 
 > **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. Sharing from a Mac has been tested only with input that lanhop generated itself, not yet with a person typing.
 
+## The quick way: the installer
+
+The [installer](../README.md#install) downloads lanhop, offers a launch agent that starts it when you log in, opens the Accessibility pane and tells you what to add there. [Starting lanhop when you log in](#starting-lanhop-when-you-log-in) describes what it sets up.
+
+The rest of this page explains the permission and the same setup by hand.
+
 ## Why lanhop needs a permission
 
 To share a keyboard and mouse, lanhop has to do two things that macOS protects:
@@ -36,7 +42,11 @@ macOS gives the permission to the program that starts lanhop, not always to lanh
 |---|---|
 | From a terminal window | Your terminal: **Terminal**, **iTerm**, **Ghostty** and so on |
 | From the terminal inside an editor | The editor: **Visual Studio Code**, **Zed** and so on |
-| As a background service (planned) | **lanhop** itself |
+| From the launch agent that the installer sets up | **lanhop** itself, the file `~/.local/bin/lanhop` |
+
+### Adding lanhop itself
+
+The file chooser of step 3 does not show `~/.local`, because its name starts with a dot. With the chooser open, press Command+Shift+G, type `~/.local/bin/lanhop`, press Return and click **Open**.
 
 ## If it does not work
 
@@ -44,6 +54,33 @@ macOS gives the permission to the program that starts lanhop, not always to lanh
 - **You granted it and nothing changed.** Quit the terminal completely (Cmd+Q, not only closing the window) and open it again.
 - **The + button is greyed out, or the list cannot be changed.** The Mac is managed by an organisation that blocks this setting. Ask whoever manages it.
 - **macOS also asks for "Input Monitoring".** Allow it for the same program, in **Privacy & Security → Input Monitoring**.
+
+## Starting lanhop when you log in
+
+The installer writes a launch agent to `~/Library/LaunchAgents/com.github.rodrigogaraujo.lanhop.plist`. It runs `~/.local/bin/lanhop share` or `~/.local/bin/lanhop receive` every time you log in, as your own user.
+
+- The program to allow under Accessibility is then **lanhop** itself: see [Adding lanhop itself](#adding-lanhop-itself).
+- lanhop writes what it prints to `~/Library/Logs/lanhop.log`.
+- When lanhop ends with an error, macOS starts it again after 10 seconds. So it starts working by itself soon after you allow it, and soon after `lanhop pair`. `pkill lanhop` ends it until the next login.
+- `launchctl bootout gui/$(id -u)/com.github.rodrigogaraujo.lanhop` stops it now. It starts again at the next login for as long as the file exists.
+- After every update of lanhop, remove it from the Accessibility list with the **−** button and add it again. [The macOS build is not signed](#the-macos-build-is-not-signed) says why.
+
+`install.sh --uninstall` stops and removes the launch agent, its log and the binary. It keeps `~/Library/Application Support/lanhop`, with the key of the Mac and its trusted machines. Remove lanhop from the Accessibility list yourself.
+
+## The macOS build is not signed
+
+The macOS builds of a release are not signed with an Apple developer certificate and are not notarized by Apple. Two things follow:
+
+- **A build downloaded with a browser does not start.** The browser marks the archive as downloaded from the internet, and macOS refuses to run a program that carries that mark unless Apple has checked it: it says that it could not verify that "lanhop" is free of malware. The installer downloads with `curl`, which sets no mark, so the lanhop it installs starts. If you download the archive with a browser, download `SHA256SUMS` too, check the archive against it, and then take the mark away from the unpacked program:
+
+  ```sh
+  shasum -a 256 --ignore-missing -c SHA256SUMS
+  xattr -d com.apple.quarantine lanhop
+  ```
+
+  Or try to run it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
+
+- **macOS ties the Accessibility permission to the exact file it approved.** A signed program keeps its permission across updates. lanhop does not: after each update, remove it from the Accessibility list and add it again.
 
 ## Letting another machine control the Mac
 
