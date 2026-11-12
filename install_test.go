@@ -1,0 +1,1217 @@
+//go:build unix
+
+package lanhop_test
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+const (
+	installer     = "install.sh"
+	latestRelease = "latest/download"
+	wouldRun      = "would run: "
+
+	binaryFile     = ".local/bin/lanhop"
+	unitFile       = ".config/systemd/user/lanhop.service"
+	ruleRecordFile = ".local/state/lanhop/udev-rule-installed"
+	agentFile      = "Library/LaunchAgents/com.github.rodrigogaraujo.lanhop.plist"
+	agentLogFile   = "Library/Logs/lanhop.log"
+	linuxPeersFile = ".config/lanhop/peers.json"
+	macPeersFile   = "Library/Application Support/lanhop/peers.json"
+
+	usageWithTheEditor    = "lanhop layout --edit   arrange the machines on the desk by dragging them"
+	usageWithoutTheEditor = "lanhop layout          show where the layout file is"
+
+	joinTheInputGroup   = "sudo usermod -aG input ana"
+	writeTheUdevRule    = `printf '%s\n' 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee {root}/etc/udev/rules.d/60-lanhop.rules`
+	loadUinputAtBoot    = `printf '%s\n' 'uinput' | sudo tee {root}/etc/modules-load.d/lanhop.conf`
+	loadUinputNow       = "sudo modprobe uinput"
+	reloadTheUdevRules  = "sudo udevadm control --reload-rules"
+	applyTheUdevRules   = "sudo udevadm trigger"
+	reloadTheUnits      = "systemctl --user daemon-reload"
+	enableTheUnit       = "systemctl --user enable lanhop.service"
+	restartTheUnit      = "systemctl --user restart lanhop.service"
+	disableTheUnit      = "systemctl --user disable --now lanhop.service"
+	deleteTheUdevRule   = "sudo rm -f {root}/etc/udev/rules.d/60-lanhop.rules {root}/etc/modules-load.d/lanhop.conf"
+	openAccessibility   = "open x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+	stopTheAgent        = "launchctl bootout gui/501/com.github.rodrigogaraujo.lanhop"
+	startTheAgent       = "launchctl bootstrap gui/501 {home}/" + agentFile
+	notInTheInputGroup  = "ana staff"
+	alreadyInInputGroup = "ana input staff"
+)
+
+const fakeLanhop = `#!/bin/sh
+printf '%%s [configuration %%s]\n' "$*" "${LANHOP_CONFIG_DIR-default}" >>'%[1]s'
+case "$1" in
+version) echo 'lanhop %[2]s' ;;
+help) echo '%[3]s' ;;
+layout) echo 'The layout file is /desk/layout' ;;
+pair)
+  read -r typed
+  printf 'typed %%s\n' "$typed" >>'%[1]s'
+  ;;
+esac
+`
+
+const fakeID = `#!/bin/sh
+case "$*" in
+-un) echo ana ;;
+-u) echo 501 ;;
+-Gn) echo '%[1]s' ;;
+'-Gn ana') echo '%[1]s' ;;
+*)
+  echo "id was not expected to be called with $*" >&2
+  exit 1
+  ;;
+esac
+`
+
+const fakeSystemCommand = `#!/bin/sh
+echo "$(basename "$0") $*" >>'%[1]s'
+exit %[2]d
+`
+
+const fakeSudo = `#!/bin/sh
+exec "$@"
+`
+
+const unitOfTheService = `[Unit]
+Description=lanhop %[2]s
+Documentation=https://github.com/rodrigogaraujo/lanhop
+
+[Service]
+ExecStart="%[1]s" %[2]s
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+`
+
+const agentOfTheService = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.github.rodrigogaraujo.lanhop</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%[1]s</string>
+    <string>%[2]s</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>%[3]s</string>
+  <key>StandardErrorPath</key>
+  <string>%[3]s</string>
+</dict>
+</plist>
+`
+
+var builds = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"}
+
+type releases struct {
+	t     *testing.T
+	root  string
+	url   string
+	calls string
+	usage string
+}
+
+func newReleases(t *testing.T) *releases {
+	t.Helper()
+	root := t.TempDir()
+	served := httptest.NewServer(http.FileServer(http.Dir(root)))
+	t.Cleanup(served.Close)
+	published := &releases{
+		t:     t,
+		root:  root,
+		url:   served.URL,
+		calls: filepath.Join(t.TempDir(), "calls"),
+		usage: usageWithTheEditor,
+	}
+	published.publish(latestRelease, "1.0.0")
+	return published
+}
+
+func (r *releases) publish(directory, version string) {
+	r.t.Helper()
+	var sums strings.Builder
+	for _, build := range builds {
+		name := "lanhop-" + build
+		archive := packed(r.t, name, fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage))
+		r.write(filepath.Join(directory, name+".tar.gz"), archive)
+		fmt.Fprintf(&sums, "%x  %s.tar.gz\n", sha256.Sum256(archive), name)
+	}
+	r.write(filepath.Join(directory, "SHA256SUMS"), []byte(sums.String()))
+}
+
+func (r *releases) write(name string, content []byte) {
+	r.t.Helper()
+	writeFile(r.t, filepath.Join(r.root, name), content, 0o644)
+}
+
+func (r *releases) damage(name string) {
+	r.t.Helper()
+	path := filepath.Join(r.root, name)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	writeFile(r.t, path, append(content, 0), 0o644)
+}
+
+func (r *releases) lanhopWasRunWith() []string {
+	r.t.Helper()
+	content, err := os.ReadFile(r.calls)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+}
+
+func packed(t *testing.T, name, binary string) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	zipped := gzip.NewWriter(&archive)
+	files := tar.NewWriter(zipped)
+	for _, file := range []struct {
+		name    string
+		content string
+		mode    int64
+	}{
+		{name + "/lanhop", binary, 0o755},
+		{name + "/LICENSE", "MIT License\n", 0o644},
+		{name + "/README.md", "# lanhop\n", 0o644},
+	} {
+		header := &tar.Header{Name: file.name, Mode: file.mode, Size: int64(len(file.content)), Typeflag: tar.TypeReg}
+		if err := files.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := files.Write([]byte(file.content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := errors.Join(files.Close(), zipped.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return archive.Bytes()
+}
+
+func writeFile(t *testing.T, path string, content []byte, mode fs.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type machine struct {
+	t        *testing.T
+	shell    string
+	home     string
+	root     string
+	aside    string
+	scratch  string
+	onPath   []string
+	settings map[string]string
+}
+
+func newMachine(t *testing.T, shell, system, architecture string, from *releases) *machine {
+	t.Helper()
+	m := &machine{t: t, shell: shell, home: t.TempDir(), root: t.TempDir(), aside: t.TempDir(), scratch: t.TempDir()}
+	m.settings = map[string]string{
+		"LANHOP_RELEASES_URL":   from.url,
+		"LANHOP_SYSTEM":         system,
+		"LANHOP_MACHINE":        architecture,
+		"LANHOP_SYSTEM_ROOT":    m.root,
+		"LANHOP_PRINT_COMMANDS": "1",
+		"LANHOP_TERMINAL":       filepath.Join(m.aside, "no terminal"),
+	}
+	m.withGroups(notInTheInputGroup)
+	return m
+}
+
+func (m *machine) withGroups(groups string) {
+	m.t.Helper()
+	writeFile(m.t, filepath.Join(m.aside, "bin", "id"), []byte(fmt.Sprintf(fakeID, groups)), 0o755)
+}
+
+func (m *machine) withRealSystemCommands() {
+	m.t.Helper()
+	delete(m.settings, "LANHOP_PRINT_COMMANDS")
+	for _, command := range []string{"usermod", "modprobe", "udevadm", "systemctl", "launchctl", "open"} {
+		m.systemCommandEndsWith(command, 0)
+	}
+	writeFile(m.t, filepath.Join(m.aside, "bin", "sudo"), []byte(fakeSudo), 0o755)
+	for _, directory := range []string{"etc/udev/rules.d", "etc/modules-load.d"} {
+		if err := os.MkdirAll(filepath.Join(m.root, directory), 0o755); err != nil {
+			m.t.Fatal(err)
+		}
+	}
+}
+
+func (m *machine) systemCommandEndsWith(command string, code int) {
+	m.t.Helper()
+	fake := fmt.Sprintf(fakeSystemCommand, filepath.Join(m.aside, "system commands"), code)
+	writeFile(m.t, filepath.Join(m.aside, "bin", command), []byte(fake), 0o755)
+}
+
+func (m *machine) systemCommandsRun() []string {
+	m.t.Helper()
+	content, err := os.ReadFile(filepath.Join(m.aside, "system commands"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return []string{}
+	}
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+}
+
+func (m *machine) systemFiles() map[string]string {
+	m.t.Helper()
+	found := map[string]string{}
+	err := filepath.WalkDir(m.root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		relative, err := filepath.Rel(m.root, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		found[filepath.ToSlash(relative)] = string(content)
+		return err
+	})
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	return found
+}
+
+func (m *machine) typing(lines ...string) {
+	m.t.Helper()
+	terminal := filepath.Join(m.aside, "terminal")
+	writeFile(m.t, terminal, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	m.settings["LANHOP_TERMINAL"] = terminal
+}
+
+func (m *machine) run(arguments ...string) (string, int) {
+	m.t.Helper()
+	script, err := os.ReadFile(installer)
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	command := exec.Command(m.shell, append([]string{"-s", "--"}, arguments...)...)
+	command.Stdin = bytes.NewReader(script)
+	path := append([]string{filepath.Join(m.aside, "bin")}, m.onPath...)
+	path = append(path, os.Getenv("PATH"))
+	command.Env = []string{"HOME=" + m.home, "TMPDIR=" + m.scratch, "PATH=" + strings.Join(path, string(os.PathListSeparator))}
+	for name, value := range m.settings {
+		command.Env = append(command.Env, name+"="+value)
+	}
+	output, err := command.CombinedOutput()
+	var failed *exec.ExitError
+	switch {
+	case err == nil:
+		return string(output), 0
+	case errors.As(err, &failed):
+		return string(output), failed.ExitCode()
+	}
+	m.t.Fatalf("%s did not run the installer: %v", m.shell, err)
+	return "", 0
+}
+
+func (m *machine) mustRun(arguments ...string) string {
+	m.t.Helper()
+	output, code := m.run(arguments...)
+	if code != 0 {
+		m.t.Fatalf("exit code = %d, want 0\n%s", code, output)
+	}
+	return output
+}
+
+func (m *machine) path(name string) string {
+	return filepath.Join(m.home, filepath.FromSlash(name))
+}
+
+func (m *machine) read(name string) string {
+	m.t.Helper()
+	content, err := os.ReadFile(m.path(name))
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	return string(content)
+}
+
+func (m *machine) files() []string {
+	m.t.Helper()
+	found := []string{}
+	err := filepath.WalkDir(m.home, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		relative, err := filepath.Rel(m.home, path)
+		found = append(found, filepath.ToSlash(relative))
+		return err
+	})
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	return found
+}
+
+func (m *machine) installedVersion() string {
+	m.t.Helper()
+	output, err := exec.Command(m.path(binaryFile), "version").Output()
+	if err != nil {
+		m.t.Fatalf("the installed lanhop does not run: %v", err)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func (m *machine) named(names ...string) []string {
+	described := make([]string, len(names))
+	for i, name := range names {
+		described[i] = strings.NewReplacer("{home}", m.home, "{root}", m.root).Replace(name)
+	}
+	return described
+}
+
+func commandsIn(output string) []string {
+	commands := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		if _, command, found := strings.Cut(line, wouldRun); found {
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
+func configured(calls ...string) []string {
+	described := make([]string, len(calls))
+	for i, call := range calls {
+		described[i] = call + " [configuration default]"
+	}
+	return described
+}
+
+func inEveryShell(t *testing.T, behaviour func(t *testing.T, shell string)) {
+	t.Helper()
+	for _, shell := range []string{"sh", "dash", "bash"} {
+		if _, err := exec.LookPath(shell); err != nil && shell != "sh" {
+			continue
+		}
+		t.Run(shell, func(t *testing.T) { behaviour(t, shell) })
+	}
+}
+
+func expectSame(t *testing.T, what string, got, want []string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Errorf("%s:\n got  %q\n want %q", what, got, want)
+	}
+}
+
+func expectMention(t *testing.T, output string, mentions ...string) {
+	t.Helper()
+	for _, mention := range mentions {
+		if !strings.Contains(output, mention) {
+			t.Errorf("the output does not say %q:\n%s", mention, output)
+		}
+	}
+}
+
+func expectNoQuestion(t *testing.T, output string) {
+	t.Helper()
+	for _, question := range []string{"[y/N]", "[y/n]", "Press Enter", "type its address"} {
+		if strings.Contains(output, question) {
+			t.Errorf("the output asks %q although nobody can answer:\n%s", question, output)
+		}
+	}
+}
+
+func TestEveryShellParsesTheInstaller(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		if output, err := exec.Command(shell, "-n", installer).CombinedOutput(); err != nil {
+			t.Errorf("%s -n %s: %v\n%s", shell, installer, err, output)
+		}
+	})
+}
+
+func TestInstallsTheBuildOfThisSystemAndArchitecture(t *testing.T) {
+	machines := []struct {
+		system, architecture, build string
+	}{
+		{"Linux", "x86_64", "linux-amd64"},
+		{"Linux", "amd64", "linux-amd64"},
+		{"Linux", "aarch64", "linux-arm64"},
+		{"Darwin", "arm64", "darwin-arm64"},
+		{"Darwin", "x86_64", "darwin-amd64"},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, found := range machines {
+			t.Run(found.system+" on "+found.architecture, func(t *testing.T) {
+				m := newMachine(t, shell, found.system, found.architecture, newReleases(t))
+				output := m.mustRun()
+				if got, want := m.installedVersion(), "lanhop 1.0.0 "+found.build; got != want {
+					t.Errorf("installed %q, want %q", got, want)
+				}
+				info, err := os.Stat(m.path(binaryFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0o755 {
+					t.Errorf("mode of the binary = %o, want 755", info.Mode().Perm())
+				}
+				expectMention(t, output, "Installed lanhop 1.0.0 "+found.build+" in "+m.path(binaryFile))
+			})
+		}
+	})
+}
+
+func TestWithoutATerminalOnlyTheBinaryIsInstalledAndNothingRuns(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, system := range []string{"Linux", "Darwin"} {
+			t.Run(system, func(t *testing.T) {
+				published := newReleases(t)
+				m := newMachine(t, shell, system, "arm64", published)
+				output := m.mustRun()
+				expectSame(t, "files in the home directory", m.files(), []string{binaryFile})
+				expectSame(t, "system commands", commandsIn(output), []string{})
+				expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version"))
+				expectMention(t, output, "nothing else was changed on this machine", "LANHOP_ROLE=share", "LANHOP_YES=1")
+				expectNoQuestion(t, output)
+			})
+		}
+	})
+}
+
+func TestSetsUpTheRoleThatWasAnswered(t *testing.T) {
+	setups := []struct {
+		name     string
+		system   string
+		groups   string
+		settings map[string]string
+		typed    []string
+		commands []string
+		files    []string
+		lanhop   []string
+	}{
+		{
+			name:     "Linux with the keyboard shares, joins the input group and enables the unit for the next login",
+			system:   "Linux",
+			typed:    []string{"y", "y", "y", "y", "yes", "y"},
+			commands: []string{joinTheInputGroup, reloadTheUnits, enableTheUnit},
+			files:    []string{unitFile, binaryFile},
+			lanhop:   append(configured("version", "pair"), append([]string{"typed yes"}, configured("help", "layout --edit")...)...),
+		},
+		{
+			name:     "Linux without the keyboard receives and also gets the udev rule",
+			system:   "Linux",
+			typed:    []string{"n", "y", "y", "y", "192.168.0.7", "yes"},
+			commands: []string{joinTheInputGroup, writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules, reloadTheUnits, enableTheUnit},
+			files:    []string{unitFile, binaryFile, ruleRecordFile},
+			lanhop:   append(configured("version", "pair 192.168.0.7"), "typed yes"),
+		},
+		{
+			name:     "Linux already in the input group is not asked to join it and starts at once",
+			system:   "Linux",
+			groups:   alreadyInInputGroup,
+			typed:    []string{"y", "y", "n", "n"},
+			commands: []string{reloadTheUnits, enableTheUnit, restartTheUnit},
+			files:    []string{unitFile, binaryFile},
+			lanhop:   configured("version", "help"),
+		},
+		{
+			name:     "Linux where every step is refused keeps the unit off and runs nothing",
+			system:   "Linux",
+			typed:    []string{"n", "n", "n", "n", ""},
+			commands: []string{},
+			files:    []string{unitFile, binaryFile},
+			lanhop:   configured("version"),
+		},
+		{
+			name:     "Linux with an unclear answer about the keyboard gets the binary and nothing else",
+			system:   "Linux",
+			typed:    []string{"maybe", "y", "y", "y", "y"},
+			commands: []string{},
+			files:    []string{binaryFile},
+			lanhop:   configured("version"),
+		},
+		{
+			name:     "Linux with only the role given, and nobody to ask, writes the unit and runs nothing",
+			system:   "Linux",
+			settings: map[string]string{"LANHOP_ROLE": "receive"},
+			commands: []string{},
+			files:    []string{unitFile, binaryFile},
+			lanhop:   configured("version"),
+		},
+		{
+			name:     "Linux unattended agrees to every step and pairs with nobody",
+			system:   "Linux",
+			settings: map[string]string{"LANHOP_ROLE": "receive", "LANHOP_YES": "1"},
+			typed:    []string{"n", "n", "n", "n"},
+			commands: []string{joinTheInputGroup, writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules, reloadTheUnits, enableTheUnit},
+			files:    []string{unitFile, binaryFile, ruleRecordFile},
+			lanhop:   configured("version"),
+		},
+		{
+			name:     "macOS with the keyboard shares from a launch agent that starts after the permission",
+			system:   "Darwin",
+			typed:    []string{"y", "y", "", "y", "yes", "y"},
+			commands: []string{openAccessibility, stopTheAgent, startTheAgent},
+			files:    []string{binaryFile, agentFile},
+			lanhop:   append(configured("version", "pair"), append([]string{"typed yes"}, configured("help", "layout --edit")...)...),
+		},
+		{
+			name:     "macOS without the keyboard receives from a launch agent",
+			system:   "Darwin",
+			typed:    []string{"n", "y", "", "10.0.0.5", "yes"},
+			commands: []string{openAccessibility, stopTheAgent, startTheAgent},
+			files:    []string{binaryFile, agentFile},
+			lanhop:   append(configured("version", "pair 10.0.0.5"), "typed yes"),
+		},
+		{
+			name:     "macOS where the launch agent is refused writes no file that would start lanhop at login",
+			system:   "Darwin",
+			typed:    []string{"y", "n", "n", "n"},
+			commands: []string{},
+			files:    []string{binaryFile},
+			lanhop:   configured("version", "help"),
+		},
+		{
+			name:     "macOS with only the role given, and nobody to ask, writes no launch agent",
+			system:   "Darwin",
+			settings: map[string]string{"LANHOP_ROLE": "share"},
+			commands: []string{},
+			files:    []string{binaryFile},
+			lanhop:   configured("version", "help"),
+		},
+		{
+			name:     "macOS unattended installs and starts the launch agent without waiting for anybody",
+			system:   "Darwin",
+			settings: map[string]string{"LANHOP_ROLE": "share", "LANHOP_YES": "1"},
+			typed:    []string{"n", "n", "n", "n"},
+			commands: []string{openAccessibility, stopTheAgent, startTheAgent},
+			files:    []string{binaryFile, agentFile},
+			lanhop:   configured("version", "help"),
+		},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, setup := range setups {
+			t.Run(setup.name, func(t *testing.T) {
+				published := newReleases(t)
+				m := newMachine(t, shell, setup.system, "x86_64", published)
+				for name, value := range setup.settings {
+					m.settings[name] = value
+				}
+				if setup.groups != "" {
+					m.withGroups(setup.groups)
+				}
+				if setup.typed != nil {
+					m.typing(setup.typed...)
+				}
+				output := m.mustRun()
+				expectSame(t, "system commands", commandsIn(output), m.named(setup.commands...))
+				expectSame(t, "files in the home directory", m.files(), setup.files)
+				expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), setup.lanhop)
+				if setup.typed == nil || setup.settings["LANHOP_YES"] == "1" {
+					expectNoQuestion(t, output)
+				}
+				if strings.Contains(output, "lanhop installer:") {
+					t.Errorf("the installer reports a problem:\n%s", output)
+				}
+			})
+		}
+	})
+}
+
+func TestTheUnitRunsTheInstalledBinaryInTheChosenRole(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, role := range []string{"share", "receive"} {
+			t.Run(role, func(t *testing.T) {
+				m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+				m.settings["LANHOP_ROLE"] = role
+				m.mustRun()
+				if got, want := m.read(unitFile), fmt.Sprintf(unitOfTheService, m.path(binaryFile), role); got != want {
+					t.Errorf("unit:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	})
+}
+
+func TestTheLaunchAgentRunsTheInstalledBinaryInTheChosenRole(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, role := range []string{"share", "receive"} {
+			t.Run(role, func(t *testing.T) {
+				m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+				m.settings["LANHOP_ROLE"] = role
+				m.settings["LANHOP_YES"] = "1"
+				output := m.mustRun()
+				if got, want := m.read(agentFile), fmt.Sprintf(agentOfTheService, m.path(binaryFile), role, m.path(agentLogFile)); got != want {
+					t.Errorf("launch agent:\n%s\nwant:\n%s", got, want)
+				}
+				expectMention(t, output, "System Settings > Privacy & Security > Accessibility", "type "+m.path(binaryFile))
+			})
+		}
+	})
+}
+
+func TestRefusingTheLaunchAgentLeavesTheOneOfAnEarlierInstallAndSaysSo(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.settings["LANHOP_ROLE"] = "share"
+		m.settings["LANHOP_YES"] = "1"
+		m.mustRun()
+		earlier := m.read(agentFile)
+
+		delete(m.settings, "LANHOP_YES")
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.typing("n", "")
+		output := m.mustRun()
+		if now := m.read(agentFile); now != earlier {
+			t.Errorf("the launch agent changed although it was refused:\n%s", now)
+		}
+		expectSame(t, "system commands", commandsIn(output), []string{})
+		expectMention(t, output, "The launch agent of an earlier install is still there")
+	})
+}
+
+func TestTheUdevRuleThatIsAlreadyThereIsNotWrittenAgain(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+		writeFile(t, filepath.Join(m.root, "etc/udev/rules.d/60-lanhop.rules"), []byte("written by hand\n"), 0o644)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), []string{joinTheInputGroup, reloadTheUnits, enableTheUnit})
+		expectSame(t, "files in the home directory", m.files(), []string{unitFile, binaryFile})
+	})
+}
+
+func TestRunsTheSystemCommandsWhenNotAskedToPrintThem(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+		m.withRealSystemCommands()
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands that ran", m.systemCommandsRun(), []string{
+			"usermod -aG input ana",
+			"modprobe uinput",
+			"udevadm control --reload-rules",
+			"udevadm trigger",
+			"systemctl --user daemon-reload",
+			"systemctl --user enable lanhop.service",
+		})
+		wantFiles := map[string]string{
+			"etc/udev/rules.d/60-lanhop.rules": `KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"` + "\n",
+			"etc/modules-load.d/lanhop.conf":   "uinput\n",
+		}
+		if got := m.systemFiles(); !maps.Equal(got, wantFiles) {
+			t.Errorf("files of the system = %q, want %q", got, wantFiles)
+		}
+		if strings.Contains(output, wouldRun) {
+			t.Errorf("the output says %q although the commands ran:\n%s", wouldRun, output)
+		}
+
+		m.mustRun()
+		if again := m.systemCommandsRun(); slices.Contains(again[6:], "modprobe uinput") {
+			t.Errorf("the second run set up uinput again: %q", again[6:])
+		}
+
+		m.mustRun("--uninstall")
+		if got := m.systemFiles(); len(got) != 0 {
+			t.Errorf("files of the system after uninstall = %q, want none", got)
+		}
+		expectSame(t, "files in the home directory", m.files(), []string{})
+	})
+}
+
+func TestStartsTheLaunchAgentAfterStoppingTheOneThatRuns(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.withRealSystemCommands()
+		m.settings["LANHOP_ROLE"] = "share"
+		m.settings["LANHOP_YES"] = "1"
+		m.mustRun()
+		expectSame(t, "system commands that ran", m.systemCommandsRun(), m.named(openAccessibility, stopTheAgent, startTheAgent))
+	})
+}
+
+func TestCarriesOnWhenASystemCommandFails(t *testing.T) {
+	failures := []struct {
+		name    string
+		system  string
+		command string
+		says    string
+		files   []string
+	}{
+		{
+			name:    "sudo on Linux, which leaves the udev rule unrecorded",
+			system:  "Linux",
+			command: "sudo",
+			says:    "that did not work",
+			files:   []string{unitFile, binaryFile},
+		},
+		{
+			name:    "systemctl on a system without systemd",
+			system:  "Linux",
+			command: "systemctl",
+			says:    "systemd did not take it",
+			files:   []string{unitFile, binaryFile, ruleRecordFile},
+		},
+		{
+			name:    "modprobe after the udev rule was written",
+			system:  "Linux",
+			command: "modprobe",
+			says:    "the rule is written, but it could not be applied now",
+			files:   []string{unitFile, binaryFile, ruleRecordFile},
+		},
+		{
+			name:    "launchctl on macOS",
+			system:  "Darwin",
+			command: "launchctl",
+			says:    "launchd did not start it now",
+			files:   []string{binaryFile, agentFile},
+		},
+		{
+			name:    "open on macOS",
+			system:  "Darwin",
+			command: "open",
+			says:    "System Settings did not open",
+			files:   []string{binaryFile, agentFile},
+		},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, failure := range failures {
+			t.Run(failure.name, func(t *testing.T) {
+				m := newMachine(t, shell, failure.system, "x86_64", newReleases(t))
+				m.withRealSystemCommands()
+				m.systemCommandEndsWith(failure.command, 1)
+				m.settings["LANHOP_ROLE"] = "receive"
+				m.settings["LANHOP_YES"] = "1"
+				output := m.mustRun()
+				expectMention(t, output, failure.says, "Two machines must be paired once", "To remove lanhop:")
+				expectSame(t, "files in the home directory", m.files(), failure.files)
+			})
+		}
+	})
+}
+
+func TestPairingUsesTheConfigurationTheServiceWillUse(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.settings["LANHOP_CONFIG_DIR"] = "/somewhere/else"
+		m.typing("y", "n", "n", "y", "yes", "n")
+		m.mustRun()
+		runs := published.lanhopWasRunWith()
+		if !slices.Contains(runs, "pair [configuration default]") {
+			t.Errorf("lanhop pair did not run with the default configuration directory: %q", runs)
+		}
+	})
+}
+
+func TestAMachineWithoutTheEditorIsToldWhereTheLayoutFileIs(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		published.usage = usageWithoutTheEditor
+		published.publish(latestRelease, "1.0.0")
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.typing("y", "n", "n", "n", "y")
+		output := m.mustRun()
+		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "help", "layout"))
+		expectMention(t, output, "by hand", "The layout file is /desk/layout")
+	})
+}
+
+func TestInstallsTheVersionThatWasAskedFor(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		published.publish("download/v0.9.0", "0.9.0")
+		m := newMachine(t, shell, "Linux", "aarch64", published)
+		m.settings["LANHOP_VERSION"] = "v0.9.0"
+		m.mustRun()
+		if got, want := m.installedVersion(), "lanhop 0.9.0 linux-arm64"; got != want {
+			t.Errorf("installed %q, want %q", got, want)
+		}
+	})
+}
+
+func TestInstallsInTheDirectoryThatWasAskedFor(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+		tools := m.path("my tools")
+		m.settings["LANHOP_INSTALL_DIR"] = tools
+		m.settings["LANHOP_ROLE"] = "share"
+		output := m.mustRun()
+		expectSame(t, "files in the home directory", m.files(), []string{unitFile, "my tools/lanhop"})
+		expectMention(t, output, tools+" is not on your PATH", `export PATH="`+tools+`:$PATH"`)
+		if !strings.Contains(m.read(unitFile), `ExecStart="`+tools+`/lanhop" share`+"\n") {
+			t.Errorf("the unit does not run the binary in %s:\n%s", tools, m.read(unitFile))
+		}
+	})
+}
+
+func TestSaysNothingAboutThePathWhenTheDirectoryIsOnIt(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+		m.onPath = []string{m.path(".local/bin")}
+		if output := m.mustRun(); strings.Contains(output, "is not on your PATH") {
+			t.Errorf("the output talks about the PATH:\n%s", output)
+		}
+	})
+}
+
+func TestRefusesToInstallAndChangesNothing(t *testing.T) {
+	refusals := []struct {
+		name      string
+		system    string
+		settings  map[string]string
+		arguments []string
+		spoil     func(published *releases)
+		code      int
+		says      string
+	}{
+		{
+			name:   "when the archive does not match its checksum",
+			system: "Linux",
+			spoil:  func(published *releases) { published.damage(latestRelease + "/lanhop-linux-amd64.tar.gz") },
+			code:   1,
+			says:   "the download does not match its checksum",
+		},
+		{
+			name:   "when the list of checksums does not name the archive",
+			system: "Darwin",
+			spoil: func(published *releases) {
+				published.write(latestRelease+"/SHA256SUMS", []byte("0000  lanhop-linux-amd64.tar.gz\n"))
+			},
+			code: 1,
+			says: "SHA256SUMS of that release does not list lanhop-darwin-amd64.tar.gz",
+		},
+		{
+			name:     "when the release does not exist",
+			system:   "Linux",
+			settings: map[string]string{"LANHOP_VERSION": "v7.7.7"},
+			code:     1,
+			says:     "could not download",
+		},
+		{
+			name:     "on a system without a build",
+			system:   "FreeBSD",
+			code:     1,
+			says:     "lanhop has no build for FreeBSD",
+			settings: map[string]string{"LANHOP_ROLE": "share", "LANHOP_YES": "1"},
+		},
+		{
+			name:     "on an architecture without a build",
+			system:   "Linux",
+			settings: map[string]string{"LANHOP_MACHINE": "riscv64", "LANHOP_ROLE": "share", "LANHOP_YES": "1"},
+			code:     1,
+			says:     "lanhop has no build for riscv64",
+		},
+		{
+			name:     "with a role that is neither share nor receive",
+			system:   "Linux",
+			settings: map[string]string{"LANHOP_ROLE": "both", "LANHOP_YES": "1"},
+			code:     1,
+			says:     "LANHOP_ROLE must be share or receive",
+		},
+		{
+			name:     "into a directory given as a relative path",
+			system:   "Linux",
+			settings: map[string]string{"LANHOP_INSTALL_DIR": "tools", "LANHOP_YES": "1"},
+			code:     1,
+			says:     "LANHOP_INSTALL_DIR must be an absolute path",
+		},
+		{
+			name:      "with an option it does not know",
+			system:    "Linux",
+			arguments: []string{"--purge"},
+			code:      2,
+			says:      "unknown option --purge",
+		},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, refusal := range refusals {
+			t.Run(refusal.name, func(t *testing.T) {
+				published := newReleases(t)
+				if refusal.spoil != nil {
+					refusal.spoil(published)
+				}
+				m := newMachine(t, shell, refusal.system, "x86_64", published)
+				for name, value := range refusal.settings {
+					m.settings[name] = value
+				}
+				output, code := m.run(refusal.arguments...)
+				if code != refusal.code {
+					t.Errorf("exit code = %d, want %d", code, refusal.code)
+				}
+				expectMention(t, output, refusal.says)
+				expectSame(t, "files in the home directory", m.files(), []string{})
+				expectSame(t, "system commands", commandsIn(output), []string{})
+				expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), nil)
+			})
+		}
+	})
+}
+
+func TestADamagedDownloadLeavesTheInstalledVersionInPlace(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.mustRun()
+		published.publish(latestRelease, "2.0.0")
+		published.damage(latestRelease + "/lanhop-linux-amd64.tar.gz")
+		if output, code := m.run(); code != 1 {
+			t.Errorf("exit code = %d, want 1\n%s", code, output)
+		}
+		if got, want := m.installedVersion(), "lanhop 1.0.0 linux-amd64"; got != want {
+			t.Errorf("installed %q, want %q", got, want)
+		}
+		expectSame(t, "files in the home directory", m.files(), []string{binaryFile})
+	})
+}
+
+func TestLeavesNothingInTheTemporaryDirectory(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, download := range []string{"installed", "refused"} {
+			t.Run("after a download that was "+download, func(t *testing.T) {
+				published := newReleases(t)
+				if download == "refused" {
+					published.damage(latestRelease + "/lanhop-linux-amd64.tar.gz")
+				}
+				m := newMachine(t, shell, "Linux", "x86_64", published)
+				m.run()
+				left, err := os.ReadDir(m.scratch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(left) != 0 {
+					t.Errorf("the installer left %d entries in the temporary directory, the first is %s", len(left), left[0].Name())
+				}
+				if installed := len(m.files()) == 1; installed != (download == "installed") {
+					t.Errorf("files in the home directory = %q after a download that was %s", m.files(), download)
+				}
+			})
+		}
+	})
+}
+
+func TestADirectoryAServiceFileCannotNameGetsTheBinaryAndNoService(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, system := range []string{"Linux", "Darwin"} {
+			for _, directory := range []string{`R&D`, `a"b`, `a\b`, `a$b`, `50%`, `a<b`, `a>b`} {
+				t.Run(system+" in "+directory, func(t *testing.T) {
+					m := newMachine(t, shell, system, "x86_64", newReleases(t))
+					m.settings["LANHOP_INSTALL_DIR"] = m.path(directory)
+					m.settings["LANHOP_ROLE"] = "share"
+					m.settings["LANHOP_YES"] = "1"
+					m.withGroups(alreadyInInputGroup)
+					output := m.mustRun()
+					expectSame(t, "files in the home directory", m.files(), []string{directory + "/lanhop"})
+					expectSame(t, "system commands", commandsIn(output), []string{})
+					expectMention(t, output, "lanhop cannot be started at login from "+m.path(directory+"/lanhop"))
+				})
+			}
+		}
+	})
+}
+
+func TestRunningItAgainUpgradesAndLeavesTheSameFiles(t *testing.T) {
+	again := []struct {
+		system   string
+		commands []string
+		files    []string
+		service  string
+	}{
+		{
+			system:   "Linux",
+			commands: []string{writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules, reloadTheUnits, enableTheUnit, restartTheUnit},
+			files:    []string{unitFile, binaryFile, ruleRecordFile},
+			service:  unitFile,
+		},
+		{
+			system:   "Darwin",
+			commands: []string{openAccessibility, stopTheAgent, startTheAgent},
+			files:    []string{binaryFile, agentFile},
+			service:  agentFile,
+		},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, twice := range again {
+			t.Run(twice.system, func(t *testing.T) {
+				published := newReleases(t)
+				m := newMachine(t, shell, twice.system, "x86_64", published)
+				m.settings["LANHOP_ROLE"] = "receive"
+				m.settings["LANHOP_YES"] = "1"
+				m.withGroups(alreadyInInputGroup)
+				m.mustRun()
+				service := m.read(twice.service)
+
+				published.publish(latestRelease, "2.0.0")
+				output := m.mustRun()
+				if got, want := m.installedVersion(), "lanhop 2.0.0 "+strings.ToLower(twice.system)+"-amd64"; got != want {
+					t.Errorf("installed %q, want %q", got, want)
+				}
+				expectSame(t, "system commands of the second run", commandsIn(output), m.named(twice.commands...))
+				expectSame(t, "files in the home directory", m.files(), twice.files)
+				if again := m.read(twice.service); again != service {
+					t.Errorf("the service file changed:\n%s\nwas:\n%s", again, service)
+				}
+			})
+		}
+	})
+}
+
+func TestUninstallRemovesWhatWasInstalledAndKeepsTheConfiguration(t *testing.T) {
+	removals := []struct {
+		name     string
+		system   string
+		role     string
+		typed    []string
+		yes      bool
+		kept     string
+		commands []string
+		files    []string
+		says     []string
+	}{
+		{
+			name:     "on Linux, with the udev rule when the user agrees",
+			system:   "Linux",
+			role:     "receive",
+			typed:    []string{"y"},
+			kept:     linuxPeersFile,
+			commands: []string{disableTheUnit, reloadTheUnits, deleteTheUdevRule, reloadTheUdevRules},
+			files:    []string{linuxPeersFile},
+			says:     []string{"are kept in {home}/.config/lanhop\n", "sudo gpasswd -d ana input"},
+		},
+		{
+			name:     "on Linux, with the udev rule when it runs unattended",
+			system:   "Linux",
+			role:     "receive",
+			yes:      true,
+			kept:     linuxPeersFile,
+			commands: []string{disableTheUnit, reloadTheUnits, deleteTheUdevRule, reloadTheUdevRules},
+			files:    []string{linuxPeersFile},
+		},
+		{
+			name:     "on Linux, leaving the udev rule when the user refuses",
+			system:   "Linux",
+			role:     "receive",
+			typed:    []string{"n"},
+			kept:     linuxPeersFile,
+			commands: []string{disableTheUnit, reloadTheUnits},
+			files:    []string{linuxPeersFile, ruleRecordFile},
+			says:     []string{"The rule stays."},
+		},
+		{
+			name:     "on Linux, leaving the udev rule when there is nobody to ask",
+			system:   "Linux",
+			role:     "receive",
+			kept:     linuxPeersFile,
+			commands: []string{disableTheUnit, reloadTheUnits},
+			files:    []string{linuxPeersFile, ruleRecordFile},
+		},
+		{
+			name:     "on Linux, without touching a udev rule the installer did not write",
+			system:   "Linux",
+			role:     "share",
+			typed:    []string{"y"},
+			kept:     linuxPeersFile,
+			commands: []string{disableTheUnit, reloadTheUnits},
+			files:    []string{linuxPeersFile},
+		},
+		{
+			name:     "on macOS, with the launch agent and its log",
+			system:   "Darwin",
+			role:     "share",
+			kept:     macPeersFile,
+			commands: []string{stopTheAgent},
+			files:    []string{macPeersFile},
+			says:     []string{"are kept in {home}/Library/Application Support/lanhop\n", "remove lanhop from System Settings > Privacy & Security > Accessibility"},
+		},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, removal := range removals {
+			t.Run(removal.name, func(t *testing.T) {
+				m := newMachine(t, shell, removal.system, "x86_64", newReleases(t))
+				m.settings["LANHOP_ROLE"] = removal.role
+				m.settings["LANHOP_YES"] = "1"
+				m.mustRun()
+				writeFile(t, m.path(removal.kept), []byte("{}\n"), 0o600)
+				if removal.system == "Darwin" {
+					writeFile(t, m.path(agentLogFile), []byte("Sharing\n"), 0o644)
+				}
+
+				delete(m.settings, "LANHOP_ROLE")
+				if !removal.yes {
+					delete(m.settings, "LANHOP_YES")
+				}
+				if removal.typed != nil {
+					m.typing(removal.typed...)
+				}
+				output := m.mustRun("--uninstall")
+				expectSame(t, "system commands", commandsIn(output), m.named(removal.commands...))
+				expectSame(t, "files in the home directory", m.files(), removal.files)
+				expectMention(t, output, m.named(removal.says...)...)
+			})
+		}
+	})
+}
+
+func TestUninstallWithNothingInstalledChangesNothing(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, system := range []string{"Linux", "Darwin"} {
+			t.Run(system, func(t *testing.T) {
+				m := newMachine(t, shell, system, "x86_64", newReleases(t))
+				m.typing("y", "y")
+				output := m.mustRun("--uninstall")
+				expectSame(t, "system commands", commandsIn(output), []string{})
+				expectSame(t, "files in the home directory", m.files(), []string{})
+				expectMention(t, output, "There is no lanhop in "+m.path(".local/bin"))
+			})
+		}
+	})
+}
+
+func TestHelpNamesEveryOptionAndVariable(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Linux", "x86_64", newReleases(t))
+		output := m.mustRun("--help")
+		expectMention(t, output, "--uninstall", "LANHOP_VERSION", "LANHOP_INSTALL_DIR", "LANHOP_ROLE", "LANHOP_YES")
+		expectSame(t, "files in the home directory", m.files(), []string{})
+	})
+}

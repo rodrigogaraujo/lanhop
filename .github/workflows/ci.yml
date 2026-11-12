@@ -26,6 +26,9 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+      - name: Check the installer script
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
       - name: Test Linux input with uinput
         if: runner.os == 'Linux'
         shell: bash
