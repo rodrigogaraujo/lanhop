@@ -28,9 +28,14 @@ jobs:
         run: go test -race ./...
       - name: Test Linux input with uinput
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           sudo modprobe uinput || true
-          go test -c -o evdev.test ./internal/evdev
-          sudo ./evdev.test -test.v
+          go test -race -c -o evdev.test ./internal/evdev
+          (cd internal/evdev && sudo ../../evdev.test -test.v) | tee evdev.log
+          if grep -e '--- SKIP' evdev.log; then
+            echo "::error::a Linux input test was skipped, so uinput is not usable on this runner"
+            exit 1
+          fi
           go test -race -c -o lanhop.test ./cmd/lanhop
           sudo ./lanhop.test -test.v

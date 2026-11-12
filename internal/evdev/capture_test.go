@@ -24,6 +24,13 @@ const (
 	quietPeriod     = 200 * time.Millisecond
 )
 
+const (
+	keyDigit1   uint16 = 2
+	keyDigit2   uint16 = 3
+	keyLeftCtrl uint16 = 29
+	keyLeftAlt  uint16 = 56
+)
+
 var (
 	usbKeyboard = deviceSpec{name: "lanhop captured keyboard", id: someUSBDevice, keys: typingKeys}
 	usbMouse    = deviceSpec{name: "lanhop captured mouse", id: someUSBDevice, keys: mouseButtons, relativeAxes: []uint16{event.RelX, event.RelY, event.RelWheel}}
@@ -46,7 +53,7 @@ func startCaptureIn(t *testing.T, directory string) *Capture {
 	return capture
 }
 
-var keysSafeToPressOnTheMachineRunningTheTests = []uint16{event.KeyA, event.ButtonLeft}
+var keysSafeToPressOnTheMachineRunningTheTests = []uint16{event.KeyA, event.ButtonLeft, keyLeftCtrl, keyLeftAlt, keyDigit1, keyDigit2}
 
 func firstUnsafeEvent(events []event.Event) (event.Event, bool) {
 	for _, e := range events {
@@ -73,11 +80,19 @@ func emit(t *testing.T, device *VirtualDevice, events ...event.Event) {
 	}
 }
 
-func TestTestsMayPressOnlyTheLetterAAndTheLeftButton(t *testing.T) {
-	const lastKeyCode uint16 = 0x2ff
+func TestTestsMayPressOnlyTheLetterATheLeftButtonAndTheHotkeysOfTheFirstTwoMachines(t *testing.T) {
+	const (
+		lastKeyCode uint16 = 0x2ff
+		letterA     uint16 = 30
+		leftButton  uint16 = 0x110
+		leftCtrl    uint16 = 29
+		leftAlt     uint16 = 56
+		digit1      uint16 = 2
+		digit2      uint16 = 3
+	)
 	for code := uint16(0); code <= lastKeyCode; code++ {
 		_, refused := firstUnsafeEvent([]event.Event{event.Key(code, event.KeyPressed)})
-		safe := code == event.KeyA || code == event.ButtonLeft
+		safe := slices.Contains([]uint16{letterA, leftButton, leftCtrl, leftAlt, digit1, digit2}, code)
 		if refused == safe {
 			t.Errorf("key %d: refused = %v, want %v", code, refused, !safe)
 		}
@@ -88,16 +103,26 @@ func TestUnsafeEventsAreRefusedWhereverAndHoweverTheyAppear(t *testing.T) {
 	const (
 		typeAbsolute uint16 = 0x03
 		typeSwitch   uint16 = 0x05
+		keyDigit3    uint16 = 4
+		keyF1        uint16 = 59
+		keyRightCtrl uint16 = 97
+		keyRightAlt  uint16 = 100
+		keyDelete    uint16 = 111
 	)
 	safe := event.Key(event.KeyA, event.KeyPressed)
+	ctrlAlt := []event.Event{event.Key(keyLeftCtrl, event.KeyPressed), event.Key(keyLeftAlt, event.KeyPressed)}
 	for name, events := range map[string][]event.Event{
-		"unsafe key after a safe one":  {safe, event.Sync(), event.Key(keyPower, event.KeyPressed)},
-		"unsafe key before a safe one": {event.Key(keyPower, event.KeyPressed), event.Sync(), safe},
-		"unsafe key released":          {event.Key(keyPower, event.KeyReleased)},
-		"unsafe key repeated":          {event.Key(keyPower, event.KeyRepeated)},
-		"switch such as the lid":       {{Type: typeSwitch, Code: 0, Value: 1}},
-		"absolute position":            {{Type: typeAbsolute, Code: absoluteX, Value: 10}},
-		"control event":                {event.Enter()},
+		"unsafe key after a safe one":         {safe, event.Sync(), event.Key(keyPower, event.KeyPressed)},
+		"unsafe key before a safe one":        {event.Key(keyPower, event.KeyPressed), event.Sync(), safe},
+		"unsafe key released":                 {event.Key(keyPower, event.KeyReleased)},
+		"unsafe key repeated":                 {event.Key(keyPower, event.KeyRepeated)},
+		"Delete after Ctrl and Alt":           append(slices.Clone(ctrlAlt), event.Key(keyDelete, event.KeyPressed)),
+		"F1 after Ctrl and Alt":               append(slices.Clone(ctrlAlt), event.Key(keyF1, event.KeyPressed)),
+		"hotkey of a third machine":           append(slices.Clone(ctrlAlt), event.Key(keyDigit3, event.KeyPressed)),
+		"Ctrl and Alt of the right-hand side": {event.Key(keyRightCtrl, event.KeyPressed), event.Key(keyRightAlt, event.KeyPressed)},
+		"switch such as the lid":              {{Type: typeSwitch, Code: 0, Value: 1}},
+		"absolute position":                   {{Type: typeAbsolute, Code: absoluteX, Value: 10}},
+		"control event":                       {event.Enter()},
 	} {
 		if _, refused := firstUnsafeEvent(events); !refused {
 			t.Errorf("%s was allowed", name)
@@ -109,6 +134,10 @@ func TestSafeEventsAreAllowed(t *testing.T) {
 	allowed := []event.Event{
 		event.Key(event.KeyA, event.KeyPressed), event.Key(event.KeyA, event.KeyRepeated), event.Key(event.KeyA, event.KeyReleased),
 		event.Key(event.ButtonLeft, event.KeyPressed), event.Key(event.ButtonLeft, event.KeyReleased),
+		event.Key(keyLeftCtrl, event.KeyPressed), event.Key(keyLeftAlt, event.KeyPressed),
+		event.Key(keyDigit1, event.KeyPressed), event.Key(keyDigit1, event.KeyReleased),
+		event.Key(keyDigit2, event.KeyPressed), event.Key(keyDigit2, event.KeyReleased),
+		event.Key(keyLeftAlt, event.KeyReleased), event.Key(keyLeftCtrl, event.KeyReleased),
 		event.Relative(event.RelX, 7), event.Relative(event.RelY, -3), event.Relative(event.RelWheel, 1), event.Sync(),
 	}
 	if unsafe, refused := firstUnsafeEvent(allowed); refused {
