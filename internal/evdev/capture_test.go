@@ -23,7 +23,7 @@ const (
 var (
 	usbKeyboard = deviceSpec{name: "lanhop captured keyboard", id: someUSBDevice, keys: typingKeys}
 	usbMouse    = deviceSpec{name: "lanhop captured mouse", id: someUSBDevice, keys: mouseButtons, relativeAxes: []uint16{event.RelX, event.RelY, event.RelWheel}}
-	powerButton = deviceSpec{name: "lanhop ignored power button", id: someUSBDevice, keys: []uint16{keyPower}}
+	usbTouchpad = deviceSpec{name: "lanhop ignored touchpad", id: someUSBDevice, keys: []uint16{event.ButtonLeft, buttonTouch}, absoluteAxes: []uint16{absoluteX, absoluteY}}
 )
 
 func plugInto(t *testing.T, directory string, spec deviceSpec) (*VirtualDevice, string) {
@@ -182,9 +182,9 @@ func TestDevicePluggedInAfterTheStartIsCaptured(t *testing.T) {
 
 	mouse, node := plugInto(t, directory, usbMouse)
 	waitUntilRead(t, capture, node)
-	emit(t, mouse, event.Relative(event.RelWheel, -1), event.Sync())
+	emit(t, mouse, event.Relative(event.RelX, 3), event.Sync())
 
-	expectCaptured(t, capture, event.Relative(event.RelWheel, -1), event.Sync())
+	expectCaptured(t, capture, event.Relative(event.RelX, 3), event.Sync())
 }
 
 func TestDevicePluggedInWhileTheInputIsTakenAwayIsTakenAwayToo(t *testing.T) {
@@ -233,9 +233,8 @@ func TestUnpluggedDeviceIsDroppedWithItsKeysReleasedAndTheOthersKeepWorking(t *t
 
 func TestOnlyKeyboardsAndMiceThatAreNotLanhopsOwnAreCaptured(t *testing.T) {
 	directory := t.TempDir()
-	button, _ := plugInto(t, directory, powerButton)
-	own := createVirtualDevice(t)
-	makeNodeFromSysfs(t, directory, sysEventPath(t, own))
+	plugInto(t, directory, usbTouchpad)
+	makeNodeFromSysfs(t, directory, sysEventPath(t, createVirtualDevice(t)))
 	keyboard, keyboardNode := plugInto(t, directory, usbKeyboard)
 	mouse, mouseNode := plugInto(t, directory, usbMouse)
 	capture := startCaptureIn(t, directory)
@@ -245,12 +244,10 @@ func TestOnlyKeyboardsAndMiceThatAreNotLanhopsOwnAreCaptured(t *testing.T) {
 	if got := pathsRead(capture); !slices.Equal(got, shared) {
 		t.Errorf("the capture reads %v, want only %v", got, shared)
 	}
-	emit(t, button, event.Key(keyPower, event.KeyPressed), event.Sync())
-	emit(t, own, event.Key(event.KeyA, event.KeyPressed), event.Sync())
-	emit(t, keyboard, event.Key(event.KeyEnter, event.KeyPressed), event.Sync())
-	expectCaptured(t, capture, event.Key(event.KeyEnter, event.KeyPressed), event.Sync())
-	emit(t, mouse, event.Key(event.ButtonLeft, event.KeyPressed), event.Sync())
-	expectCaptured(t, capture, event.Key(event.ButtonLeft, event.KeyPressed), event.Sync())
+	emit(t, keyboard, event.Key(event.KeyA, event.KeyPressed), event.Sync())
+	expectCaptured(t, capture, event.Key(event.KeyA, event.KeyPressed), event.Sync())
+	emit(t, mouse, event.Relative(event.RelY, 2), event.Sync())
+	expectCaptured(t, capture, event.Relative(event.RelY, 2), event.Sync())
 }
 
 func TestNodesThatCannotBeOpenedOrQueriedDoNotStopTheCapture(t *testing.T) {
