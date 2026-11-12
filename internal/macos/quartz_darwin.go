@@ -17,9 +17,27 @@ import (
 )
 
 const (
-	Marker           = int64(C.LANHOP_MARKER)
 	maxDisplays      = 32
-	observationQueue = 256
+	observationQueue = 4096
+)
+
+var (
+	_ [0]struct{} = [Marker - C.LANHOP_MARKER]struct{}{}
+	_ [0]struct{} = [TypeLeftMouseDown - C.LANHOP_TYPE_LEFT_MOUSE_DOWN]struct{}{}
+	_ [0]struct{} = [TypeLeftMouseUp - C.LANHOP_TYPE_LEFT_MOUSE_UP]struct{}{}
+	_ [0]struct{} = [TypeRightMouseDown - C.LANHOP_TYPE_RIGHT_MOUSE_DOWN]struct{}{}
+	_ [0]struct{} = [TypeRightMouseUp - C.LANHOP_TYPE_RIGHT_MOUSE_UP]struct{}{}
+	_ [0]struct{} = [TypeMouseMoved - C.LANHOP_TYPE_MOUSE_MOVED]struct{}{}
+	_ [0]struct{} = [TypeLeftMouseDragged - C.LANHOP_TYPE_LEFT_MOUSE_DRAGGED]struct{}{}
+	_ [0]struct{} = [TypeRightMouseDragged - C.LANHOP_TYPE_RIGHT_MOUSE_DRAGGED]struct{}{}
+	_ [0]struct{} = [TypeKeyDown - C.LANHOP_TYPE_KEY_DOWN]struct{}{}
+	_ [0]struct{} = [TypeKeyUp - C.LANHOP_TYPE_KEY_UP]struct{}{}
+	_ [0]struct{} = [TypeFlagsChanged - C.LANHOP_TYPE_FLAGS_CHANGED]struct{}{}
+	_ [0]struct{} = [TypeScrollWheel - C.LANHOP_TYPE_SCROLL_WHEEL]struct{}{}
+	_ [0]struct{} = [TypeOtherMouseDown - C.LANHOP_TYPE_OTHER_MOUSE_DOWN]struct{}{}
+	_ [0]struct{} = [TypeOtherMouseUp - C.LANHOP_TYPE_OTHER_MOUSE_UP]struct{}{}
+	_ [0]struct{} = [TypeOtherMouseDragged - C.LANHOP_TYPE_OTHER_MOUSE_DRAGGED]struct{}{}
+	_ [0]struct{} = [TypeTapDisabled - C.LANHOP_TYPE_TAP_DISABLED]struct{}{}
 )
 
 var ErrNotPermitted = errors.New("macos: this program is not allowed to observe the keyboard and mouse")
@@ -32,6 +50,10 @@ func CanPost() bool {
 
 func CanListen() bool {
 	return bool(C.lanhopCanListen())
+}
+
+func IsTrusted() bool {
+	return bool(C.lanhopIsTrusted())
 }
 
 func (Quartz) PostKey(key KeyPress) {
@@ -65,6 +87,14 @@ func (Quartz) PostScroll(scroll Scroll) {
 	C.lanhopPostScroll(C.int32_t(scroll.Vertical), C.int32_t(scroll.Horizontal), C.uint64_t(scroll.Flags))
 }
 
+func (Quartz) KeyDown(macOSKey uint16) bool {
+	return bool(C.lanhopKeyIsDown(C.uint16_t(macOSKey)))
+}
+
+func (Quartz) ButtonDown(number int) bool {
+	return bool(C.lanhopButtonIsDown(C.int(number)))
+}
+
 func (Quartz) Cursor() Point {
 	var x, y C.double
 	C.lanhopCursor(&x, &y)
@@ -81,37 +111,38 @@ func (Quartz) Displays() []Rect {
 	return displays
 }
 
-type Observation struct {
-	Type             uint32
-	KeyCode          uint16
-	Repeat           bool
-	Flags            Flags
-	At               Point
-	DX, DY           int64
-	Clicks           int64
-	Button           int64
-	ScrollVertical   int64
-	ScrollHorizontal int64
-	Marker           int64
-}
-
 type Tap struct {
 	native   *C.lanhopTap
 	handle   cgo.Handle
+	keeps    func(Observation) bool
 	observed chan Observation
+	missed   chan struct{}
 	ready    chan struct{}
 	stopped  chan struct{}
 	closing  sync.Once
 }
 
+type tapPlace bool
+
+const (
+	seesInputFirst tapPlace = false
+	seesInputLast  tapPlace = true
+)
+
 func StartTap() (*Tap, error) {
+	return startTap(seesInputFirst, nil)
+}
+
+func startTap(place tapPlace, keeps func(Observation) bool) (*Tap, error) {
 	tap := &Tap{
+		keeps:    keeps,
 		observed: make(chan Observation, observationQueue),
+		missed:   make(chan struct{}, 1),
 		ready:    make(chan struct{}),
 		stopped:  make(chan struct{}),
 	}
 	tap.handle = cgo.NewHandle(tap)
-	tap.native = C.lanhopTapCreate(C.uintptr_t(tap.handle))
+	tap.native = C.lanhopTapCreate(C.uintptr_t(tap.handle), C.bool(keeps != nil), C.bool(place))
 	if tap.native == nil {
 		tap.handle.Delete()
 		return nil, ErrNotPermitted
@@ -128,6 +159,17 @@ func StartTap() (*Tap, error) {
 
 func (t *Tap) Observed() <-chan Observation {
 	return t.observed
+}
+
+func (t *Tap) Overflowed() <-chan struct{} {
+	return t.missed
+}
+
+func (t *Tap) reportOverflow() {
+	select {
+	case t.missed <- struct{}{}:
+	default:
+	}
 }
 
 func (t *Tap) Close() error {
@@ -147,7 +189,8 @@ func lanhopTapReady(handle C.uintptr_t) {
 }
 
 //export lanhopObserved
-func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) {
+func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) C.bool {
+	tap := cgo.Handle(handle).Value().(*Tap)
 	observation := Observation{
 		Type:             uint32(seen._type),
 		KeyCode:          uint16(seen.keyCode),
@@ -160,10 +203,34 @@ func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) {
 		Button:           int64(seen.button),
 		ScrollVertical:   int64(seen.scrollVertical),
 		ScrollHorizontal: int64(seen.scrollHorizontal),
+		PointsVertical:   float64(seen.pointsVertical),
+		PointsHorizontal: float64(seen.pointsHorizontal),
+		Continuous:       bool(seen.continuous),
 		Marker:           int64(seen.marker),
 	}
+	return C.bool(tap.take(observation))
+}
+
+func (t *Tap) take(observation Observation) bool {
 	select {
-	case cgo.Handle(handle).Value().(*Tap).observed <- observation:
+	case t.observed <- observation:
 	default:
+		t.reportOverflow()
+		return false
 	}
+	return t.keeps != nil && t.keeps(observation)
+}
+
+//export lanhopTapMissedInput
+func lanhopTapMissedInput(handle C.uintptr_t) {
+	tap := cgo.Handle(handle).Value().(*Tap)
+	select {
+	case tap.observed <- Observation{Type: TypeTapDisabled}:
+	default:
+		tap.reportOverflow()
+	}
+}
+
+func followMouse(follow bool) {
+	C.lanhopFollowMouse(C.bool(follow))
 }

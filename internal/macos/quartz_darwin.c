@@ -3,6 +3,7 @@
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/hid/IOHIDProperties.h>
 #include <IOKit/hidsystem/IOHIDEventSystemClient.h>
+#include <IOKit/hidsystem/IOLLEvent.h>
 #include <dispatch/dispatch.h>
 #include <stdlib.h>
 
@@ -12,6 +13,29 @@ _Static_assert(kCGEventFlagMaskShift == 0x20000, "the Shift flag changed");
 _Static_assert(kCGEventFlagMaskControl == 0x40000, "the Control flag changed");
 _Static_assert(kCGEventFlagMaskAlternate == 0x80000, "the Option flag changed");
 _Static_assert(kCGEventFlagMaskCommand == 0x100000, "the Command flag changed");
+_Static_assert(NX_DEVICELCTLKEYMASK == 0x0001, "the side bit of left Control changed");
+_Static_assert(NX_DEVICELSHIFTKEYMASK == 0x0002, "the side bit of left Shift changed");
+_Static_assert(NX_DEVICERSHIFTKEYMASK == 0x0004, "the side bit of right Shift changed");
+_Static_assert(NX_DEVICELCMDKEYMASK == 0x0008, "the side bit of left Command changed");
+_Static_assert(NX_DEVICERCMDKEYMASK == 0x0010, "the side bit of right Command changed");
+_Static_assert(NX_DEVICELALTKEYMASK == 0x0020, "the side bit of left Option changed");
+_Static_assert(NX_DEVICERALTKEYMASK == 0x0040, "the side bit of right Option changed");
+_Static_assert(NX_DEVICERCTLKEYMASK == 0x2000, "the side bit of right Control changed");
+_Static_assert(kCGEventLeftMouseDown == LANHOP_TYPE_LEFT_MOUSE_DOWN, "an event type changed");
+_Static_assert(kCGEventLeftMouseUp == LANHOP_TYPE_LEFT_MOUSE_UP, "an event type changed");
+_Static_assert(kCGEventRightMouseDown == LANHOP_TYPE_RIGHT_MOUSE_DOWN, "an event type changed");
+_Static_assert(kCGEventRightMouseUp == LANHOP_TYPE_RIGHT_MOUSE_UP, "an event type changed");
+_Static_assert(kCGEventMouseMoved == LANHOP_TYPE_MOUSE_MOVED, "an event type changed");
+_Static_assert(kCGEventLeftMouseDragged == LANHOP_TYPE_LEFT_MOUSE_DRAGGED, "an event type changed");
+_Static_assert(kCGEventRightMouseDragged == LANHOP_TYPE_RIGHT_MOUSE_DRAGGED, "an event type changed");
+_Static_assert(kCGEventKeyDown == LANHOP_TYPE_KEY_DOWN, "an event type changed");
+_Static_assert(kCGEventKeyUp == LANHOP_TYPE_KEY_UP, "an event type changed");
+_Static_assert(kCGEventFlagsChanged == LANHOP_TYPE_FLAGS_CHANGED, "an event type changed");
+_Static_assert(kCGEventScrollWheel == LANHOP_TYPE_SCROLL_WHEEL, "an event type changed");
+_Static_assert(kCGEventOtherMouseDown == LANHOP_TYPE_OTHER_MOUSE_DOWN, "an event type changed");
+_Static_assert(kCGEventOtherMouseUp == LANHOP_TYPE_OTHER_MOUSE_UP, "an event type changed");
+_Static_assert(kCGEventOtherMouseDragged == LANHOP_TYPE_OTHER_MOUSE_DRAGGED, "an event type changed");
+_Static_assert(kCGEventTapDisabledByTimeout == LANHOP_TYPE_TAP_DISABLED, "an event type changed");
 
 struct lanhopTap {
 	CFMachPortRef port;
@@ -19,6 +43,7 @@ struct lanhopTap {
 	CFRunLoopSourceRef keepsLoopAlive;
 	CFRunLoopRef loop;
 	uintptr_t handle;
+	bool active;
 	bool stopping;
 };
 
@@ -63,6 +88,10 @@ bool lanhopCanPost(void) {
 
 bool lanhopCanListen(void) {
 	return CGPreflightListenEventAccess();
+}
+
+bool lanhopIsTrusted(void) {
+	return AXIsProcessTrusted();
 }
 
 void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, bool autorepeat, uint64_t flags) {
@@ -158,6 +187,7 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
 		if (!tap->stopping) {
 			CGEventTapEnable(tap->port, true);
+			lanhopTapMissedInput(tap->handle);
 		}
 		return event;
 	}
@@ -174,29 +204,47 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 		.button = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber),
 		.scrollVertical = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1),
 		.scrollHorizontal = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2),
+		.pointsVertical = CGEventGetDoubleValueField(event, kCGScrollWheelEventPointDeltaAxis1),
+		.pointsHorizontal = CGEventGetDoubleValueField(event, kCGScrollWheelEventPointDeltaAxis2),
+		.continuous = CGEventGetIntegerValueField(event, kCGScrollWheelEventIsContinuous) != 0,
 		.marker = CGEventGetIntegerValueField(event, kCGEventSourceUserData),
 		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 	};
-	lanhopObserved(tap->handle, &seen);
-	return event;
+	bool keep = lanhopObserved(tap->handle, &seen);
+	return tap->active && keep ? NULL : event;
 }
 
-lanhopTap *lanhopTapCreate(uintptr_t handle) {
+void lanhopFollowMouse(bool follow) {
+	CGAssociateMouseAndMouseCursorPosition(follow);
+}
+
+bool lanhopKeyIsDown(uint16_t keyCode) {
+	return CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, keyCode);
+}
+
+bool lanhopButtonIsDown(int button) {
+	return CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, (CGMouseButton)button);
+}
+
+lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last) {
 	lanhopTap *tap = calloc(1, sizeof(lanhopTap));
 	if (tap == NULL) {
 		return NULL;
 	}
 	tap->handle = handle;
+	tap->active = active;
 	CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged) |
 		CGEventMaskBit(kCGEventMouseMoved) | CGEventMaskBit(kCGEventScrollWheel) |
 		CGEventMaskBit(kCGEventLeftMouseDown) | CGEventMaskBit(kCGEventLeftMouseUp) | CGEventMaskBit(kCGEventLeftMouseDragged) |
 		CGEventMaskBit(kCGEventRightMouseDown) | CGEventMaskBit(kCGEventRightMouseUp) | CGEventMaskBit(kCGEventRightMouseDragged) |
 		CGEventMaskBit(kCGEventOtherMouseDown) | CGEventMaskBit(kCGEventOtherMouseUp) | CGEventMaskBit(kCGEventOtherMouseDragged);
-	tap->port = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, mask, observe, tap);
+	tap->port = CGEventTapCreate(kCGSessionEventTap, last ? kCGTailAppendEventTap : kCGHeadInsertEventTap,
+		active ? kCGEventTapOptionDefault : kCGEventTapOptionListenOnly, mask, observe, tap);
 	if (tap->port == NULL) {
 		free(tap);
 		return NULL;
 	}
+	CGEventTapEnable(tap->port, false);
 	tap->source = CFMachPortCreateRunLoopSource(NULL, tap->port, 0);
 	CFRunLoopSourceContext idle = {.perform = doNothing};
 	tap->keepsLoopAlive = CFRunLoopSourceCreate(NULL, 0, &idle);

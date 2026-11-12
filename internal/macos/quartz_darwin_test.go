@@ -41,6 +41,7 @@ func observeRealInput(t *testing.T) (*Replay, *Tap) {
 		t.Fatalf("StartTap: %v", err)
 	}
 	t.Cleanup(func() { tap.Close() })
+	waitUntilNothingArrives(tap)
 	return NewReplay(Quartz{}, keymap.Translator{}), tap
 }
 
@@ -385,5 +386,37 @@ func TestQuickMovementsAddUpWithoutWaitingForTheSystem(t *testing.T) {
 	}
 	if end := (Quartz{}).Cursor(); end != start {
 		t.Errorf("the cursor ended at %+v, want %+v", end, start)
+	}
+}
+
+func TestTapWithAFullQueueLetsTheEventThroughAndReportsIt(t *testing.T) {
+	keepsEverything := func(Observation) bool { return true }
+	tap := &Tap{keeps: keepsEverything, observed: make(chan Observation, 1), missed: make(chan struct{}, 1)}
+
+	if kept := tap.take(Observation{Type: TypeKeyDown}); !kept {
+		t.Error("an event that fits in the queue was not kept")
+	}
+	if kept := tap.take(Observation{Type: TypeKeyUp}); kept {
+		t.Error("an event that does not fit in the queue was kept from the system")
+	}
+	if kept := tap.take(Observation{Type: TypeKeyUp}); kept {
+		t.Error("a second event that does not fit was kept from the system")
+	}
+
+	select {
+	case <-tap.Overflowed():
+	default:
+		t.Error("the overflow was not reported")
+	}
+	if queued := <-tap.Observed(); queued.Type != TypeKeyDown {
+		t.Errorf("the queue holds %+v, want the first event", queued)
+	}
+}
+
+func TestListenOnlyTapKeepsNothing(t *testing.T) {
+	tap := &Tap{observed: make(chan Observation, 1), missed: make(chan struct{}, 1)}
+
+	if kept := tap.take(Observation{Type: TypeKeyDown}); kept {
+		t.Error("a tap that only listens kept an event from the system")
 	}
 }

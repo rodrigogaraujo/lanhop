@@ -70,7 +70,7 @@ func share(args []string, stdout io.Writer) error {
 		return err
 	}
 	defer capture.Close()
-	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopWaiting()
 	return shareUntil(interrupted, capture, *listen, stdout)
 }

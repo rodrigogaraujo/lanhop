@@ -1,4 +1,4 @@
-//go:build !(linux && (386 || amd64 || arm || arm64 || loong64 || riscv64))
+//go:build !(linux && (386 || amd64 || arm || arm64 || loong64 || riscv64)) && !(darwin && cgo)
 
 package main
 

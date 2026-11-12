@@ -1,6 +1,6 @@
 # Setting up lanhop on macOS
 
-> **macOS support is partly built.** A Mac can already be controlled from another machine with `lanhop receive`. Sharing the Mac's own keyboard and mouse (`lanhop share`) is not built yet.
+> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. Sharing from a Mac has been tested only with input that lanhop generated itself, not yet with a person typing.
 
 ## Why lanhop needs a permission
 
@@ -62,7 +62,35 @@ Not done yet on a Mac that is being controlled:
 - Caps Lock does not switch on the Mac.
 - The volume and mute keys do nothing on the Mac.
 
+## Sharing the keyboard and mouse of the Mac
+
+On the Mac that has the keyboard and mouse, wait for each other machine to pair, then share:
+
+```sh
+lanhop pair
+lanhop share
+```
+
+`lanhop share` prints the hotkeys. Control+Option+2 gives the keyboard and mouse to the first machine that `lanhop peers` lists, and Control+Option+1 brings them back.
+
+`lanhop devices` shows whether the Mac allows lanhop to read and to control the keyboard and mouse.
+
+### If the keyboard and mouse stop answering
+
+While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 10 seconds, and when its permission is taken away.
+
+If they are still held:
+
+- From another machine, connect to the Mac with `ssh` and run `pkill lanhop`. The input comes back the moment lanhop ends.
+- Without another way in, hold the power button to restart the Mac.
+
+Until you have used lanhop for a while, keep a second way in, such as Remote Login turned on.
+
+Stop lanhop before you remove its permission in System Settings.
+
 ## What lanhop cannot do on a Mac
+
+- **Media keys and trackpad gestures.** While another machine has focus, the brightness, volume and playback keys and the trackpad gestures still act on the Mac that has the keyboard. They are not sent to the other machine.
 
 These are rules of macOS, not settings:
 
