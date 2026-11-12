@@ -137,6 +137,10 @@ void lanhopCursor(double *x, double *y) {
 	*y = location.y;
 }
 
+void lanhopPlaceCursor(double x, double y) {
+	CGWarpMouseCursorPosition(CGPointMake(x, y));
+}
+
 int lanhopDisplays(double *rects, int capacity) {
 	CGDirectDisplayID displays[32];
 	uint32_t count = 0;
