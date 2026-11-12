@@ -5,6 +5,8 @@ import "sync"
 type holdingScreen interface {
 	cursorScreen
 	PutCursorBack(at Point)
+	HideCursor()
+	ShowCursor()
 }
 
 type hold struct {
@@ -13,6 +15,7 @@ type hold struct {
 	hotkey  *hotkeyGuard
 	state   sync.Mutex
 	taken   bool
+	hidden  bool
 	cursor  Point
 }
 
@@ -21,12 +24,20 @@ func (h *hold) take() {
 	h.state.Lock()
 	defer h.state.Unlock()
 	h.taken, h.cursor = true, cursor
+	if !h.hidden {
+		h.hidden = true
+		h.HideCursor()
+	}
 }
 
 func (h *hold) letGo() {
 	h.state.Lock()
 	defer h.state.Unlock()
 	h.taken = false
+	if h.hidden {
+		h.hidden = false
+		h.ShowCursor()
+	}
 }
 
 func (h *hold) PlaceCursor(at Point) {

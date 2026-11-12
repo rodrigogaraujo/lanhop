@@ -109,6 +109,14 @@ func (Quartz) PutCursorBack(at Point) {
 	C.lanhopPutCursorBack(C.double(at.X), C.double(at.Y))
 }
 
+func (Quartz) HideCursor() {
+	C.lanhopHideCursor()
+}
+
+func (Quartz) ShowCursor() {
+	C.lanhopShowCursor()
+}
+
 func (Quartz) Displays() []Rect {
 	var raw [maxDisplays * 4]C.double
 	count := int(C.lanhopDisplays(&raw[0], maxDisplays))

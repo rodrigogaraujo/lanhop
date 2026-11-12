@@ -53,6 +53,8 @@ void lanhopPostScroll(int32_t vertical, int32_t horizontal, uint64_t flags);
 void lanhopCursor(double *x, double *y);
 void lanhopPlaceCursor(double x, double y);
 void lanhopPutCursorBack(double x, double y);
+void lanhopHideCursor(void);
+void lanhopShowCursor(void);
 int lanhopDisplays(double *rects, int capacity);
 bool lanhopKeyRepeat(int64_t *delayNanoseconds, int64_t *intervalNanoseconds);
 lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last);

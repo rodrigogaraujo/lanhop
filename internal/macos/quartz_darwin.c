@@ -147,6 +147,21 @@ void lanhopPutCursorBack(double x, double y) {
 	CGAssociateMouseAndMouseCursorPosition(true);
 }
 
+extern int _CGSDefaultConnection(void);
+extern CGError CGSSetConnectionProperty(int connection, int target, CFStringRef key, CFTypeRef value);
+
+void lanhopHideCursor(void) {
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		CGSSetConnectionProperty(_CGSDefaultConnection(), _CGSDefaultConnection(), CFSTR("SetsCursorInBackground"), kCFBooleanTrue);
+	});
+	CGDisplayHideCursor(kCGDirectMainDisplay);
+}
+
+void lanhopShowCursor(void) {
+	CGDisplayShowCursor(kCGDirectMainDisplay);
+}
+
 int lanhopDisplays(double *rects, int capacity) {
 	CGDirectDisplayID displays[32];
 	uint32_t count = 0;

@@ -16,6 +16,9 @@ type fakePointer struct {
 	cursor   Point
 	displays []Rect
 	putBack  int
+	hidden   int
+	hides    int
+	shows    int
 }
 
 func (p *fakePointer) Cursor() Point {
@@ -39,6 +42,26 @@ func (p *fakePointer) PutCursorBack(at Point) {
 	defer p.mutex.Unlock()
 	p.cursor = at
 	p.putBack++
+}
+
+func (p *fakePointer) HideCursor() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.hidden++
+	p.hides++
+}
+
+func (p *fakePointer) ShowCursor() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	p.hidden = max(p.hidden-1, 0)
+	p.shows++
+}
+
+func (p *fakePointer) visibility() (hidden bool, hides, shows int) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	return p.hidden > 0, p.hides, p.shows
 }
 
 func (p *fakePointer) timesPutBack() int {
@@ -258,5 +281,91 @@ func TestDigitOfTheHotkeyThatLanhopPostedPassesOnAndKeepsNothingAfterIt(t *testi
 	}
 	if keptReleaseByTheUser {
 		t.Error("the release of a digit by the user was kept from this Mac after lanhop posted that digit with the hotkey")
+	}
+}
+
+func TestCursorIsHiddenWhileTheInputIsTakenAndShownWhenItIsGivenBack(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+
+	if hidden, hides, shows := mac.pointer.visibility(); hidden || hides != 0 || shows != 0 {
+		t.Fatalf("before the input is taken: hidden %v, hides %d, shows %d, want a visible cursor nobody touched", hidden, hides, shows)
+	}
+	mac.hold.take()
+	mac.hold.take()
+	if hidden, hides, _ := mac.pointer.visibility(); !hidden || hides != 1 {
+		t.Errorf("with the input taken twice: hidden %v after %d hides, want it hidden once", hidden, hides)
+	}
+	mac.hold.letGo()
+	mac.hold.letGo()
+	if hidden, _, shows := mac.pointer.visibility(); hidden || shows != 1 {
+		t.Errorf("with the input given back twice: hidden %v after %d shows, want it shown once", hidden, shows)
+	}
+}
+
+func TestGivingBackInputThatWasNotTakenDoesNotShowTheCursor(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+
+	mac.hold.letGo()
+
+	if _, hides, shows := mac.pointer.visibility(); hides != 0 || shows != 0 {
+		t.Errorf("hides %d, shows %d, want the cursor left alone", hides, shows)
+	}
+}
+
+func TestCursorIsHiddenAgainEachTimeTheInputIsTaken(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+
+	for visit := 1; visit <= 3; visit++ {
+		mac.hold.take()
+		if hidden, hides, _ := mac.pointer.visibility(); !hidden || hides != visit {
+			t.Errorf("input taken for the time number %d: hidden %v after %d hides, want it hidden once more", visit, hidden, hides)
+		}
+		mac.hold.letGo()
+		if hidden, _, shows := mac.pointer.visibility(); hidden || shows != visit {
+			t.Errorf("input given back for the time number %d: hidden %v after %d shows, want it shown once more", visit, hidden, shows)
+		}
+	}
+}
+
+func TestCursorStaysHiddenWhileItIsHeldInPlaceAndWhenItIsPlaced(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+	mac.hold.take()
+
+	for _, kind := range movements {
+		mac.mouseMoves(kind, 40, 25)
+	}
+	placeCursorOn(mac.hold, 1919, 540)
+	mac.mouseMoves(TypeMouseMoved, -30, 12)
+
+	if hidden, hides, shows := mac.pointer.visibility(); !hidden || hides != 1 || shows != 0 {
+		t.Errorf("after movement and a placement with the input taken: hidden %v, hides %d, shows %d, want the one hide of taking it and nothing else", hidden, hides, shows)
+	}
+}
+
+func TestEveryHideIsUndoneWhenTheInputIsTakenAndGivenBackFromSeveralGoroutinesAtOnce(t *testing.T) {
+	mac := macWithTheCursorAt(whereTheCursorWas, everything)
+	var busy sync.WaitGroup
+	for _, act := range []func(){
+		mac.hold.take,
+		mac.hold.letGo,
+		mac.hold.take,
+		mac.hold.letGo,
+		func() { placeCursorOn(mac.hold, 1919, 540) },
+		func() { mac.hold.keeps(Observation{Type: TypeMouseMoved, DX: 1}) },
+	} {
+		busy.Add(1)
+		go func() {
+			defer busy.Done()
+			for range 2000 {
+				act()
+			}
+		}()
+	}
+	busy.Wait()
+
+	mac.hold.letGo()
+
+	if hidden, hides, shows := mac.pointer.visibility(); hidden || hides != shows {
+		t.Errorf("after the last time the input was given back: hidden %v, hides %d, shows %d, want a visible cursor and a show for every hide", hidden, hides, shows)
 	}
 }
