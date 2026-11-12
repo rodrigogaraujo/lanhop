@@ -63,6 +63,7 @@ Here `desktop` has `laptop` on its left, `macbook` on its right and `server` bel
 
 - The names are the ones `lanhop peers` lists, plus the name of the machine itself. `lanhop layout` prints that name, where the file goes and the desk as lanhop understood it.
 - Only the machine with the keyboard reads the file, and only that machine needs it.
+- The name of the machine with the keyboard always means that machine. A paired machine with the same name cannot be placed, and its edges do not cross: run `lanhop forget` on both machines and pair them again, with `lanhop pair --as NAME` on the machine with the keyboard.
 - `lanhop share` picks up the file when you save it, with no restart. When the file has a problem, lanhop prints it with its line and keeps the layout it had.
 - The cursor crosses after it pushes against an edge for a moment. It does not cross while a mouse button is held, nor in the corners of the screen. It does not leave the machine with the keyboard while a key is held there either, so that no key stays held on it.
 - Without the file, the hotkeys work as before.

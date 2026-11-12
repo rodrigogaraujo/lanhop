@@ -206,7 +206,7 @@ func (s *Sharer) endReport() error {
 
 func (s *Sharer) cross(crossing edge.Crossing) error {
 	desk := s.layout()
-	if desk == nil {
+	if desk == nil || s.focusedIsANamesakeOfThisMachine() {
 		return nil
 	}
 	neighbour, found := desk.Neighbour(s.nameOfFocused(), onTheDesk(crossing.Side))
@@ -225,6 +225,10 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 
 func (s *Sharer) wouldLeaveAKeyHeldHere() bool {
 	return s.focused == nil && len(s.heldHere.Held()) > 0
+}
+
+func (s *Sharer) focusedIsANamesakeOfThisMachine() bool {
+	return s.focused != nil && s.focused.Peer().Name == s.edges.Name
 }
 
 func (s *Sharer) nameOfFocused() string {

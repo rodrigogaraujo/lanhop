@@ -9,6 +9,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/layout"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
@@ -21,7 +22,10 @@ const (
 	farEdge        = 65535
 )
 
-var ownDesktop = edge.Bounds{MinX: 0, MinY: 0, MaxX: 1000, MaxY: 500}
+var (
+	ownDesktop = edge.Bounds{MinX: 0, MinY: 0, MaxX: 1000, MaxY: 500}
+	namesake   = trust.Peer{Name: thisMachine, Fingerprint: identity.Fingerprint{9}}
+)
 
 type fakeClock struct {
 	mutex   sync.Mutex
@@ -311,11 +315,12 @@ func TestPushWithAButtonHeldDoesNotCross(t *testing.T) {
 		s.screen.cursorIsAt(1000, 125)
 
 		s.captures(press(event.ButtonLeft), event.Sync())
-		s.pushes(1, 0, 2*reportsToCross)
+		s.pushes(1, 0, 2*reportsToCross+reportsToCross/2)
+		s.captures(release(event.ButtonLeft), event.Sync())
+		s.pushes(1, 0, reportsToCross-1)
 		s.expectJournal(nil)
 
-		s.captures(release(event.ButtonLeft), event.Sync())
-		s.pushes(1, 0, reportsToCross)
+		s.moves(1, 0)
 		s.expectJournal(story(
 			then(tookInput),
 			gets(desk, enteredAt(0, 16384)...),
@@ -407,6 +412,43 @@ func TestCrossingFromOneReceiverToAnotherLeavesTheFirstAndEntersTheSecondOnItsOp
 		gets(laptop, times(reportsToCross, positioned(0, 42767)...)...),
 		gets(laptop, event.Leave()),
 		gets(desk, enteredAt(farEdge, 42767)...),
+	))
+}
+
+func TestCrossingFromOneReceiverToAnotherWithAKeyHeldReleasesItOnTheFirstBeforeLeaving(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+	s.connect(desk)
+	s.connect(laptop)
+	s.focusOn(2)
+	holding := []event.Event{press(keyLeftShift), event.Sync()}
+
+	s.captures(holding...)
+	s.moves(400, 0)
+	s.pushes(1, 0, reportsToCross-1)
+
+	s.expectJournal(story(
+		then(tookInput),
+		gets(desk, enteredAt(centre, centre)...),
+		gets(desk, holding...),
+		gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
+		gets(desk, release(keyLeftShift), event.Sync(), event.Leave()),
+		gets(laptop, enteredAt(0, centre)...),
+	))
+}
+
+func TestReceiverNamedAsTheSharerIsNotTheMachineTheLayoutNamesSoItsEdgesDoNotCross(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk", namesake, desk)
+	s.connect(namesake)
+	s.connect(desk)
+	s.focusOn(2)
+
+	s.moves(400, 0)
+	s.pushes(1, 0, 2*reportsToCross)
+
+	s.expectJournal(story(
+		then(tookInput),
+		gets(namesake, enteredAt(centre, centre)...),
+		gets(namesake, times(1+2*reportsToCross, positioned(farEdge, centre)...)...),
 	))
 }
 
@@ -587,6 +629,49 @@ func TestLayoutThatAppearsWhileAReceiverHasFocusAppliesFromItsNextVisit(t *testi
 	))
 }
 
+func TestLayoutThatGoesAwayLeavesTheNextVisitWithMovementForwardedAsItIs(t *testing.T) {
+	t.Run("after the receiver was left with the hotkey", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk", desk)
+		s.connect(desk)
+		s.focusOn(2)
+		s.focusOn(1)
+
+		s.desk.Store(nil)
+		s.focusOn(2)
+		s.moves(7, 0)
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			gets(desk, hotkeyAsTheFocusedReceiverSeesIt()...),
+			gets(desk, event.Leave()),
+			then(gaveInputBack, tookInput),
+			gets(desk, event.Enter()),
+			gets(desk, event.Relative(event.RelX, 7), event.Sync()),
+		))
+	})
+	t.Run("after the receiver was lost while it had focus", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk", desk)
+		lost := s.connect(desk)
+		s.focusOn(2)
+		lost.loseConnection()
+		s.eventually("giving the input back", func() bool { return s.journal.has(gaveInputBack) })
+
+		s.desk.Store(nil)
+		s.connect(desk)
+		s.focusOn(2)
+		s.moves(7, 0)
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			then(closed(desk), gaveInputBack, tookInput),
+			gets(desk, event.Enter()),
+			gets(desk, event.Relative(event.RelX, 7), event.Sync()),
+		))
+	})
+}
+
 func TestHotkeyWorksInEveryStateOfEdgeSwitching(t *testing.T) {
 	s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
 	s.connect(desk)
@@ -665,6 +750,26 @@ func TestReceiverThatCannotBeEnteredThroughAnEdgeIsLostAndTheInputIsGivenBack(t 
 
 	s.expectJournal(then(tookInput, gaveInputBack, closed(desk)))
 	s.expectInputAtThisMachine()
+}
+
+func TestReceiverThatCannotBeSentAPositionIsLostAndTheSharerKeepsWorking(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk", desk)
+	receiver := s.connect(desk)
+	s.focusOn(2)
+	receiver.sendFails.Store(true)
+
+	s.moves(5, 0)
+	s.moves(5, 0)
+	s.expectInputAtThisMachine()
+	s.connect(desk)
+	s.focusOn(2)
+
+	s.expectJournal(story(
+		then(tookInput),
+		gets(desk, enteredAt(centre, centre)...),
+		then(gaveInputBack, closed(desk), tookInput),
+		gets(desk, enteredAt(centre, centre)...),
+	))
 }
 
 func TestSharerWhoseCaptureCannotTellTheCursorCrossesOnlyTheEdgesOfItsReceivers(t *testing.T) {
