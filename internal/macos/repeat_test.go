@@ -15,6 +15,7 @@ import (
 const (
 	linuxKeyB     uint16 = 48
 	linuxCapsLock uint16 = 58
+	linuxNumLock  uint16 = 69
 
 	macOSKeyB uint16 = 0x0B
 
@@ -31,6 +32,7 @@ var keysThatNeverRepeat = map[string]uint16{
 	"left Command":  linuxLeftSuper,
 	"right Command": linuxRightSuper,
 	"Caps Lock":     linuxCapsLock,
+	"Num Lock":      linuxNumLock,
 }
 
 func repeatOf(code uint16) KeyPress {
@@ -146,7 +148,7 @@ func TestReleasingTheRepeatingKeyDoesNotMoveTheRepeatToAnotherHeldKey(t *testing
 	)
 }
 
-func TestModifiersAndCapsLockNeverRepeat(t *testing.T) {
+func TestModifiersCapsLockAndNumLockNeverRepeat(t *testing.T) {
 	for name, key := range keysThatNeverRepeat {
 		t.Run(name, func(t *testing.T) {
 			screen := oneDisplay()
@@ -162,7 +164,7 @@ func TestModifiersAndCapsLockNeverRepeat(t *testing.T) {
 	}
 }
 
-func TestModifierOrCapsLockPressedAndReleasedWhileAKeyRepeatsLeavesTheRepeat(t *testing.T) {
+func TestKeyThatNeverRepeatsPressedAndReleasedWhileAKeyRepeatsLeavesTheRepeat(t *testing.T) {
 	for name, key := range keysThatNeverRepeat {
 		t.Run(name, func(t *testing.T) {
 			screen := oneDisplay()

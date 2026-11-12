@@ -36,7 +36,8 @@ const (
 	defaultRepeatInterval = time.Second / 12
 	shortestRepeat        = 16 * time.Millisecond
 
-	capsLock uint16 = 0x39
+	capsLock    uint16 = 0x39
+	keypadClear uint16 = 0x47
 )
 
 var errClosed = errors.New("macos: the replay is closed")
@@ -196,7 +197,7 @@ func (r *Replay) key(code uint16, value int32) {
 		}
 	}
 	r.screen.PostKey(KeyPress{Code: macOSKey, Down: down, Modifier: modifier, Flags: r.flags()})
-	if modifier || macOSKey == capsLock {
+	if modifier || macOSKey == capsLock || macOSKey == keypadClear {
 		return
 	}
 	if down {
