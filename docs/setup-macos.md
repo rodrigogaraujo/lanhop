@@ -81,7 +81,7 @@ With a [layout file](../README.md#layout) in `~/Library/Application Support/lanh
 
 - With more than one display, the edges are the ones of the rectangle around all the displays. Moving between the displays of the Mac never crosses.
 - While another machine has focus, the cursor of the Mac stays where it left. When focus comes back through an edge, lanhop puts the cursor on that edge, at the matching height.
-- Switching through the edges of a Mac has been tested only with input that lanhop generated itself, not yet with a person moving the mouse.
+- Switching through the edges of a Mac has been tested only by automated tests with a simulated screen, not yet on a real Mac with a person moving the mouse.
 
 ### If the keyboard and mouse stop answering
 
