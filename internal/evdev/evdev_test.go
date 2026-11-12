@@ -32,9 +32,7 @@ func TestEventsEmittedByTheVirtualDeviceAreReadBack(t *testing.T) {
 		event.Key(event.KeyA, event.KeyReleased),
 		event.Sync(),
 	}
-	if err := virtual.Emit(sent...); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
+	emit(t, virtual, sent...)
 
 	for i, want := range sent {
 		got, err := device.Read()

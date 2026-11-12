@@ -37,6 +37,18 @@ sudo go test ./internal/evdev/
 4. **Say how you tested it.** Name the operating system, the desktop session (X11, Wayland compositor or console) and what you ran. Input code behaves differently on each.
 5. **Keep the dependency list empty where you can.** A new dependency needs a reason in the pull request description.
 
+## Tests that create input devices
+
+On Linux, the input tests create real virtual keyboards and mice with `uinput`. Whatever they emit is real input for the machine that runs them, and the system acts on it. A test once pressed the power key on a fake power button, and the CI machine shut down in the middle of the run.
+
+Running these tests with `sudo` types the letter "a" and clicks the left mouse button once, wherever the cursor is, on the machine that runs them.
+
+- Never emit a key the system acts on: power, sleep, suspend, restart, SysRq, or combinations such as Ctrl+Alt+Delete and Ctrl+Alt+F1.
+- A test may create a device that *has* such a key, to check how it is classified. It must not press it.
+- In `internal/evdev`, tests reach a device only through the `emit` test helper. It lets through the letter A, the left mouse button, mouse movement and scrolling, and stops the test on anything else. A test fails if any test in that package calls `Emit` directly.
+- Tests in other packages that replay through a real virtual device, such as the ones in `cmd/lanhop`, are not covered by that helper. Besides the events above, they may press only Shift.
+- Keep mouse movement and scrolling small.
+
 ## Code style
 
 - Format with `gofmt`.
