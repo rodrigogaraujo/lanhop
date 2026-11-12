@@ -15,7 +15,6 @@ const (
 	sideOfLeftShift  Flags  = 0x0002
 	sideOfRightShift Flags  = 0x0004
 	macOSFunction    uint16 = 0x3F
-	linuxCapsLock    uint16 = 58
 )
 
 func translated(translator *translator, observations ...Observation) []event.Event {
@@ -44,7 +43,7 @@ func TestKeyDownAndUpBecomeAPressAndAReleaseOfTheLinuxKey(t *testing.T) {
 
 func TestAutomaticRepeatsAndKeysWithoutACounterpartAreDropped(t *testing.T) {
 	got := translated(newTranslator(keymap.Translator{}, nil),
-		Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Autorepeat: true},
+		Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Repeat: true},
 		Observation{Type: TypeKeyDown, KeyCode: macOSFunction},
 		Observation{Type: TypeFlagsChanged, KeyCode: macOSFunction, Flags: 0x800000},
 	)
@@ -430,6 +429,39 @@ func machinesSwitchedTo(t *testing.T, translator *translator, observations ...Ob
 	return targets
 }
 
+func hotkeyOnARealKeyboard(digit uint16) []Observation {
+	const (
+		device  Flags = 0x100
+		control       = FlagControl | 0x0001
+		both          = control | FlagOption | 0x0020
+	)
+	return []Observation{
+		{Type: TypeFlagsChanged, KeyCode: macOSLeftControl, Flags: device | control},
+		{Type: TypeFlagsChanged, KeyCode: macOSLeftOption, Flags: device | both},
+		{Type: TypeKeyDown, KeyCode: digit, Flags: device | both},
+		{Type: TypeKeyUp, KeyCode: digit, Flags: device | both},
+		{Type: TypeFlagsChanged, KeyCode: macOSLeftOption, Flags: device | control},
+		{Type: TypeFlagsChanged, KeyCode: macOSLeftControl, Flags: device},
+	}
+}
+
+func TestHotkeyTypedOnARealKeyboardIsDetectedEvenAfterALostRelease(t *testing.T) {
+	stuckLetter := Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Flags: 0x100}
+	stuckShift := Observation{Type: TypeFlagsChanged, KeyCode: macOSShiftLeft, Flags: 0x100 | FlagShift | sideOfLeftShift}
+	for name, before := range map[string][]Observation{
+		"nothing stuck":  nil,
+		"a letter stuck": {stuckLetter},
+		"Shift stuck":    {stuckShift},
+		"both stuck":     {stuckShift, stuckLetter},
+	} {
+		got := machinesSwitchedTo(t, newTranslator(keymap.Translator{}, fakeHardware{}), append(before, hotkeyOnARealKeyboard(macOSDigit1)...)...)
+
+		if !slices.Equal(got, []int{1}) {
+			t.Errorf("%s: switched to %v, want machine 1", name, got)
+		}
+	}
+}
+
 func TestHotkeyTypedOnAMacIsDetected(t *testing.T) {
 	got := machinesSwitchedTo(t, newTranslator(keymap.Translator{}, nil), hotkeyOnAMac(macOSDigit2)...)
 
@@ -514,12 +546,16 @@ func (u *pumpUnderTest) expectEnded(t *testing.T, gaveBack int32) {
 func TestPumpDeliversWhatItAcceptsInOrder(t *testing.T) {
 	under := startPump(time.Minute)
 	defer close(under.stop)
-	under.observed <- Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Marker: Marker}
+	const macOSKeyS uint16 = 0x01
+	under.observed <- Observation{Type: TypeKeyDown, KeyCode: macOSKeyS, Marker: Marker}
 	under.observed <- Observation{Type: TypeKeyDown, KeyCode: macOSKeyA}
-	under.observed <- Observation{Type: TypeKeyUp, KeyCode: macOSKeyA, Marker: Marker}
+	under.observed <- Observation{Type: TypeKeyUp, KeyCode: macOSKeyS, Marker: Marker}
 	under.observed <- Observation{Type: TypeKeyUp, KeyCode: macOSKeyA}
+	under.observed <- Observation{Type: TypeMouseMoved, DX: 9, Marker: Marker}
+	under.observed <- Observation{Type: TypeMouseMoved, DX: 1}
 
-	for i, want := range []event.Event{press(linuxKeyA), event.Sync(), release(linuxKeyA), event.Sync()} {
+	wanted := []event.Event{press(linuxKeyA), event.Sync(), release(linuxKeyA), event.Sync(), event.Relative(event.RelX, 1), event.Sync()}
+	for i, want := range wanted {
 		if got, open := under.next(t); !open || got != want {
 			t.Fatalf("event %d = %+v (open %v), want %+v", i, got, open, want)
 		}

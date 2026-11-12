@@ -3,7 +3,7 @@
 package macos
 
 /*
-#cgo LDFLAGS: -framework ApplicationServices -framework CoreFoundation
+#cgo LDFLAGS: -framework ApplicationServices -framework CoreFoundation -framework IOKit
 #include "quartz_darwin.h"
 */
 import "C"
@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"runtime/cgo"
 	"sync"
+	"time"
 )
 
 const (
@@ -20,7 +21,24 @@ const (
 	observationQueue = 4096
 )
 
-var _ [0]struct{} = [Marker - C.LANHOP_MARKER]struct{}{}
+var (
+	_ [0]struct{} = [Marker - C.LANHOP_MARKER]struct{}{}
+	_ [0]struct{} = [TypeLeftMouseDown - C.LANHOP_TYPE_LEFT_MOUSE_DOWN]struct{}{}
+	_ [0]struct{} = [TypeLeftMouseUp - C.LANHOP_TYPE_LEFT_MOUSE_UP]struct{}{}
+	_ [0]struct{} = [TypeRightMouseDown - C.LANHOP_TYPE_RIGHT_MOUSE_DOWN]struct{}{}
+	_ [0]struct{} = [TypeRightMouseUp - C.LANHOP_TYPE_RIGHT_MOUSE_UP]struct{}{}
+	_ [0]struct{} = [TypeMouseMoved - C.LANHOP_TYPE_MOUSE_MOVED]struct{}{}
+	_ [0]struct{} = [TypeLeftMouseDragged - C.LANHOP_TYPE_LEFT_MOUSE_DRAGGED]struct{}{}
+	_ [0]struct{} = [TypeRightMouseDragged - C.LANHOP_TYPE_RIGHT_MOUSE_DRAGGED]struct{}{}
+	_ [0]struct{} = [TypeKeyDown - C.LANHOP_TYPE_KEY_DOWN]struct{}{}
+	_ [0]struct{} = [TypeKeyUp - C.LANHOP_TYPE_KEY_UP]struct{}{}
+	_ [0]struct{} = [TypeFlagsChanged - C.LANHOP_TYPE_FLAGS_CHANGED]struct{}{}
+	_ [0]struct{} = [TypeScrollWheel - C.LANHOP_TYPE_SCROLL_WHEEL]struct{}{}
+	_ [0]struct{} = [TypeOtherMouseDown - C.LANHOP_TYPE_OTHER_MOUSE_DOWN]struct{}{}
+	_ [0]struct{} = [TypeOtherMouseUp - C.LANHOP_TYPE_OTHER_MOUSE_UP]struct{}{}
+	_ [0]struct{} = [TypeOtherMouseDragged - C.LANHOP_TYPE_OTHER_MOUSE_DRAGGED]struct{}{}
+	_ [0]struct{} = [TypeTapDisabled - C.LANHOP_TYPE_TAP_DISABLED]struct{}{}
+)
 
 var ErrNotPermitted = errors.New("macos: this program is not allowed to observe the keyboard and mouse")
 
@@ -34,8 +52,18 @@ func CanListen() bool {
 	return bool(C.lanhopCanListen())
 }
 
+func IsTrusted() bool {
+	return bool(C.lanhopIsTrusted())
+}
+
 func (Quartz) PostKey(key KeyPress) {
-	C.lanhopPostKey(C.uint16_t(key.Code), C.bool(key.Down), C.bool(key.Modifier), C.uint64_t(key.Flags))
+	C.lanhopPostKey(C.uint16_t(key.Code), C.bool(key.Down), C.bool(key.Modifier), C.bool(key.Repeat), C.uint64_t(key.Flags))
+}
+
+func (Quartz) KeyRepeat() (delay, interval time.Duration, known bool) {
+	var delayNanoseconds, intervalNanoseconds C.int64_t
+	known = bool(C.lanhopKeyRepeat(&delayNanoseconds, &intervalNanoseconds))
+	return time.Duration(delayNanoseconds), time.Duration(intervalNanoseconds), known
 }
 
 func nativeAction(action MouseAction) C.int {
@@ -166,6 +194,7 @@ func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) C.bool {
 	observation := Observation{
 		Type:             uint32(seen._type),
 		KeyCode:          uint16(seen.keyCode),
+		Repeat:           bool(seen.autorepeat),
 		Flags:            Flags(seen.flags),
 		At:               Point{X: float64(seen.x), Y: float64(seen.y)},
 		DX:               int64(seen.deltaX),
@@ -177,16 +206,19 @@ func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) C.bool {
 		PointsVertical:   float64(seen.pointsVertical),
 		PointsHorizontal: float64(seen.pointsHorizontal),
 		Continuous:       bool(seen.continuous),
-		Autorepeat:       bool(seen.autorepeat),
 		Marker:           int64(seen.marker),
 	}
+	return C.bool(tap.take(observation))
+}
+
+func (t *Tap) take(observation Observation) bool {
 	select {
-	case tap.observed <- observation:
+	case t.observed <- observation:
 	default:
-		tap.reportOverflow()
+		t.reportOverflow()
 		return false
 	}
-	return C.bool(tap.keeps != nil && tap.keeps(observation))
+	return t.keeps != nil && t.keeps(observation)
 }
 
 //export lanhopTapMissedInput

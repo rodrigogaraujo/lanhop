@@ -1,6 +1,8 @@
 #include "quartz_darwin.h"
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hid/IOHIDProperties.h>
+#include <IOKit/hidsystem/IOHIDEventSystemClient.h>
 #include <IOKit/hidsystem/IOLLEvent.h>
 #include <dispatch/dispatch.h>
 #include <stdlib.h>
@@ -19,11 +21,21 @@ _Static_assert(NX_DEVICERCMDKEYMASK == 0x0010, "the side bit of right Command ch
 _Static_assert(NX_DEVICELALTKEYMASK == 0x0020, "the side bit of left Option changed");
 _Static_assert(NX_DEVICERALTKEYMASK == 0x0040, "the side bit of right Option changed");
 _Static_assert(NX_DEVICERCTLKEYMASK == 0x2000, "the side bit of right Control changed");
-_Static_assert(kCGEventLeftMouseDown == 1 && kCGEventLeftMouseUp == 2 && kCGEventRightMouseDown == 3 && kCGEventRightMouseUp == 4, "a mouse button event type changed");
-_Static_assert(kCGEventMouseMoved == 5 && kCGEventLeftMouseDragged == 6 && kCGEventRightMouseDragged == 7, "a mouse movement event type changed");
-_Static_assert(kCGEventKeyDown == 10 && kCGEventKeyUp == 11 && kCGEventFlagsChanged == 12, "a keyboard event type changed");
-_Static_assert(kCGEventScrollWheel == 22 && kCGEventOtherMouseDown == 25 && kCGEventOtherMouseUp == 26 && kCGEventOtherMouseDragged == 27, "an event type changed");
-_Static_assert(kCGEventTapDisabledByTimeout == 0xFFFFFFFE, "the type that reports a disabled tap changed");
+_Static_assert(kCGEventLeftMouseDown == LANHOP_TYPE_LEFT_MOUSE_DOWN, "an event type changed");
+_Static_assert(kCGEventLeftMouseUp == LANHOP_TYPE_LEFT_MOUSE_UP, "an event type changed");
+_Static_assert(kCGEventRightMouseDown == LANHOP_TYPE_RIGHT_MOUSE_DOWN, "an event type changed");
+_Static_assert(kCGEventRightMouseUp == LANHOP_TYPE_RIGHT_MOUSE_UP, "an event type changed");
+_Static_assert(kCGEventMouseMoved == LANHOP_TYPE_MOUSE_MOVED, "an event type changed");
+_Static_assert(kCGEventLeftMouseDragged == LANHOP_TYPE_LEFT_MOUSE_DRAGGED, "an event type changed");
+_Static_assert(kCGEventRightMouseDragged == LANHOP_TYPE_RIGHT_MOUSE_DRAGGED, "an event type changed");
+_Static_assert(kCGEventKeyDown == LANHOP_TYPE_KEY_DOWN, "an event type changed");
+_Static_assert(kCGEventKeyUp == LANHOP_TYPE_KEY_UP, "an event type changed");
+_Static_assert(kCGEventFlagsChanged == LANHOP_TYPE_FLAGS_CHANGED, "an event type changed");
+_Static_assert(kCGEventScrollWheel == LANHOP_TYPE_SCROLL_WHEEL, "an event type changed");
+_Static_assert(kCGEventOtherMouseDown == LANHOP_TYPE_OTHER_MOUSE_DOWN, "an event type changed");
+_Static_assert(kCGEventOtherMouseUp == LANHOP_TYPE_OTHER_MOUSE_UP, "an event type changed");
+_Static_assert(kCGEventOtherMouseDragged == LANHOP_TYPE_OTHER_MOUSE_DRAGGED, "an event type changed");
+_Static_assert(kCGEventTapDisabledByTimeout == LANHOP_TYPE_TAP_DISABLED, "an event type changed");
 
 struct lanhopTap {
 	CFMachPortRef port;
@@ -78,10 +90,17 @@ bool lanhopCanListen(void) {
 	return CGPreflightListenEventAccess();
 }
 
-void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, uint64_t flags) {
+bool lanhopIsTrusted(void) {
+	return AXIsProcessTrusted();
+}
+
+void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, bool autorepeat, uint64_t flags) {
 	CGEventRef event = CGEventCreateKeyboardEvent(eventSource(), keyCode, down);
 	if (event != NULL && modifier) {
 		CGEventSetType(event, kCGEventFlagsChanged);
+	}
+	if (event != NULL && autorepeat) {
+		CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, 1);
 	}
 	post(event, flags);
 }
@@ -135,6 +154,34 @@ int lanhopDisplays(double *rects, int capacity) {
 	return written;
 }
 
+static IOHIDEventSystemClientRef inputSettings(void) {
+	static IOHIDEventSystemClientRef client;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault);
+	});
+	return client;
+}
+
+static bool inputSetting(CFStringRef name, int64_t *value) {
+	IOHIDEventSystemClientRef settings = inputSettings();
+	if (settings == NULL) {
+		return false;
+	}
+	CFTypeRef setting = IOHIDEventSystemClientCopyProperty(settings, name);
+	if (setting == NULL) {
+		return false;
+	}
+	bool isNumber = CFGetTypeID(setting) == CFNumberGetTypeID() && CFNumberGetValue(setting, kCFNumberSInt64Type, value);
+	CFRelease(setting);
+	return isNumber;
+}
+
+bool lanhopKeyRepeat(int64_t *delayNanoseconds, int64_t *intervalNanoseconds) {
+	return inputSetting(CFSTR(kIOHIDServiceInitialKeyRepeatDelayKey), delayNanoseconds) &&
+		inputSetting(CFSTR(kIOHIDServiceKeyRepeatDelayKey), intervalNanoseconds);
+}
+
 static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *info) {
 	lanhopTap *tap = info;
 	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
@@ -160,8 +207,8 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 		.pointsVertical = CGEventGetDoubleValueField(event, kCGScrollWheelEventPointDeltaAxis1),
 		.pointsHorizontal = CGEventGetDoubleValueField(event, kCGScrollWheelEventPointDeltaAxis2),
 		.continuous = CGEventGetIntegerValueField(event, kCGScrollWheelEventIsContinuous) != 0,
-		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 		.marker = CGEventGetIntegerValueField(event, kCGEventSourceUserData),
+		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 	};
 	bool keep = lanhopObserved(tap->handle, &seen);
 	return tap->active && keep ? NULL : event;

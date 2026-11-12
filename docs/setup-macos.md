@@ -58,7 +58,6 @@ lanhop receive
 
 Not done yet on a Mac that is being controlled:
 
-- A key held down does not repeat.
 - Alt and Super cannot be swapped yet, so Alt acts as Option and Super as Command.
 - Caps Lock does not switch on the Mac.
 - The volume and mute keys do nothing on the Mac.
@@ -78,7 +77,7 @@ lanhop share
 
 ### If the keyboard and mouse stop answering
 
-While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 3 seconds, and when its permission is taken away.
+While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 10 seconds, and when its permission is taken away.
 
 If they are still held:
 

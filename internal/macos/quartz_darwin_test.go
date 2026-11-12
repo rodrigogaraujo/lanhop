@@ -4,6 +4,7 @@ package macos
 
 import (
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -177,6 +178,55 @@ func replayedWithin(tap *Tap, window time.Duration) []Observation {
 	}
 }
 
+func TestKeyRepeatSettingsOfThisMacAreReadAsDurations(t *testing.T) {
+	delay, interval, known := Quartz{}.KeyRepeat()
+	if !known {
+		t.Skip("this Mac does not report its key repeat settings")
+	}
+	for name, setting := range map[string]time.Duration{"delay": delay, "interval": interval} {
+		if setting != 0 && (setting < time.Millisecond || setting > 24*time.Hour) {
+			t.Errorf("the key repeat %s was read as %v, want zero for turned off or a time between a millisecond and a day", name, setting)
+		}
+	}
+}
+
+func TestHeldKeyRepeatsUntilItIsReleased(t *testing.T) {
+	replayed, tap := observeRealInput(t)
+	t.Cleanup(func() { replayed.Close() })
+	delay, interval, turnedOn := repeatTiming(Quartz{}.KeyRepeat())
+	if !turnedOn {
+		t.Skip("key repeat is turned off on this Mac")
+	}
+
+	replay(t, replayed, event.Key(linuxF19, event.KeyPressed), event.Sync())
+	seen := replayedWithin(tap, delay+4*interval)
+	replay(t, replayed, event.Key(linuxF19, event.KeyReleased), event.Sync())
+	seen = append(seen, replayedWithin(tap, 4*interval)...)
+
+	released := slices.IndexFunc(seen, func(observed Observation) bool { return observed.Type == typeKeyUp })
+	if released < 1 {
+		t.Fatalf("the tap saw %+v, want the press of F19, its repeats and its release", seen)
+	}
+	pressed, repeated, afterRelease := seen[0], seen[1:released], seen[released+1:]
+	if pressed.Type != typeKeyDown || pressed.KeyCode != macOSF19 || pressed.Repeat {
+		t.Errorf("press = %+v, want F19 down that is not an automatic repeat", pressed)
+	}
+	if len(repeated) < 2 || len(repeated) > 6 {
+		t.Errorf("F19 held for the delay and four intervals repeated %d times, want about 4", len(repeated))
+	}
+	for _, observed := range repeated {
+		if observed.Type != typeKeyDown || observed.KeyCode != macOSF19 || !observed.Repeat {
+			t.Errorf("while F19 was held the tap saw %+v, want F19 down marked as an automatic repeat", observed)
+		}
+	}
+	if up := seen[released]; up.KeyCode != macOSF19 {
+		t.Errorf("release = %+v, want F19 up", up)
+	}
+	if len(afterRelease) != 0 {
+		t.Errorf("after the release the tap still saw %+v", afterRelease)
+	}
+}
+
 func TestClosedTapStopsObserving(t *testing.T) {
 	replayed, first := observeRealInput(t)
 	if err := first.Close(); err != nil {
@@ -336,5 +386,37 @@ func TestQuickMovementsAddUpWithoutWaitingForTheSystem(t *testing.T) {
 	}
 	if end := (Quartz{}).Cursor(); end != start {
 		t.Errorf("the cursor ended at %+v, want %+v", end, start)
+	}
+}
+
+func TestTapWithAFullQueueLetsTheEventThroughAndReportsIt(t *testing.T) {
+	keepsEverything := func(Observation) bool { return true }
+	tap := &Tap{keeps: keepsEverything, observed: make(chan Observation, 1), missed: make(chan struct{}, 1)}
+
+	if kept := tap.take(Observation{Type: TypeKeyDown}); !kept {
+		t.Error("an event that fits in the queue was not kept")
+	}
+	if kept := tap.take(Observation{Type: TypeKeyUp}); kept {
+		t.Error("an event that does not fit in the queue was kept from the system")
+	}
+	if kept := tap.take(Observation{Type: TypeKeyUp}); kept {
+		t.Error("a second event that does not fit was kept from the system")
+	}
+
+	select {
+	case <-tap.Overflowed():
+	default:
+		t.Error("the overflow was not reported")
+	}
+	if queued := <-tap.Observed(); queued.Type != TypeKeyDown {
+		t.Errorf("the queue holds %+v, want the first event", queued)
+	}
+}
+
+func TestListenOnlyTapKeepsNothing(t *testing.T) {
+	tap := &Tap{observed: make(chan Observation, 1), missed: make(chan struct{}, 1)}
+
+	if kept := tap.take(Observation{Type: TypeKeyDown}); kept {
+		t.Error("a tap that only listens kept an event from the system")
 	}
 }

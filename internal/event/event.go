@@ -10,6 +10,7 @@ const (
 	TypeSync     uint16 = 0x00
 	TypeKey      uint16 = 0x01
 	TypeRelative uint16 = 0x02
+	TypeAbsolute uint16 = 0x03
 	TypeControl  uint16 = 0xFF00
 )
 
@@ -30,6 +31,13 @@ const (
 	RelHWheel uint16 = 0x06
 	RelWheel  uint16 = 0x08
 )
+
+const (
+	AbsX uint16 = 0x00
+	AbsY uint16 = 0x01
+)
+
+const AbsoluteMax int32 = 65535
 
 const (
 	KeyReleased int32 = 0
@@ -62,6 +70,10 @@ func Key(code uint16, value int32) Event {
 
 func Relative(axis uint16, delta int32) Event {
 	return Event{Type: TypeRelative, Code: axis, Value: delta}
+}
+
+func Absolute(axis uint16, position int32) Event {
+	return Event{Type: TypeAbsolute, Code: axis, Value: position}
 }
 
 func Hello() Event {

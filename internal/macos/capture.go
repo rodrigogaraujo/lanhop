@@ -59,7 +59,7 @@ type Observation struct {
 	PointsVertical   float64
 	PointsHorizontal float64
 	Continuous       bool
-	Autorepeat       bool
+	Repeat           bool
 	Marker           int64
 }
 
@@ -97,7 +97,7 @@ func (t *translator) translate(seen Observation) []event.Event {
 	events := t.modifiers(seen)
 	switch seen.Type {
 	case TypeKeyDown:
-		if !seen.Autorepeat {
+		if !seen.Repeat {
 			events = append(events, t.keyDown(seen.KeyCode)...)
 		}
 	case TypeKeyUp:

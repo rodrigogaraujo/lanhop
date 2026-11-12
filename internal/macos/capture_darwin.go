@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	handOffLimit        = 3 * time.Second
+	handOffLimit        = 10 * time.Second
 	permissionCheckTime = time.Second
 )
 
@@ -51,8 +51,8 @@ func startCapture(keys keymap.Translator, accepts func(Observation) bool) (*Capt
 		events:       capture.events,
 		handOffLimit: handOffLimit,
 		checkEvery:   permissionCheckTime,
-		stillAllowed: func() bool { return CanListen() && CanPost() },
-		giveBack:     func() { capture.GiveBack() },
+		stillAllowed: func() bool { return IsTrusted() && CanListen() && CanPost() },
+		giveBack:     capture.giveUp,
 	}
 	go delivery.run()
 	return capture, nil
@@ -83,6 +83,14 @@ func (c *Capture) GiveBack() error {
 	c.taken.Store(false)
 	followMouse(true)
 	return nil
+}
+
+func (c *Capture) giveUp() {
+	c.state.Lock()
+	defer c.state.Unlock()
+	c.closed = true
+	c.taken.Store(false)
+	followMouse(true)
 }
 
 func (c *Capture) Close() error {
