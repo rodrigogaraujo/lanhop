@@ -57,9 +57,10 @@ func run(ctx context.Context, config Config, delays retryDelays) error {
 }
 
 type machine struct {
-	replay  Replay
-	held    keystate.Tracker
-	focused bool
+	replay     Replay
+	held       keystate.Tracker
+	focused    bool
+	reportOpen bool
 }
 
 func (m *machine) receiveUntilStopped(ctx context.Context, config Config, delays retryDelays) error {
@@ -121,10 +122,16 @@ func (m *machine) replayIfFocused(input event.Event) error {
 		return nil
 	}
 	m.held.Observe(input)
+	m.reportOpen = input != event.Sync()
 	return m.replay.Emit(input)
 }
 
 func (m *machine) loseFocus() error {
 	m.focused = false
-	return m.replay.Emit(m.held.ReleaseAll()...)
+	ending := m.held.ReleaseAll()
+	if len(ending) == 0 && m.reportOpen {
+		ending = []event.Event{event.Sync()}
+	}
+	m.reportOpen = false
+	return m.replay.Emit(ending...)
 }

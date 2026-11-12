@@ -339,6 +339,49 @@ func TestAKilledConnectionReleasesWhatIsHeld(t *testing.T) {
 	)...)
 }
 
+func TestLosingFocusSyncsInputThatWasReplayedWithoutASync(t *testing.T) {
+	leaves := func(t *testing.T, sharerSide *transport.Conn) { send(t, sharerSide, event.Leave()) }
+	isKilled := func(_ *testing.T, sharerSide *transport.Conn) { sharerSide.Close() }
+	tapWithoutSync := []event.Event{event.Key(event.KeyA, pressed), event.Sync(), event.Key(event.KeyA, released)}
+	movementWithoutSync := []event.Event{event.Relative(event.RelX, 7)}
+	cases := []struct {
+		name      string
+		unsynced  []event.Event
+		loseFocus func(t *testing.T, sharerSide *transport.Conn)
+	}{
+		{"a release, then leave", tapWithoutSync, leaves},
+		{"a release, then a killed connection", tapWithoutSync, isKilled},
+		{"a movement, then leave", movementWithoutSync, leaves},
+		{"a movement, then a killed connection", movementWithoutSync, isKilled},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, _, sharerSide := connectedDesk(t)
+			send(t, sharerSide, event.Enter())
+			send(t, sharerSide, c.unsynced...)
+			d.replay.expect(t, c.unsynced...)
+
+			c.loseFocus(t, sharerSide)
+
+			d.replay.expect(t, append(slices.Clone(c.unsynced), event.Sync())...)
+		})
+	}
+}
+
+func TestInputSyncedOnLeaveIsNotSyncedAgainWhenTheConnectionIsLost(t *testing.T) {
+	d, _, sharerSide := connectedDesk(t)
+	send(t, sharerSide, event.Enter(), event.Relative(event.RelX, 7), event.Leave())
+	syncedOnLeave := []event.Event{event.Relative(event.RelX, 7), event.Sync()}
+	d.replay.expect(t, syncedOnLeave...)
+
+	sharerSide.Close()
+	d.failuresAfter(t, 1)
+
+	if got := d.replay.replayed(); !slices.Equal(got, syncedOnLeave) {
+		t.Errorf("replayed %+v, want only %+v", got, syncedOnLeave)
+	}
+}
+
 func TestTheReceiverReconnectsWhenTheSharerComesBackAndKeepsItsReplay(t *testing.T) {
 	d, listener, sharerSide := connectedDesk(t)
 	address := listener.Addr().String()
