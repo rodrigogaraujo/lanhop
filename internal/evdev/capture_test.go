@@ -89,7 +89,19 @@ func firstEventUnsafeOn(t *testing.T, device emitter, events []event.Event) (eve
 	if !slices.ContainsFunc(events, isPosition) || !isGrabbed(t, deviceReachedByPositions(t, device)) {
 		return firstUnsafeEvent(events)
 	}
-	return firstUnsafeEvent(slices.DeleteFunc(slices.Clone(events), isPosition))
+	if unsafe, found := firstUnsafeEvent(slices.DeleteFunc(slices.Clone(events), isPosition)); found {
+		return unsafe, true
+	}
+	return positionLeftInAnOpenReport(events)
+}
+
+func positionLeftInAnOpenReport(events []event.Event) (event.Event, bool) {
+	for i := len(events) - 1; i >= 0 && !isEndOfReport(events[i]); i-- {
+		if isPosition(events[i]) {
+			return events[i], true
+		}
+	}
+	return event.Event{}, false
 }
 
 func isPosition(e event.Event) bool {
@@ -322,6 +334,75 @@ func TestAGrabbedPointerAllowsPositionsAndNothingElseThatIsUnsafe(t *testing.T) 
 				t.Errorf("%s %s: refused %+v, %v, want %+v refused", name, order, got, refused, unsafe)
 			}
 		}
+	}
+}
+
+func TestAPositionIsLeftInAnOpenReportUnlessTheReportEndsAfterIt(t *testing.T) {
+	var (
+		placeX      = event.Absolute(event.AbsX, 10)
+		placeY      = event.Absolute(event.AbsY, 20)
+		pressLeft   = event.Key(event.ButtonLeft, event.KeyPressed)
+		contactEnds = event.Event{Type: event.TypeSync, Code: syncMultitouch}
+	)
+	tests := []struct {
+		name     string
+		events   []event.Event
+		leftOpen []event.Event
+	}{
+		{"nothing", nil, nil},
+		{"no position", []event.Event{pressLeft}, nil},
+		{"a position and the end of its report", []event.Event{placeX, placeY, event.Sync()}, nil},
+		{"a button after the end of the report of a position", []event.Event{placeX, event.Sync(), pressLeft}, nil},
+		{"a position alone", []event.Event{placeX}, []event.Event{placeX}},
+		{"two positions", []event.Event{placeX, placeY}, []event.Event{placeY}},
+		{"a position, then a button", []event.Event{placeX, pressLeft}, []event.Event{placeX}},
+		{"a position after the end of another report", []event.Event{placeX, event.Sync(), placeY}, []event.Event{placeY}},
+		{"a position, then a sync that does not end the report", []event.Event{placeX, contactEnds}, []event.Event{placeX}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var leftOpen []event.Event
+			if position, found := positionLeftInAnOpenReport(test.events); found {
+				leftOpen = append(leftOpen, position)
+			}
+			if !slices.Equal(leftOpen, test.leftOpen) {
+				t.Errorf("left in an open report: %+v, want %+v", leftOpen, test.leftOpen)
+			}
+		})
+	}
+}
+
+func TestAGrabbedPointerRefusesAPositionWhoseReportDoesNotEndInTheSameCall(t *testing.T) {
+	leftOpen := event.Absolute(event.AbsY, 20)
+	calls := map[string][]event.Event{
+		"a position alone":                           {leftOpen},
+		"a position, then a button":                  {leftOpen, event.Key(event.ButtonLeft, event.KeyPressed)},
+		"a position after the end of another report": {event.Absolute(event.AbsX, 10), event.Sync(), leftOpen},
+	}
+	tests := []struct {
+		name   string
+		create func(t *testing.T) (through emitter, reached *VirtualDevice)
+	}{
+		{"emitted on the pointer", func(t *testing.T) (emitter, *VirtualDevice) {
+			pointer := createPointer(t)
+			return pointer, pointer
+		}},
+		{"emitted through the replay", func(t *testing.T) (emitter, *VirtualDevice) {
+			replay := createReplay(t)
+			return replay, replay.pointer
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			through, reached := test.create(t)
+			hideFromTheDesktop(t, reached)
+
+			for name, events := range calls {
+				if got, refused := firstEventUnsafeOn(t, through, events); !refused || got != leftOpen {
+					t.Errorf("%s: refused %+v, %v, want %+v refused", name, got, refused, leftOpen)
+				}
+			}
+		})
 	}
 }
 

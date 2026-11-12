@@ -156,6 +156,32 @@ func TestThePointerIsLanhopsOwnAndNeitherAKeyboardNorAMouse(t *testing.T) {
 	}
 }
 
+func identityOf(t *testing.T, device *Device) inputID {
+	t.Helper()
+	var id inputID
+	if err := ioctlPointer(device.file, deviceID, unsafe.Pointer(&id)); err != nil {
+		t.Fatalf("read the identity of the device: %v", err)
+	}
+	return id
+}
+
+func TestThePointerOfTheReplayHasAProductNumberOfItsOwn(t *testing.T) {
+	replay := createReplay(t)
+
+	keyboardAndMouse := identityOf(t, openEventNode(t, replay.keyboardAndMouse))
+	pointer := identityOf(t, openEventNode(t, replay.pointer))
+
+	if keyboardAndMouse != lanhopsDevice {
+		t.Errorf("the keyboard and mouse is identified as %+v, want %+v", keyboardAndMouse, lanhopsDevice)
+	}
+	if pointer != lanhopsPointer {
+		t.Errorf("the pointer is identified as %+v, want %+v", pointer, lanhopsPointer)
+	}
+	if pointer.product == keyboardAndMouse.product {
+		t.Errorf("both devices have the product number %#04x, want one for each", pointer.product)
+	}
+}
+
 func TestEachEventGoesToItsDeviceAndTheEndOfAReportToEveryDeviceTheReportReached(t *testing.T) {
 	const nowhere destination = 0
 	var (
@@ -232,12 +258,10 @@ func TestAReportWithAKeyAndAPositionEndsOnBothDevicesOfTheReplay(t *testing.T) {
 	keyboardAndMouse := openEventNode(t, replay.keyboardAndMouse)
 	pointer := hideFromTheDesktop(t, replay.pointer)
 
-	for _, oneAtATime := range []event.Event{
-		event.Key(event.KeyA, event.KeyPressed), event.Absolute(event.AbsX, 100), event.Absolute(event.AbsY, 200), event.Sync(),
-		event.Key(event.KeyA, event.KeyReleased), event.Sync(),
-	} {
-		emit(t, replay, oneAtATime)
-	}
+	emit(t, replay, event.Key(event.KeyA, event.KeyPressed))
+	emit(t, replay, event.Absolute(event.AbsX, 100), event.Absolute(event.AbsY, 200), event.Sync())
+	emit(t, replay, event.Key(event.KeyA, event.KeyReleased))
+	emit(t, replay, event.Sync())
 
 	expectRead(t, keyboardAndMouse,
 		event.Key(event.KeyA, event.KeyPressed), event.Sync(),
