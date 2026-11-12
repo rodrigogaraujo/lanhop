@@ -208,6 +208,7 @@ func (c *Capture) abandon(path string, lost *source) {
 	}
 	lost.device.Close()
 	c.mutex.Unlock()
+	c.adopt(path)
 
 	for _, ending := range lost.endOfInterruptedReport() {
 		if !c.deliver(ending) {

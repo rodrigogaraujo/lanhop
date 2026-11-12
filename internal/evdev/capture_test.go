@@ -66,6 +66,12 @@ func captured(t *testing.T, capture *Capture, count int) []event.Event {
 	return got
 }
 
+func capturedUntil(t *testing.T, capture *Capture, last event.Event) {
+	t.Helper()
+	for captured(t, capture, 1)[0] != last {
+	}
+}
+
 func expectCaptured(t *testing.T, capture *Capture, want ...event.Event) {
 	t.Helper()
 	if got := captured(t, capture, len(want)); !slices.Equal(got, want) {
@@ -229,6 +235,32 @@ func TestUnpluggedDeviceIsDroppedWithItsKeysReleasedAndTheOthersKeepWorking(t *t
 	waitUntilRead(t, capture, mouseNode)
 	emit(t, mouse, event.Relative(event.RelX, 5), event.Sync())
 	expectCaptured(t, capture, event.Relative(event.RelX, 5), event.Sync())
+}
+
+func TestDevicePluggedInUnderTheNodeOfOneWhoseLossWasNotNoticedYetIsCaptured(t *testing.T) {
+	directory := t.TempDir()
+	unplugged, node := plugInto(t, directory, usbKeyboard)
+	capture := startCaptureIn(t, directory)
+	emit(t, unplugged, event.Key(event.KeyA, event.KeyPressed), event.Sync())
+	expectCaptured(t, capture, event.Key(event.KeyA, event.KeyPressed))
+	time.Sleep(quietPeriod)
+
+	if err := unplugged.Close(); err != nil {
+		t.Fatalf("unplug the keyboard: %v", err)
+	}
+	replacement, appearedElsewhere := plugInto(t, t.TempDir(), usbKeyboard)
+	if err := os.Rename(appearedElsewhere, node); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if err := os.Chmod(node, 0o660); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	time.Sleep(quietPeriod)
+
+	capturedUntil(t, capture, event.Key(event.KeyA, event.KeyReleased))
+	expectCaptured(t, capture, event.Sync())
+	emit(t, replacement, event.Key(event.KeyA, event.KeyPressed), event.Sync())
+	expectCaptured(t, capture, event.Key(event.KeyA, event.KeyPressed), event.Sync())
 }
 
 func TestOnlyKeyboardsAndMiceThatAreNotLanhopsOwnAreCaptured(t *testing.T) {
