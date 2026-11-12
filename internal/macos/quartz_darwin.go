@@ -18,7 +18,7 @@ import (
 const (
 	Marker           = int64(C.LANHOP_MARKER)
 	maxDisplays      = 32
-	observationQueue = 256
+	observationQueue = 4096
 )
 
 var ErrNotPermitted = errors.New("macos: this program is not allowed to observe the keyboard and mouse")
@@ -74,36 +74,36 @@ func (Quartz) Displays() []Rect {
 	return displays
 }
 
-type Observation struct {
-	Type             uint32
-	KeyCode          uint16
-	Flags            Flags
-	At               Point
-	DX, DY           int64
-	Clicks           int64
-	Button           int64
-	ScrollVertical   int64
-	ScrollHorizontal int64
-	Marker           int64
-}
-
 type Tap struct {
 	native   *C.lanhopTap
 	handle   cgo.Handle
+	keeps    func(Observation) bool
 	observed chan Observation
 	ready    chan struct{}
 	stopped  chan struct{}
 	closing  sync.Once
 }
 
+type tapPlace bool
+
+const (
+	seesInputFirst tapPlace = false
+	seesInputLast  tapPlace = true
+)
+
 func StartTap() (*Tap, error) {
+	return startTap(seesInputFirst, nil)
+}
+
+func startTap(place tapPlace, keeps func(Observation) bool) (*Tap, error) {
 	tap := &Tap{
+		keeps:    keeps,
 		observed: make(chan Observation, observationQueue),
 		ready:    make(chan struct{}),
 		stopped:  make(chan struct{}),
 	}
 	tap.handle = cgo.NewHandle(tap)
-	tap.native = C.lanhopTapCreate(C.uintptr_t(tap.handle))
+	tap.native = C.lanhopTapCreate(C.uintptr_t(tap.handle), C.bool(keeps != nil), C.bool(place))
 	if tap.native == nil {
 		tap.handle.Delete()
 		return nil, ErrNotPermitted
@@ -139,7 +139,8 @@ func lanhopTapReady(handle C.uintptr_t) {
 }
 
 //export lanhopObserved
-func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) {
+func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) C.bool {
+	tap := cgo.Handle(handle).Value().(*Tap)
 	observation := Observation{
 		Type:             uint32(seen._type),
 		KeyCode:          uint16(seen.keyCode),
@@ -151,10 +152,19 @@ func lanhopObserved(handle C.uintptr_t, seen *C.lanhopObservation) {
 		Button:           int64(seen.button),
 		ScrollVertical:   int64(seen.scrollVertical),
 		ScrollHorizontal: int64(seen.scrollHorizontal),
+		PointsVertical:   float64(seen.pointsVertical),
+		PointsHorizontal: float64(seen.pointsHorizontal),
+		Continuous:       bool(seen.continuous),
+		Autorepeat:       bool(seen.autorepeat),
 		Marker:           int64(seen.marker),
 	}
 	select {
-	case cgo.Handle(handle).Value().(*Tap).observed <- observation:
+	case tap.observed <- observation:
 	default:
 	}
+	return C.bool(tap.keeps != nil && tap.keeps(observation))
+}
+
+func followMouse(follow bool) {
+	C.lanhopFollowMouse(C.bool(follow))
 }

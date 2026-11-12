@@ -1,6 +1,6 @@
 # Setting up lanhop on macOS
 
-> **macOS support is partly built.** A Mac can already be controlled from another machine with `lanhop receive`. Sharing the Mac's own keyboard and mouse (`lanhop share`) is not built yet.
+> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. Sharing from a Mac has been tested only with input that lanhop generated itself, not yet with a person typing.
 
 ## Why lanhop needs a permission
 
@@ -62,6 +62,19 @@ Not done yet on a Mac that is being controlled:
 - Alt and Super cannot be swapped yet, so Alt acts as Option and Super as Command.
 - Caps Lock does not switch on the Mac.
 - The volume and mute keys do nothing on the Mac.
+
+## Sharing the keyboard and mouse of the Mac
+
+On the Mac that has the keyboard and mouse, wait for each other machine to pair, then share:
+
+```sh
+lanhop pair
+lanhop share
+```
+
+`lanhop share` prints the hotkeys. Control+Option+2 gives the keyboard and mouse to the first machine that `lanhop peers` lists, and Control+Option+1 brings them back.
+
+`lanhop devices` shows whether the Mac allows lanhop to read and to control the keyboard and mouse.
 
 ## What lanhop cannot do on a Mac
 

@@ -17,6 +17,7 @@ struct lanhopTap {
 	CFRunLoopSourceRef keepsLoopAlive;
 	CFRunLoopRef loop;
 	uintptr_t handle;
+	bool active;
 	bool stopping;
 };
 
@@ -141,24 +142,34 @@ static CGEventRef observe(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
 		.button = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber),
 		.scrollVertical = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1),
 		.scrollHorizontal = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2),
+		.pointsVertical = CGEventGetDoubleValueField(event, kCGScrollWheelEventPointDeltaAxis1),
+		.pointsHorizontal = CGEventGetDoubleValueField(event, kCGScrollWheelEventPointDeltaAxis2),
+		.continuous = CGEventGetIntegerValueField(event, kCGScrollWheelEventIsContinuous) != 0,
+		.autorepeat = CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0,
 		.marker = CGEventGetIntegerValueField(event, kCGEventSourceUserData),
 	};
-	lanhopObserved(tap->handle, &seen);
-	return event;
+	bool keep = lanhopObserved(tap->handle, &seen);
+	return tap->active && keep ? NULL : event;
 }
 
-lanhopTap *lanhopTapCreate(uintptr_t handle) {
+void lanhopFollowMouse(bool follow) {
+	CGAssociateMouseAndMouseCursorPosition(follow);
+}
+
+lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last) {
 	lanhopTap *tap = calloc(1, sizeof(lanhopTap));
 	if (tap == NULL) {
 		return NULL;
 	}
 	tap->handle = handle;
+	tap->active = active;
 	CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged) |
 		CGEventMaskBit(kCGEventMouseMoved) | CGEventMaskBit(kCGEventScrollWheel) |
 		CGEventMaskBit(kCGEventLeftMouseDown) | CGEventMaskBit(kCGEventLeftMouseUp) | CGEventMaskBit(kCGEventLeftMouseDragged) |
 		CGEventMaskBit(kCGEventRightMouseDown) | CGEventMaskBit(kCGEventRightMouseUp) | CGEventMaskBit(kCGEventRightMouseDragged) |
 		CGEventMaskBit(kCGEventOtherMouseDown) | CGEventMaskBit(kCGEventOtherMouseUp) | CGEventMaskBit(kCGEventOtherMouseDragged);
-	tap->port = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, mask, observe, tap);
+	tap->port = CGEventTapCreate(kCGSessionEventTap, last ? kCGTailAppendEventTap : kCGHeadInsertEventTap,
+		active ? kCGEventTapOptionDefault : kCGEventTapOptionListenOnly, mask, observe, tap);
 	if (tap->port == NULL) {
 		free(tap);
 		return NULL;

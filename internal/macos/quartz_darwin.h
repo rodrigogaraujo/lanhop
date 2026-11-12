@@ -19,6 +19,10 @@ typedef struct {
 	int64_t button;
 	int64_t scrollVertical;
 	int64_t scrollHorizontal;
+	double pointsVertical;
+	double pointsHorizontal;
+	bool continuous;
+	bool autorepeat;
 	int64_t marker;
 } lanhopObservation;
 
@@ -31,7 +35,8 @@ void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks,
 void lanhopPostScroll(int32_t vertical, int32_t horizontal, uint64_t flags);
 void lanhopCursor(double *x, double *y);
 int lanhopDisplays(double *rects, int capacity);
-lanhopTap *lanhopTapCreate(uintptr_t handle);
+lanhopTap *lanhopTapCreate(uintptr_t handle, bool active, bool last);
+void lanhopFollowMouse(bool follow);
 void lanhopTapRun(lanhopTap *tap);
 void lanhopTapStop(lanhopTap *tap);
 void lanhopTapFree(lanhopTap *tap);
