@@ -37,6 +37,15 @@ sudo go test ./internal/evdev/
 4. **Say how you tested it.** Name the operating system, the desktop session (X11, Wayland compositor or console) and what you ran. Input code behaves differently on each.
 5. **Keep the dependency list empty where you can.** A new dependency needs a reason in the pull request description.
 
+## Tests that create input devices
+
+On Linux, the input tests create real virtual keyboards and mice with `uinput`. Whatever they press is real input for the machine that runs them, and the system acts on it. A test once pressed the power key on a fake power button, and the CI machine shut down in the middle of the run.
+
+- Press only the letter A, Shift and the mouse buttons, and move the mouse by small amounts.
+- Never press a key the system acts on: power, sleep, suspend, restart, SysRq, or combinations such as Ctrl+Alt+Delete and Ctrl+Alt+F1.
+- A test may create a device that *has* such a key, to check how it is classified. It must not press it.
+- In `internal/evdev`, press keys only through the `emit` test helper. It stops the test before any other key reaches the device.
+
 ## Code style
 
 - Format with `gofmt`.

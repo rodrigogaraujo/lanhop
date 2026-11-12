@@ -42,10 +42,46 @@ func startCaptureIn(t *testing.T, directory string) *Capture {
 	return capture
 }
 
+var keysSafeToPressOnTheMachineRunningTheTests = []uint16{event.KeyA, event.ButtonLeft, event.ButtonRight, event.ButtonMiddle}
+
+func firstUnsafeKey(events []event.Event) (uint16, bool) {
+	for _, e := range events {
+		if e.Type == event.TypeKey && !slices.Contains(keysSafeToPressOnTheMachineRunningTheTests, e.Code) {
+			return e.Code, true
+		}
+	}
+	return 0, false
+}
+
 func emit(t *testing.T, device *VirtualDevice, events ...event.Event) {
 	t.Helper()
+	if code, unsafe := firstUnsafeKey(events); unsafe {
+		t.Fatalf("refusing to press key %d: the machine running the tests would act on it, press only %v", code, keysSafeToPressOnTheMachineRunningTheTests)
+	}
 	if err := device.Emit(events...); err != nil {
 		t.Fatalf("Emit: %v", err)
+	}
+}
+
+func TestOnlyKeysTheMachineIgnoresMayBePressedByTests(t *testing.T) {
+	const keyDelete uint16 = 111
+	for name, events := range map[string][]event.Event{
+		"power key":               {event.Key(keyPower, event.KeyPressed)},
+		"power key released":      {event.Key(keyPower, event.KeyReleased)},
+		"enter":                   {event.Key(event.KeyEnter, event.KeyPressed)},
+		"delete after a safe key": {event.Key(event.KeyA, event.KeyPressed), event.Sync(), event.Key(keyDelete, event.KeyPressed)},
+	} {
+		if _, unsafe := firstUnsafeKey(events); !unsafe {
+			t.Errorf("%s was allowed", name)
+		}
+	}
+	allowed := []event.Event{
+		event.Key(event.KeyA, event.KeyPressed), event.Key(event.KeyA, event.KeyReleased),
+		event.Key(event.ButtonLeft, event.KeyPressed), event.Key(event.ButtonRight, event.KeyPressed), event.Key(event.ButtonMiddle, event.KeyPressed),
+		event.Relative(event.RelX, 7), event.Relative(event.RelWheel, 1), event.Sync(),
+	}
+	if code, unsafe := firstUnsafeKey(allowed); unsafe {
+		t.Errorf("key %d was refused", code)
 	}
 }
 
