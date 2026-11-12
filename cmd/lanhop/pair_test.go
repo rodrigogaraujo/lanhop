@@ -400,3 +400,27 @@ func TestCommandsUsedWronglyShowUsageAndTouchNothing(t *testing.T) {
 		})
 	}
 }
+
+func TestAMachineForgottenWhilePairWaitsStaysForgotten(t *testing.T) {
+	directory := useConfigDirectory(t)
+	trustAlready(t, directory, trustedLaptop)
+	tablet := newOtherMachine(t, "tablet", true)
+	output := &screen{}
+
+	command := startCommand("yes\n", output, "pair", "--listen", "127.0.0.1:0")
+	port := output.portShown(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"forget", trustedLaptop.Name}, nobodyTyping(), &stdout, &stderr); code != 0 {
+		t.Fatalf("forget: exit code = %d, stderr = %q", code, stderr.String())
+	}
+	_, err := pairing.Dial(net.JoinHostPort("127.0.0.1", port), tablet.config)
+	finished := await(t, command)
+
+	if err != nil || finished.exitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %q, the tablet got %v", finished.exitCode, finished.stderr, err)
+	}
+	tabletHere := trust.Peer{Name: "tablet", Fingerprint: tablet.identity.Fingerprint}
+	if got := trustedIn(t, directory).Peers(); !slices.Equal(got, []trust.Peer{tabletHere}) {
+		t.Errorf("the machine trusts %+v, want only %+v", got, tabletHere)
+	}
+}

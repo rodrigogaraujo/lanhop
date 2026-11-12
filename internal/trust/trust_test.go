@@ -87,6 +87,82 @@ func TestRemovedPeerIsNoLongerTrusted(t *testing.T) {
 	}
 }
 
+func TestAChangeBuildsOnWhatAnotherProcessSavedMeanwhile(t *testing.T) {
+	laptop := Peer{Name: "laptop", Fingerprint: fingerprint(1)}
+	desktop := Peer{Name: "desktop", Fingerprint: fingerprint(2)}
+	tablet := Peer{Name: "tablet", Fingerprint: fingerprint(3)}
+
+	t.Run("a peer removed elsewhere is not brought back by Add", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "peers.json")
+		addPeer(t, openStore(t, path), laptop)
+		openedEarlier := openStore(t, path)
+		if err := openStore(t, path).Remove("laptop"); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+
+		addPeer(t, openedEarlier, desktop)
+
+		for _, current := range []*Store{openedEarlier, openStore(t, path)} {
+			if got, want := current.Peers(), []Peer{desktop}; !slices.Equal(got, want) {
+				t.Errorf("Peers = %+v, want %+v", got, want)
+			}
+		}
+	})
+
+	t.Run("a peer added elsewhere is kept by Add and by Remove", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "peers.json")
+		addPeer(t, openStore(t, path), laptop)
+		openedEarlier := openStore(t, path)
+		addPeer(t, openStore(t, path), desktop)
+
+		addPeer(t, openedEarlier, tablet)
+		if err := openedEarlier.Remove("laptop"); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+
+		for _, current := range []*Store{openedEarlier, openStore(t, path)} {
+			if got, want := current.Peers(), []Peer{desktop, tablet}; !slices.Equal(got, want) {
+				t.Errorf("Peers = %+v, want %+v", got, want)
+			}
+		}
+	})
+
+	t.Run("a name or key taken elsewhere is refused by Add", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "peers.json")
+		openedEarlier := openStore(t, path)
+		addPeer(t, openStore(t, path), laptop)
+
+		for _, ambiguous := range []Peer{{Name: "laptop", Fingerprint: fingerprint(9)}, {Name: "other", Fingerprint: fingerprint(1)}} {
+			if err := openedEarlier.Add(ambiguous); err == nil {
+				t.Errorf("Add(%+v) succeeded", ambiguous)
+			}
+		}
+		if got, want := openStore(t, path).Peers(), []Peer{laptop}; !slices.Equal(got, want) {
+			t.Errorf("Peers = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("a file damaged elsewhere stops the change and is left alone", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "peers.json")
+		openedEarlier := openStore(t, path)
+		damaged := "{peers"
+		if err := os.WriteFile(path, []byte(damaged), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		if err := openedEarlier.Add(laptop); err == nil || !strings.Contains(err.Error(), "damaged") {
+			t.Errorf("Add = %v, want an error that says the file is damaged", err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(after) != damaged {
+			t.Error("the damaged file was changed")
+		}
+	})
+}
+
 func TestRemovingAnUnknownNameFails(t *testing.T) {
 	store := openStore(t, filepath.Join(t.TempDir(), "peers.json"))
 	if err := store.Remove("ghost"); err == nil {
