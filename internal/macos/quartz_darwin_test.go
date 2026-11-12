@@ -3,6 +3,7 @@
 package macos
 
 import (
+	"math"
 	"os"
 	"slices"
 	"testing"
@@ -418,5 +419,43 @@ func TestListenOnlyTapKeepsNothing(t *testing.T) {
 
 	if kept := tap.take(Observation{Type: TypeKeyDown}); kept {
 		t.Error("a tap that only listens kept an event from the system")
+	}
+}
+
+func alongTheRange(offset, size float64) int32 {
+	return int32(math.Round(offset * float64(event.AbsoluteMax) / (size - 1)))
+}
+
+func TestPositionPlacesTheCursorOnThatPointOfTheDesktop(t *testing.T) {
+	replayed, tap := observeRealInput(t)
+	displays := Quartz{}.Displays()
+	if len(displays) == 0 {
+		t.Skip("no display is attached")
+	}
+	start := Quartz{}.Cursor()
+	t.Cleanup(func() {
+		Quartz{}.PostMouse(MouseEvent{Action: MouseMoved, At: start})
+		waitUntilNothingArrives(tap)
+		if end := (Quartz{}).Cursor(); end != start {
+			t.Errorf("the cursor was left at %+v, want it back at %+v", end, start)
+		}
+	})
+	first, desktop := displays[0], boxAround(displays)
+	target := Point{X: first.X + math.Floor(first.Width/4), Y: first.Y + math.Floor(first.Height/4)}
+	if target == start {
+		target.X += math.Floor(first.Width / 2)
+	}
+
+	replay(t, replayed, position(alongTheRange(target.X-desktop.X, desktop.Width), alongTheRange(target.Y-desktop.Y, desktop.Height))...)
+	arrived := nextReplayed(t, tap)
+
+	if arrived.Type != typeMouseMoved || arrived.At != target {
+		t.Errorf("the position arrived as %+v, want a move to %+v", arrived, target)
+	}
+	if travelledX, travelledY := int64(math.Round(target.X-start.X)), int64(math.Round(target.Y-start.Y)); arrived.DX != travelledX || arrived.DY != travelledY {
+		t.Errorf("the position arrived with deltas %d,%d, want %d,%d from %+v", arrived.DX, arrived.DY, travelledX, travelledY, start)
+	}
+	if at := (Quartz{}).Cursor(); at != target {
+		t.Errorf("the cursor is at %+v, want %+v", at, target)
 	}
 }
