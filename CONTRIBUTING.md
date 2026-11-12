@@ -55,7 +55,7 @@ Running these tests with `sudo` types the letter "a" a few times, moves the poin
 
 On macOS, the tests that post real input are off by default, because they act on the Mac that runs them:
 
-- `LANHOP_TEST_REAL_INPUT=1 go test ./internal/macos/` presses Shift and F19, holds F19 for about a second so that it repeats, moves the cursor by 3 pixels and scrolls one line, and undoes each of them.
+- `LANHOP_TEST_REAL_INPUT=1 go test ./internal/macos/` presses Shift and F19, holds F19 for about a second so that it repeats, moves the cursor by 3 pixels, makes it jump to a point a quarter of the way across and down the first display and scrolls one line, and undoes each of them.
 - `LANHOP_TEST_REAL_INPUT=clicks go test ./internal/macos/` also clicks, double clicks and drags by 3 pixels where the cursor is. Leave the cursor over something a click cannot harm, such as an empty text field.
 - Either of them also puts the cursor 3 points away from where it is, reads its position and puts it back.
 
