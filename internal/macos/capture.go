@@ -341,3 +341,38 @@ func (p *pump) handOff(events []event.Event) bool {
 	}
 	return true
 }
+
+const HotkeyFlags = FlagControl | FlagOption
+
+const everyModifierFlag = FlagShift | FlagControl | FlagOption | FlagCommand
+
+var hotkeyDigits = map[uint16]bool{0x12: true, 0x13: true, 0x14: true, 0x15: true, 0x17: true, 0x16: true, 0x1A: true, 0x1C: true, 0x19: true}
+
+type hotkeyGuard struct {
+	chord Flags
+	kept  map[uint16]bool
+}
+
+func newHotkeyGuard(chord Flags) *hotkeyGuard {
+	return &hotkeyGuard{chord: chord, kept: make(map[uint16]bool)}
+}
+
+func (g *hotkeyGuard) keeps(seen Observation) bool {
+	switch seen.Type {
+	case TypeKeyDown:
+		if seen.Repeat {
+			return g.kept[seen.KeyCode]
+		}
+		if hotkeyDigits[seen.KeyCode] && seen.Flags&everyModifierFlag == g.chord {
+			g.kept[seen.KeyCode] = true
+			return true
+		}
+		delete(g.kept, seen.KeyCode)
+	case TypeKeyUp:
+		if g.kept[seen.KeyCode] {
+			delete(g.kept, seen.KeyCode)
+			return true
+		}
+	}
+	return false
+}

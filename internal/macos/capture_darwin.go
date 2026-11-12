@@ -26,13 +26,13 @@ type Capture struct {
 	closing sync.Once
 }
 
-func StartCapture(keys keymap.Translator) (*Capture, error) {
-	return startCapture(keys, notPostedByLanhop)
+func StartCapture(keys keymap.Translator, hotkey Flags) (*Capture, error) {
+	return startCapture(keys, hotkey, notPostedByLanhop)
 }
 
-func startCapture(keys keymap.Translator, accepts func(Observation) bool) (*Capture, error) {
+func startCapture(keys keymap.Translator, hotkey Flags, accepts func(Observation) bool) (*Capture, error) {
 	capture := &Capture{
-		hold:   &hold{holdingScreen: Quartz{}, accepts: accepts},
+		hold:   &hold{holdingScreen: Quartz{}, accepts: accepts, hotkey: newHotkeyGuard(hotkey)},
 		events: make(chan event.Event),
 		stop:   make(chan struct{}),
 	}

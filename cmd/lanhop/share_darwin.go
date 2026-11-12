@@ -19,7 +19,7 @@ func captureWhenAllowed(allowed bool) (inputCapture, error) {
 	if !allowed {
 		return nil, errNotAllowedToShare
 	}
-	capture, err := macos.StartCapture(keymap.Translator{})
+	capture, err := macos.StartCapture(keymap.Translator{}, macos.HotkeyFlags)
 	if err != nil {
 		return nil, err
 	}

@@ -627,3 +627,174 @@ func TestPumpEndsWithoutGivingBackWhenItIsStoppedOrItsSourceEnds(t *testing.T) {
 		})
 	}
 }
+
+func TestHotkeyGuardKeepsOnlyTheDigitsOfTheHotkey(t *testing.T) {
+	const (
+		macOSKey2 uint16 = 0x13
+		macOSKey9 uint16 = 0x19
+		macOSKey0 uint16 = 0x1D
+		device    Flags  = 0x100
+	)
+	chord := FlagControl | FlagOption
+	realChord := device | chord | 0x0001 | 0x0020
+	cases := []struct {
+		name string
+		seen Observation
+		want bool
+	}{
+		{"digit with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord}, true},
+		{"digit with the chord as a real keyboard sends it", Observation{Type: TypeKeyDown, KeyCode: macOSKey9, Flags: realChord}, true},
+		{"digit alone", Observation{Type: TypeKeyDown, KeyCode: macOSKey2}, false},
+		{"digit with Control only", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: FlagControl}, false},
+		{"digit with the chord and Shift", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord | FlagShift}, false},
+		{"digit with the chord and Command", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord | FlagCommand}, false},
+		{"zero with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKey0, Flags: chord}, false},
+		{"letter with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Flags: chord}, false},
+		{"the chord itself", Observation{Type: TypeFlagsChanged, KeyCode: macOSLeftOption, Flags: chord}, false},
+		{"mouse movement with the chord", Observation{Type: TypeMouseMoved, Flags: chord, DX: 1}, false},
+	}
+	for _, c := range cases {
+		if got := newHotkeyGuard(chord).keeps(c.seen); got != c.want {
+			t.Errorf("%s: kept = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHotkeyGuardKeepsTheReleaseAndTheRepeatsOfADigitItKept(t *testing.T) {
+	const macOSKey2 uint16 = 0x13
+	chord := FlagControl | FlagOption
+	guard := newHotkeyGuard(chord)
+	sequence := []struct {
+		name string
+		seen Observation
+		want bool
+	}{
+		{"press with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord}, true},
+		{"repeat after Option was released", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: FlagControl, Repeat: true}, true},
+		{"release after both were released", Observation{Type: TypeKeyUp, KeyCode: macOSKey2}, true},
+		{"a later plain press", Observation{Type: TypeKeyDown, KeyCode: macOSKey2}, false},
+		{"its release", Observation{Type: TypeKeyUp, KeyCode: macOSKey2}, false},
+	}
+	for _, step := range sequence {
+		if got := guard.keeps(step.seen); got != step.want {
+			t.Errorf("%s: kept = %v, want %v", step.name, got, step.want)
+		}
+	}
+}
+
+func TestHotkeyGuardKeepsADigitOnlyFromItsPressWithTheChordUntilItsRelease(t *testing.T) {
+	type step struct {
+		name string
+		seen Observation
+		want bool
+	}
+	chord := FlagControl | FlagOption
+	sequences := map[string][]step{
+		"the digit went down before the chord": {
+			{"press alone", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2}, false},
+			{"repeat with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord, Repeat: true}, false},
+			{"release with the chord", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2, Flags: chord}, false},
+		},
+		"the digit went down with Shift besides the chord": {
+			{"press with the chord and Shift", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord | FlagShift}, false},
+			{"repeat after Shift was released", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord, Repeat: true}, false},
+			{"release", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2, Flags: chord}, false},
+		},
+		"the release of a kept digit was lost": {
+			{"press with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"a later plain press", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2}, false},
+			{"its repeat", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Repeat: true}, false},
+			{"its release", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2}, false},
+		},
+		"the release of a kept digit was lost and the hotkey is typed again": {
+			{"press with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"second press with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"its release", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"a later plain press", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2}, false},
+		},
+		"a digit is held again after the kept one was released and its press was lost": {
+			{"press with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"release", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"repeat of the press that was lost", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Repeat: true}, false},
+			{"its release", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2}, false},
+		},
+		"another digit is typed while one is kept": {
+			{"press of 2 with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Flags: chord}, true},
+			{"press of 1 after the chord was released", Observation{Type: TypeKeyDown, KeyCode: macOSDigit1}, false},
+			{"release of 1", Observation{Type: TypeKeyUp, KeyCode: macOSDigit1}, false},
+			{"repeat of 2", Observation{Type: TypeKeyDown, KeyCode: macOSDigit2, Repeat: true}, true},
+			{"release of 2", Observation{Type: TypeKeyUp, KeyCode: macOSDigit2}, true},
+		},
+	}
+	for name, sequence := range sequences {
+		guard := newHotkeyGuard(chord)
+		for _, step := range sequence {
+			if got := guard.keeps(step.seen); got != step.want {
+				t.Errorf("%s, %s: kept = %v, want %v", name, step.name, got, step.want)
+			}
+		}
+	}
+}
+
+func swallowedByTheHotkey(detector *hotkey.Detector, captured []event.Event) bool {
+	swallowed := false
+	for _, next := range captured {
+		if detector.Feed(next).Swallow {
+			swallowed = true
+		}
+	}
+	return swallowed
+}
+
+func TestHotkeyGuardKeepsExactlyTheKeysThatTheDefaultHotkeySwallows(t *testing.T) {
+	const (
+		keyCodes uint16 = 0x80
+		device   Flags  = 0x100
+	)
+	sides := map[string][]uint16{
+		"left":  {0x3B, 0x3A, 0x38, 0x37},
+		"right": {0x3E, 0x3D, 0x3C, 0x36},
+	}
+	for side, modifiers := range sides {
+		for _, asARealKeyboardSendsThem := range []bool{false, true} {
+			for held := range 1 << len(modifiers) {
+				var flags Flags
+				var goingDown []Observation
+				for i, modifier := range modifiers {
+					if held&(1<<i) == 0 {
+						continue
+					}
+					flags |= modifierFlags[modifier]
+					if asARealKeyboardSendsThem {
+						flags |= device | sideBits[modifier]
+					}
+					goingDown = append(goingDown, Observation{Type: TypeFlagsChanged, KeyCode: modifier, Flags: flags})
+				}
+				for key := range keyCodes {
+					detector, err := hotkey.New(hotkey.DefaultModifiers)
+					if err != nil {
+						t.Fatalf("hotkey.New: %v", err)
+					}
+					translator := newTranslator(keymap.Translator{}, nil)
+					guard := newHotkeyGuard(HotkeyFlags)
+					for _, modifier := range goingDown {
+						swallowed := swallowedByTheHotkey(detector, translator.translate(modifier))
+						if guard.keeps(modifier) || swallowed {
+							t.Fatalf("the %s modifier %#x going down was kept from this Mac or swallowed by the hotkey", side, modifier.KeyCode)
+						}
+					}
+					for _, seen := range []Observation{
+						{Type: TypeKeyDown, KeyCode: key, Flags: flags},
+						{Type: TypeKeyUp, KeyCode: key, Flags: flags},
+					} {
+						kept, swallowed := guard.keeps(seen), swallowedByTheHotkey(detector, translator.translate(seen))
+						if kept != swallowed {
+							t.Fatalf("key %#x, event type %d, with the %s modifiers of flags %#x held: kept from this Mac = %v, swallowed by the hotkey = %v",
+								key, seen.Type, side, uint64(flags), kept, swallowed)
+						}
+					}
+				}
+			}
+		}
+	}
+}

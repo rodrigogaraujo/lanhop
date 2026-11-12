@@ -10,6 +10,7 @@ type holdingScreen interface {
 type hold struct {
 	holdingScreen
 	accepts func(Observation) bool
+	hotkey  *hotkeyGuard
 	state   sync.Mutex
 	taken   bool
 	cursor  Point
@@ -38,8 +39,12 @@ func (h *hold) PlaceCursor(at Point) {
 func (h *hold) keeps(seen Observation) bool {
 	h.state.Lock()
 	defer h.state.Unlock()
-	if !h.taken || !h.accepts(seen) {
+	if !h.accepts(seen) {
 		return false
+	}
+	digitOfTheHotkey := h.hotkey.keeps(seen)
+	if !h.taken {
+		return digitOfTheHotkey
 	}
 	if movesTheCursor(seen.Type) {
 		h.PutCursorBack(h.cursor)
