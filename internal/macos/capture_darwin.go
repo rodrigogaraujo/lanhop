@@ -20,6 +20,7 @@ const (
 type Capture struct {
 	tap     *Tap
 	accepts func(Observation) bool
+	hotkey  *hotkeyGuard
 	taken   atomic.Bool
 	state   sync.Mutex
 	closed  bool
@@ -29,13 +30,14 @@ type Capture struct {
 	closing sync.Once
 }
 
-func StartCapture(keys keymap.Translator) (*Capture, error) {
-	return startCapture(keys, notPostedByLanhop)
+func StartCapture(keys keymap.Translator, hotkey Flags) (*Capture, error) {
+	return startCapture(keys, hotkey, notPostedByLanhop)
 }
 
-func startCapture(keys keymap.Translator, accepts func(Observation) bool) (*Capture, error) {
+func startCapture(keys keymap.Translator, hotkey Flags, accepts func(Observation) bool) (*Capture, error) {
 	capture := &Capture{
 		accepts: accepts,
+		hotkey:  newHotkeyGuard(hotkey),
 		events:  make(chan event.Event),
 		stop:    make(chan struct{}),
 	}
@@ -61,7 +63,10 @@ func startCapture(keys keymap.Translator, accepts func(Observation) bool) (*Capt
 }
 
 func (c *Capture) keeps(seen Observation) bool {
-	return c.taken.Load() && c.accepts(seen)
+	if !c.accepts(seen) {
+		return false
+	}
+	return c.hotkey.keeps(seen) || c.taken.Load()
 }
 
 func (c *Capture) Events() <-chan event.Event {

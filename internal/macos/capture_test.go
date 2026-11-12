@@ -627,3 +627,57 @@ func TestPumpEndsWithoutGivingBackWhenItIsStoppedOrItsSourceEnds(t *testing.T) {
 		})
 	}
 }
+
+func TestHotkeyGuardKeepsOnlyTheDigitsOfTheHotkey(t *testing.T) {
+	const (
+		macOSKey2 uint16 = 0x13
+		macOSKey9 uint16 = 0x19
+		macOSKey0 uint16 = 0x1D
+		device    Flags  = 0x100
+	)
+	chord := FlagControl | FlagOption
+	realChord := device | chord | 0x0001 | 0x0020
+	cases := []struct {
+		name string
+		seen Observation
+		want bool
+	}{
+		{"digit with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord}, true},
+		{"digit with the chord as a real keyboard sends it", Observation{Type: TypeKeyDown, KeyCode: macOSKey9, Flags: realChord}, true},
+		{"digit alone", Observation{Type: TypeKeyDown, KeyCode: macOSKey2}, false},
+		{"digit with Control only", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: FlagControl}, false},
+		{"digit with the chord and Shift", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord | FlagShift}, false},
+		{"digit with the chord and Command", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord | FlagCommand}, false},
+		{"zero with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKey0, Flags: chord}, false},
+		{"letter with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKeyA, Flags: chord}, false},
+		{"the chord itself", Observation{Type: TypeFlagsChanged, KeyCode: macOSLeftOption, Flags: chord}, false},
+		{"mouse movement with the chord", Observation{Type: TypeMouseMoved, Flags: chord, DX: 1}, false},
+	}
+	for _, c := range cases {
+		if got := newHotkeyGuard(chord).keeps(c.seen); got != c.want {
+			t.Errorf("%s: kept = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHotkeyGuardKeepsTheReleaseAndTheRepeatsOfADigitItKept(t *testing.T) {
+	const macOSKey2 uint16 = 0x13
+	chord := FlagControl | FlagOption
+	guard := newHotkeyGuard(chord)
+	sequence := []struct {
+		name string
+		seen Observation
+		want bool
+	}{
+		{"press with the chord", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: chord}, true},
+		{"repeat after Option was released", Observation{Type: TypeKeyDown, KeyCode: macOSKey2, Flags: FlagControl, Repeat: true}, true},
+		{"release after both were released", Observation{Type: TypeKeyUp, KeyCode: macOSKey2}, true},
+		{"a later plain press", Observation{Type: TypeKeyDown, KeyCode: macOSKey2}, false},
+		{"its release", Observation{Type: TypeKeyUp, KeyCode: macOSKey2}, false},
+	}
+	for _, step := range sequence {
+		if got := guard.keeps(step.seen); got != step.want {
+			t.Errorf("%s: kept = %v, want %v", step.name, got, step.want)
+		}
+	}
+}

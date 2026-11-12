@@ -29,7 +29,7 @@ func captureOfReplayedInput(t *testing.T) (*Replay, *Capture) {
 	t.Helper()
 	replayed, tap := observeRealInput(t)
 	tap.Close()
-	capture, err := startCapture(keymap.Translator{}, onlyWhatLanhopPosts)
+	capture, err := startCapture(keymap.Translator{}, HotkeyFlags, onlyWhatLanhopPosts)
 	if err != nil {
 		t.Fatalf("startCapture: %v", err)
 	}
@@ -179,4 +179,46 @@ func TestCursorStaysWhereItWasWhileTheInputIsTaken(t *testing.T) {
 
 func withinOnePoint(a, b Point) bool {
 	return abs(a.X-b.X) <= 1 && abs(a.Y-b.Y) <= 1
+}
+
+func TestDigitOfTheHotkeyNeverReachesTheMacEvenWhileItHasTheInput(t *testing.T) {
+	const (
+		linuxDigit2 uint16 = 3
+		macOSKey2   uint16 = 0x13
+	)
+	replayed, capture := captureOfReplayedInput(t)
+	afterTheCapture, err := startTap(seesInputLast, nil)
+	if err != nil {
+		t.Fatalf("startTap: %v", err)
+	}
+	defer afterTheCapture.Close()
+	waitUntilNothingArrives(afterTheCapture)
+	hotkey := []event.Event{
+		event.Key(linuxLeftCtrl, event.KeyPressed), event.Sync(),
+		event.Key(linuxLeftAlt, event.KeyPressed), event.Sync(),
+		event.Key(linuxDigit2, event.KeyPressed), event.Sync(),
+		event.Key(linuxDigit2, event.KeyReleased), event.Sync(),
+		event.Key(linuxLeftAlt, event.KeyReleased), event.Sync(),
+		event.Key(linuxLeftCtrl, event.KeyReleased), event.Sync(),
+	}
+
+	replay(t, replayed, hotkey...)
+	got := captured(t, capture, len(hotkey))
+	reachedTheMac := replayedWithin(afterTheCapture, 300*time.Millisecond)
+
+	if !slices.Equal(got, hotkey) {
+		t.Errorf("captured %+v, want the whole hotkey %+v", got, hotkey)
+	}
+	modifiers := 0
+	for _, seen := range reachedTheMac {
+		switch {
+		case seen.KeyCode == macOSKey2:
+			t.Errorf("the digit of the hotkey reached the Mac, type %d", seen.Type)
+		case seen.Type == TypeFlagsChanged:
+			modifiers++
+		}
+	}
+	if modifiers != 4 {
+		t.Errorf("the Mac saw %d modifier changes, want the 4 of Control and Option", modifiers)
+	}
 }
