@@ -9,14 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
 
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/layout"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
@@ -25,6 +28,7 @@ import (
 
 const (
 	peersFileName              = "peers.json"
+	sharingMachineName         = "desk"
 	sharedDevices              = 2
 	replayedEventsKept         = 1 << 14
 	heldKeysQuery      uintptr = 0x18
@@ -98,6 +102,20 @@ type sharingMachine struct {
 
 func startSharing(t *testing.T, receivers ...trust.Peer) *sharingMachine {
 	t.Helper()
+	return startSharingOnDesk(t, nil, receivers...)
+}
+
+func deskDrawnAs(t *testing.T, drawing string) *layout.Layout {
+	t.Helper()
+	drawn, err := layout.Parse(strings.NewReader(drawing), func(string) bool { return true })
+	if err != nil {
+		t.Fatalf("the layout %q of the test has problems: %v", drawing, err)
+	}
+	return drawn
+}
+
+func startSharingOnDesk(t *testing.T, drawn *layout.Layout, receivers ...trust.Peer) *sharingMachine {
+	t.Helper()
 	devices := t.TempDir()
 	keyboard, keyboardNode := plugInto(t, devices, usbKeyboard)
 	mouse, _ := plugInto(t, devices, usbMouse)
@@ -122,7 +140,12 @@ func startSharing(t *testing.T, receivers ...trust.Peer) *sharingMachine {
 	t.Cleanup(func() { listener.Close() })
 	desk.address = listener.Addr().String()
 
-	focus := sharer.New(desk.capture, trusted, detector)
+	focus := sharer.New(desk.capture, trusted, detector, sharer.EdgeSwitching{
+		Name:   sharingMachineName,
+		Layout: func() *layout.Layout { return drawn },
+		Speed:  sharer.DefaultSpeed(),
+		Watch:  edge.DefaultSettings(),
+	})
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -207,41 +230,49 @@ type replayedEvent struct {
 }
 
 type receivingMachine struct {
-	node        string
-	otherReader *Device
-	replayed    chan replayedEvent
-	failures    chan error
-	connected   atomic.Bool
+	node               string
+	otherReader        *Device
+	otherPointerReader *Device
+	replayed           chan replayedEvent
+	positioned         chan replayedEvent
+	failures           chan error
+	connected          atomic.Bool
+}
+
+func readByTheTestAlone(t *testing.T, node string) (read chan replayedEvent, otherReader *Device) {
+	t.Helper()
+	onlyReader := openAsAnotherReader(t, node)
+	if err := onlyReader.Grab(); err != nil {
+		t.Fatalf("keep what the receiver replays away from the machine running the tests: %v", err)
+	}
+	read = make(chan replayedEvent, replayedEventsKept)
+	go func() {
+		for {
+			next, err := onlyReader.Read()
+			if err != nil {
+				return
+			}
+			read <- replayedEvent{Event: next, at: time.Now()}
+		}
+	}()
+	return read, openAsAnotherReader(t, node)
 }
 
 func (m machine) receiveFrom(t *testing.T, sharing trust.Peer) *receivingMachine {
 	t.Helper()
 	trusted := m.trusting(t, sharing)
-	virtual := createVirtualDevice(t)
+	replay := createReplay(t)
 	controlled := &receivingMachine{
-		node:     eventNode(t, virtual),
-		replayed: make(chan replayedEvent, replayedEventsKept),
+		node:     eventNode(t, replay.keyboardAndMouse),
 		failures: make(chan error, 8),
 	}
-	onlyReader := openAsAnotherReader(t, controlled.node)
-	if err := onlyReader.Grab(); err != nil {
-		t.Fatalf("keep what the receiver replays away from the machine running the tests: %v", err)
-	}
-	controlled.otherReader = openAsAnotherReader(t, controlled.node)
-	go func() {
-		for {
-			read, err := onlyReader.Read()
-			if err != nil {
-				return
-			}
-			controlled.replayed <- replayedEvent{Event: read, at: time.Now()}
-		}
-	}()
+	controlled.replayed, controlled.otherReader = readByTheTestAlone(t, controlled.node)
+	controlled.positioned, controlled.otherPointerReader = readByTheTestAlone(t, eventNode(t, replay.pointer))
 	runUntilTheTestEnds(t, "the receiver", func(ctx context.Context) error {
 		return receiver.Run(ctx, receiver.Config{
 			Transport: transport.Config{Identity: m.identity},
 			Sharer:    trusted.Peers()[0],
-			Replay:    virtual,
+			Replay:    replay,
 			OnConnect: func() { controlled.connected.Store(true) },
 			OnFailure: controlled.failed,
 		})
@@ -281,14 +312,44 @@ func (r *receivingMachine) expectNothingReplayed(t *testing.T) {
 	select {
 	case unexpected := <-r.replayed:
 		t.Errorf("the receiver's device replayed %+v, want nothing", unexpected.Event)
+	case unexpected := <-r.positioned:
+		t.Errorf("the receiver's pointer replayed %+v, want nothing", unexpected.Event)
 	case <-time.After(quietPeriod):
+	}
+}
+
+func (r *receivingMachine) expectPositioned(t *testing.T, want ...event.Event) {
+	t.Helper()
+	for i, wanted := range want {
+		select {
+		case got := <-r.positioned:
+			if got.Event != wanted {
+				t.Fatalf("event %d of %d replayed on the receiver's pointer = %+v, want %+v", i+1, len(want), got.Event, wanted)
+			}
+		case <-time.After(capturePatience):
+			t.Fatalf("the receiver's pointer replayed nothing more, want %+v", wanted)
+		}
+	}
+}
+
+func (r *receivingMachine) positionedUntilQuiet() []event.Event {
+	var positioned []event.Event
+	for {
+		select {
+		case next := <-r.positioned:
+			positioned = append(positioned, next.Event)
+		case <-time.After(quietPeriod):
+			return positioned
+		}
 	}
 }
 
 func (r *receivingMachine) expectReplayHiddenFromOtherReaders(t *testing.T) {
 	t.Helper()
-	if seen, err := readWithin(t, r.otherReader, quietPeriod); !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Errorf("another reader of the receiver's device got %+v, %v, want nothing: the machine running the tests would act on what is replayed", seen, err)
+	for device, otherReader := range map[string]*Device{"device": r.otherReader, "pointer": r.otherPointerReader} {
+		if seen, err := readWithin(t, otherReader, quietPeriod); !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Errorf("another reader of the receiver's %s got %+v, %v, want nothing: the machine running the tests would act on what is replayed", device, seen, err)
+		}
 	}
 }
 
@@ -568,4 +629,63 @@ func TestKeysReachTheReceiversDeviceWithLittleAddedDelay(t *testing.T) {
 	if ninetyNinth > ninetyNinthLimit {
 		t.Errorf("99th percentile of the delay = %s, want at most %s", ninetyNinth, ninetyNinthLimit)
 	}
+}
+
+func TestWithALayoutMovementReachesTheReceiverAsPositionsAndPushingItsEdgeBringsFocusBack(t *testing.T) {
+	const (
+		centre                        = 32767
+		afterThreeUnitsToTheRight     = 32869
+		afterOneUnitUp                = 32706
+		stepTowardsTheLeftEdge        = -10
+		afterTheFirstStepToTheLeft    = 32528
+		stepsUntilTheLeftEdge         = 97
+		pauseBetweenSteps             = 2 * time.Millisecond
+		eventsOfAStepThatMovesOnlyOnX = 2
+	)
+	laptop := newMachine(t)
+	desk := startSharingOnDesk(t, deskDrawnAs(t, "desk laptop"), laptop.knownAs("laptop"))
+	controlled := laptop.receiveFrom(t, desk.reachedAt(sharingMachineName, desk.address))
+	desk.waitUntilConnected(t, "laptop")
+
+	desk.giveFocusToTheFirstReceiver(t)
+	controlled.expectPositioned(t, event.Absolute(event.AbsX, centre), event.Absolute(event.AbsY, centre), event.Sync())
+
+	emit(t, desk.mouse, event.Relative(event.RelX, 3), event.Relative(event.RelY, -1), event.Sync())
+	controlled.expectPositioned(t, event.Absolute(event.AbsX, afterThreeUnitsToTheRight), event.Absolute(event.AbsY, afterOneUnitUp), event.Sync())
+
+	steps := 0
+	for pushingSince := time.Now(); desk.devicesTakenAway() != 0; time.Sleep(pauseBetweenSteps) {
+		if time.Since(pushingSince) > capturePatience {
+			t.Fatalf("after %d steps against the left edge of the receiver the sharer still keeps its devices away from its own desktop", steps)
+		}
+		emit(t, desk.mouse, event.Relative(event.RelX, stepTowardsTheLeftEdge), event.Sync())
+		steps++
+	}
+
+	if steps <= stepsUntilTheLeftEdge {
+		t.Errorf("focus came back after %d steps, before the cursor of the receiver could reach its left edge", steps)
+	}
+	positions := controlled.positionedUntilQuiet()
+	if len(positions) != eventsOfAStepThatMovesOnlyOnX*stepsUntilTheLeftEdge {
+		t.Fatalf("the receiver's pointer replayed %d events on the way to its left edge, want a position and the end of its report for each of the %d steps: %+v", len(positions), stepsUntilTheLeftEdge, positions)
+	}
+	if first := positions[0]; first != event.Absolute(event.AbsX, afterTheFirstStepToTheLeft) {
+		t.Errorf("the first step to the left placed the pointer with %+v, want X at %d", first, afterTheFirstStepToTheLeft)
+	}
+	previous := int32(afterThreeUnitsToTheRight)
+	for i := 0; i < len(positions); i += eventsOfAStepThatMovesOnlyOnX {
+		placed, ended := positions[i], positions[i+1]
+		if placed.Type != event.TypeAbsolute || placed.Code != event.AbsX || placed.Value >= previous || ended != event.Sync() {
+			t.Fatalf("step %d replayed %+v and %+v on the receiver's pointer, want X to the left of %d and the end of the report", i/eventsOfAStepThatMovesOnlyOnX+1, placed, ended, previous)
+		}
+		previous = placed.Value
+	}
+	if previous != 0 {
+		t.Errorf("the pointer of the receiver stopped at X %d, want its left edge at 0", previous)
+	}
+
+	emit(t, desk.mouse, event.Relative(event.RelX, 1), event.Sync())
+	controlled.expectNothingReplayed(t)
+	controlled.expectHeld(t)
+	controlled.expectReplayHiddenFromOtherReaders(t)
 }

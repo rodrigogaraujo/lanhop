@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/layout"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
@@ -221,7 +223,11 @@ type sharing struct {
 	t        *testing.T
 	journal  *journal
 	capture  *fakeCapture
+	screen   *fakeScreen
 	trusted  *fakeTrusted
+	clock    *fakeClock
+	desk     atomic.Pointer[layout.Layout]
+	speed    Speed
 	sharer   *Sharer
 	stop     context.CancelFunc
 	finished chan outcome
@@ -229,20 +235,39 @@ type sharing struct {
 
 func startSharing(t *testing.T, peers ...trust.Peer) *sharing {
 	t.Helper()
-	detector, err := hotkey.New(hotkey.DefaultModifiers)
-	if err != nil {
-		t.Fatalf("hotkey.New: %v", err)
-	}
+	s := newSharing(t, peers...)
+	s.start(s.capture)
+	return s
+}
+
+func newSharing(t *testing.T, peers ...trust.Peer) *sharing {
+	t.Helper()
 	written := &journal{}
-	s := &sharing{
+	return &sharing{
 		t:        t,
 		journal:  written,
 		capture:  &fakeCapture{journal: written, events: make(chan event.Event)},
 		trusted:  &fakeTrusted{peers: peers},
+		clock:    &fakeClock{},
+		speed:    Speed{X: 100, Y: 100},
 		finished: make(chan outcome, 1),
 	}
-	s.sharer = New(s.capture, s.trusted, detector)
+}
+
+func (s *sharing) start(capture Capture) {
+	s.t.Helper()
+	detector, err := hotkey.New(hotkey.DefaultModifiers)
+	if err != nil {
+		s.t.Fatalf("hotkey.New: %v", err)
+	}
+	s.sharer = New(capture, s.trusted, detector, EdgeSwitching{
+		Name:   thisMachine,
+		Layout: s.desk.Load,
+		Speed:  s.speed,
+		Watch:  edge.DefaultSettings(),
+	})
 	s.sharer.trustCheckInterval = testTrustCheck
+	s.sharer.now = s.clock.now
 	ctx, stop := context.WithCancel(context.Background())
 	s.stop = stop
 	go func() {
@@ -253,8 +278,7 @@ func startSharing(t *testing.T, peers ...trust.Peer) *sharing {
 		}()
 		result.err = s.sharer.Run(ctx)
 	}()
-	t.Cleanup(stop)
-	return s
+	s.t.Cleanup(stop)
 }
 
 func (s *sharing) connect(peer trust.Peer) *fakeReceiver {

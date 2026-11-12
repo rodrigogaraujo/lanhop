@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
@@ -50,9 +51,16 @@ type Sharer struct {
 	focused            Conn
 	heldOnFocused      keystate.Tracker
 	unsent             []event.Event
+	edges              EdgeSwitching
+	now                func() time.Time
+	ownEdges           *edge.Watcher
+	remoteEdges        *edge.Watcher
+	remoteCursor       *cursor
+	moved              movement
+	heldHere           keystate.Tracker
 }
 
-func New(capture Capture, trusted Trusted, detector *hotkey.Detector) *Sharer {
+func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges EdgeSwitching) *Sharer {
 	return &Sharer{
 		capture:            capture,
 		trusted:            trusted,
@@ -62,6 +70,10 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector) *Sharer {
 		losses:             make(chan Conn),
 		stopped:            make(chan struct{}),
 		receivers:          make(map[identity.Fingerprint]Conn),
+		edges:              edges,
+		now:                time.Now,
+		ownEdges:           edge.New(edges.Watch),
+		remoteEdges:        watcherOfRemoteDesktops(edges.Watch),
 	}
 }
 
@@ -105,8 +117,9 @@ func (s *Sharer) Run(ctx context.Context) (err error) {
 
 func (s *Sharer) handle(captured event.Event) error {
 	verdict := s.detector.Feed(captured)
-	if s.focused != nil && !verdict.Swallow {
-		if err := s.forward(captured); err != nil {
+	s.observeKeysAndButtons(captured)
+	if !verdict.Swallow {
+		if err := s.follow(captured); err != nil {
 			return err
 		}
 	}
@@ -116,10 +129,19 @@ func (s *Sharer) handle(captured event.Event) error {
 	return nil
 }
 
+func (s *Sharer) follow(captured event.Event) error {
+	if s.focused == nil {
+		return s.watchOwnScreen(captured)
+	}
+	return s.forward(captured)
+}
+
 func (s *Sharer) forward(captured event.Event) error {
 	switch {
-	case captured.Type == event.TypeSync && captured.Code == event.SyncReport:
-		return s.sendUnsent()
+	case isEndOfReport(captured):
+		return s.endReport()
+	case s.remoteCursor != nil && isMovement(captured):
+		s.moved.add(captured)
 	case captured.Type == event.TypeRelative, captured.Type == event.TypeKey && captured.Value != event.KeyRepeated:
 		s.heldOnFocused.Observe(captured)
 		s.unsent = append(s.unsent, captured)
@@ -147,13 +169,23 @@ func (s *Sharer) switchTo(target int) error {
 	if !connected || receiver == s.focused {
 		return nil
 	}
+	return s.enter(receiver, atTheCentre)
+}
+
+func (s *Sharer) enter(receiver Conn, arrival arrival) error {
 	if s.focused != nil {
 		s.leaveFocused()
 	} else if err := s.capture.Take(); err != nil {
 		return fmt.Errorf("sharer: cannot take the keyboard and mouse away from this machine: %w", err)
 	}
-	s.focused = receiver
-	if receiver.Send(event.Enter()) != nil {
+	s.focused, s.moved = receiver, movement{}
+	greeting := []event.Event{event.Enter()}
+	if s.layout() != nil {
+		s.remoteCursor = cursorArriving(arrival)
+		greeting = append(greeting, s.remoteCursor.position()...)
+		greeting = append(greeting, event.Sync())
+	}
+	if receiver.Send(greeting...) != nil {
 		return s.drop(receiver)
 	}
 	return nil
@@ -188,7 +220,7 @@ func (s *Sharer) leaveFocused() {
 	} else if len(farewell) > 0 {
 		farewell = append(farewell, event.Sync())
 	}
-	s.focused, s.unsent = nil, nil
+	s.focused, s.unsent, s.remoteCursor, s.moved = nil, nil, nil, movement{}
 	if left.Send(append(farewell, event.Leave())...) != nil {
 		s.forget(left)
 	}
@@ -250,6 +282,7 @@ func (s *Sharer) takeFocusFrom(conn Conn) error {
 		return nil
 	}
 	s.focused, s.unsent, s.heldOnFocused = nil, nil, keystate.Tracker{}
+	s.remoteCursor, s.moved = nil, movement{}
 	return s.giveBack()
 }
 

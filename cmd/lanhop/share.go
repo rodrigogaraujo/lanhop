@@ -99,7 +99,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	}
 	defer listener.Close()
 
-	machine := sharer.New(capture, trusted, detector)
+	machine := sharer.New(capture, trusted, detector, sharer.EdgeSwitching{})
 	go func() {
 		for {
 			receiver, err := listener.Accept()
