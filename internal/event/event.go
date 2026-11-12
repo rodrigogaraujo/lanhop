@@ -10,6 +10,16 @@ const (
 	TypeSync     uint16 = 0x00
 	TypeKey      uint16 = 0x01
 	TypeRelative uint16 = 0x02
+	TypeControl  uint16 = 0xFF00
+)
+
+const ProtocolVersion int32 = 1
+
+const (
+	ControlHello uint16 = 1
+	ControlPing  uint16 = 2
+	ControlEnter uint16 = 3
+	ControlLeave uint16 = 4
 )
 
 const SyncReport uint16 = 0x00
@@ -51,4 +61,24 @@ func Key(code uint16, value int32) Event {
 
 func Relative(axis uint16, delta int32) Event {
 	return Event{Type: TypeRelative, Code: axis, Value: delta}
+}
+
+func Hello() Event {
+	return Event{Type: TypeControl, Code: ControlHello, Value: ProtocolVersion}
+}
+
+func Ping() Event {
+	return Event{Type: TypeControl, Code: ControlPing}
+}
+
+func Enter() Event {
+	return Event{Type: TypeControl, Code: ControlEnter}
+}
+
+func Leave() Event {
+	return Event{Type: TypeControl, Code: ControlLeave}
+}
+
+func (e Event) IsControl() bool {
+	return e.Type == TypeControl
 }
