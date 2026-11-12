@@ -35,10 +35,40 @@ Design decisions are recorded in [docs/adr](docs/adr). Features are specified in
 - [ ] First release: Linux and macOS in any combination, encrypted with device pairing
   - [ ] Switching with a hotkey ([spec 001](specs/001-hotkey-switching/spec.md))
   - [ ] Switching through the screen edges, with a layout file ([spec 002](specs/002-edge-switching/spec.md))
+    - [x] The layout file, and crossing between the machines that are being controlled
+    - [ ] The edges of the own screen of a Mac that has the keyboard: built, not yet tried by a person
+    - [ ] The edges of the own screen of a Linux machine that has the keyboard
+    - [ ] A hotkey that locks focus, and settings for the push time, the corner size and the cursor speed
 - [ ] Windows
 - [ ] Automatic discovery on the local network
 - [ ] Clipboard sharing
 - [ ] Packages: systemd unit, udev rule, launch agent, Homebrew formula
+
+## Layout
+
+To switch by pushing the cursor through an edge of the screen, draw your desk in a text file named `layout`. Each line is a row of machines, from left to right. A dot holds an empty place.
+
+```
+# my desk
+laptop   desktop   macbook
+.        server    .
+```
+
+Here `desktop` has `laptop` on its left, `macbook` on its right and `server` below.
+
+| System | Path |
+|---|---|
+| Linux | `~/.config/lanhop/layout` |
+| macOS | `~/Library/Application Support/lanhop/layout` |
+
+- The names are the ones `lanhop peers` lists, plus the name of the machine itself. `lanhop layout` prints that name, where the file goes and the desk as lanhop understood it.
+- Only the machine with the keyboard reads the file, and only that machine needs it.
+- `lanhop share` picks up the file when you save it, with no restart. When the file has a problem, lanhop prints it with its line and keeps the layout it had.
+- The cursor crosses after it pushes against an edge for a moment. It does not cross while a mouse button is held, nor in the corners of the screen. It does not leave the machine with the keyboard while a key is held there either, so that no key stays held on it.
+- Without the file, the hotkeys work as before.
+- While lanhop controls another machine with a layout, it places the cursor of that machine itself, at one speed that assumes a screen of 1920 by 1080. A setting for the speed is planned.
+
+**A Linux machine with the keyboard does not cross the edges of its own screen yet**, because lanhop cannot find where its cursor is. Leave it with a hotkey. From there on the edges work: between the machines it controls, and back to it.
 
 ## Permissions
 

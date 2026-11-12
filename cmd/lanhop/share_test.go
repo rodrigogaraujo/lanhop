@@ -14,8 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/pairing"
+	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
@@ -78,6 +81,7 @@ func (i *inputByHand) pressesHotkeyUntilFocusLeaves(t *testing.T, machine int) {
 
 type runningShare struct {
 	input    *inputByHand
+	output   *screen
 	address  string
 	stop     context.CancelFunc
 	finished chan error
@@ -85,17 +89,59 @@ type runningShare struct {
 
 func startShare(t *testing.T) runningShare {
 	t.Helper()
-	output := &screen{}
+	input := &inputByHand{events: make(chan event.Event)}
+	return startShareCapturing(t, input, input)
+}
+
+func startShareCapturing(t *testing.T, input *inputByHand, capture sharer.Capture) runningShare {
+	t.Helper()
 	done, stop := context.WithCancel(context.Background())
 	started := runningShare{
-		input:    &inputByHand{events: make(chan event.Event)},
+		input:    input,
+		output:   &screen{},
 		stop:     stop,
 		finished: make(chan error, 1),
 	}
-	go func() { started.finished <- shareUntil(done, started.input, "127.0.0.1:0", output) }()
+	go func() { started.finished <- shareUntil(done, capture, "127.0.0.1:0", started.output) }()
 	t.Cleanup(stop)
-	started.address = net.JoinHostPort("127.0.0.1", output.portShown(t))
+	started.address = net.JoinHostPort("127.0.0.1", started.output.portShown(t))
 	return started
+}
+
+func (s *screen) waitUntilShown(t *testing.T, wanted string) {
+	t.Helper()
+	for deadline := time.Now().Add(testPatience); !strings.Contains(s.String(), wanted); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the command never printed %q, it printed %q", wanted, s.String())
+		}
+	}
+}
+
+type placement struct{ x, y int }
+
+type inputWithACursor struct {
+	*inputByHand
+	at      placement
+	desktop edge.Bounds
+	placed  chan placement
+}
+
+func (i *inputWithACursor) Cursor() (x, y int, desktop edge.Bounds, known bool) {
+	return i.at.x, i.at.y, i.desktop, true
+}
+
+func (i *inputWithACursor) PlaceCursor(x, y int) {
+	i.placed <- placement{x, y}
+}
+
+func (i *inputByHand) pushesUntilTheInputIs(t *testing.T, taken bool, dx int32) {
+	t.Helper()
+	for deadline := time.Now().Add(testPatience); i.taken.Load() != taken; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("pushing the cursor by %d never left the input taken = %v", dx, taken)
+		}
+		i.captures(t, event.Relative(event.RelX, dx), event.Sync())
+	}
 }
 
 func dialShare(machine *identity.Identity, sharer *identity.Identity, address string) (*transport.Conn, error) {
@@ -343,5 +389,92 @@ func TestHelpNamesTheShareCommandItsOptionAndItsPort(t *testing.T) {
 		if !strings.Contains(stdout.String(), mention) {
 			t.Errorf("help does not mention %q", mention)
 		}
+	}
+}
+
+func TestShareWithoutALayoutFileSaysThatEdgeSwitchingIsOffWhereTheFileGoesAndThatTheHotkeysWork(t *testing.T) {
+	directory := useConfigDirectory(t)
+
+	share := startShare(t)
+
+	share.output.waitUntilShown(t, "Edge switching is off until a layout exists. Write one in "+filepath.Join(directory, layoutFileName)+"\n")
+	share.output.waitUntilShown(t, "The hotkeys work without it.")
+}
+
+func TestShareWithALayoutSaysThatTheEdgesOfThisMachineDoNotCrossWhenItCannotFindItsCursor(t *testing.T) {
+	directory := useConfigDirectory(t)
+	trustAlready(t, directory, deskNextDoor)
+	layoutFileIn(directory).save(t, pairing.OwnName()+" "+deskNextDoor.Name+"\n")
+
+	share := startShare(t)
+
+	share.output.waitUntilShown(t, "Edge switching is on between the machines this one controls, with the layout in "+filepath.Join(directory, layoutFileName))
+	share.output.waitUntilShown(t, "The edges of this machine's own screen do not cross, because lanhop cannot find the cursor of this machine on this system yet.")
+	expectNotShown(t, share.output, "Edge switching is off")
+}
+
+func TestShareWithALayoutFileThatHasProblemsSaysThemWithTheirLinesAndStillShares(t *testing.T) {
+	directory := useConfigDirectory(t)
+	local := identityIn(t, directory)
+	desk := identityIn(t, t.TempDir())
+	trustAlready(t, directory, trust.Peer{Name: deskNextDoor.Name, Fingerprint: desk.Fingerprint})
+	layoutFileIn(directory).save(t, "# my desk\n"+deskNextDoor.Name+" stranger\n")
+
+	share := startShare(t)
+	conn, err := dialShare(desk, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	share.input.pressesHotkeyUntilFocusLeaves(t, 2)
+
+	share.output.waitUntilShown(t, `  line 2: "stranger" is not a known machine`)
+	share.output.waitUntilShown(t, "Edge switching is off until they are fixed.")
+	if got := received(t, conn, 1); !slices.Equal(got, []event.Event{event.Enter()}) {
+		t.Errorf("the paired machine received %+v after the hotkey, want only enter", got)
+	}
+}
+
+func TestShareUsesALayoutWrittenWhileItRunsAndPushingAnEdgeMovesFocusToTheNeighbourAndBack(t *testing.T) {
+	directory := useConfigDirectory(t)
+	local := identityIn(t, directory)
+	desk := identityIn(t, t.TempDir())
+	trustAlready(t, directory, trust.Peer{Name: deskNextDoor.Name, Fingerprint: desk.Fingerprint})
+	input := &inputWithACursor{
+		inputByHand: &inputByHand{events: make(chan event.Event)},
+		at:          placement{2000, 250},
+		desktop:     edge.Bounds{MinX: 0, MinY: 0, MaxX: 2000, MaxY: 1000},
+		placed:      make(chan placement, 1),
+	}
+	share := startShareCapturing(t, input.inputByHand, input)
+	conn, err := dialShare(desk, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	share.output.waitUntilShown(t, "Edge switching is off until a layout exists")
+	atTheLeftEdge := []event.Event{event.Absolute(event.AbsX, 0), event.Absolute(event.AbsY, 16384), event.Sync()}
+
+	layoutFileIn(directory).save(t, pairing.OwnName()+" "+deskNextDoor.Name+"\n")
+	share.output.waitUntilShown(t, "Edge switching is on, with the layout in "+filepath.Join(directory, layoutFileName))
+	input.pushesUntilTheInputIs(t, true, 1)
+
+	if got, want := received(t, conn, 4), append([]event.Event{event.Enter()}, atTheLeftEdge...); !slices.Equal(got, want) {
+		t.Fatalf("the neighbour on the right received %+v, want %+v", got, want)
+	}
+
+	input.pushesUntilTheInputIs(t, false, -1)
+
+	for pushed := 0; ; pushed++ {
+		next := received(t, conn, 1)[0]
+		if next == event.Leave() {
+			break
+		}
+		if want := atTheLeftEdge[pushed%len(atTheLeftEdge)]; next != want {
+			t.Fatalf("while its left edge was pushed the neighbour received %+v, want %+v", next, want)
+		}
+	}
+	if back := await(t, input.placed); back != (placement{2000, 250}) {
+		t.Errorf("the cursor of this machine was placed at %+v, want it back on the right edge at the height it left", back)
 	}
 }

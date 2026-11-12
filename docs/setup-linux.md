@@ -48,6 +48,16 @@ It lists the input devices lanhop can read and the kind of each one:
 
 The kind `other` covers what lanhop does not share, such as power buttons, touchpads and touchscreens. A "permission denied" error means step 1 or step 3 is missing.
 
+## Switching through the screen edges
+
+A Linux machine that is being controlled needs nothing more: the machine with the keyboard places its cursor, and pushing the cursor through an edge of its screen moves on to the machine on that side of the [layout](../README.md#layout).
+
+**A Linux machine with the keyboard does not cross the edges of its own screen yet.** The kernel does not know where the cursor is, and lanhop does not ask the desktop yet. `lanhop share` says so when it starts. On that machine:
+
+- leave it with a hotkey, such as Ctrl+Alt+2;
+- with a layout file in `~/.config/lanhop/layout`, the edges of the machines it controls work, and the edge that faces the Linux machine brings the keyboard and mouse back to it;
+- Ctrl+Alt+1 brings them back as well.
+
 ## What this permission means
 
 A member of the `input` group can read every key typed on that machine, in any program. Add only the user who runs lanhop. To undo it:

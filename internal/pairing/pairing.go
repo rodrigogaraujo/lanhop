@@ -64,6 +64,11 @@ func NameFrom(hostname string) string {
 	return name.String()
 }
 
+func OwnName() string {
+	hostname, _ := os.Hostname()
+	return NameFrom(hostname)
+}
+
 func Accept(listener net.Listener, config Config) (trust.Peer, error) {
 	raw, err := listener.Accept()
 	if err != nil {

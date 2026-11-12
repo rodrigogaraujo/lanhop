@@ -75,6 +75,14 @@ lanhop share
 
 `lanhop devices` shows whether the Mac allows lanhop to read and to control the keyboard and mouse.
 
+### Switching through the screen edges
+
+With a [layout file](../README.md#layout) in `~/Library/Application Support/lanhop/layout`, pushing the cursor through an edge of the Mac's screen gives the keyboard and mouse to the machine on that side, and pushing through the opposite edge of that machine brings them back. `lanhop layout` shows the file as lanhop understood it. `lanhop share` says at start whether edge switching is on.
+
+- With more than one display, the edges are the ones of the rectangle around all the displays. Moving between the displays of the Mac never crosses.
+- While another machine has focus, the cursor of the Mac stays where it left. When focus comes back through an edge, lanhop puts the cursor on that edge, at the matching height.
+- Switching through the edges of a Mac has been tested only with input that lanhop generated itself, not yet with a person moving the mouse.
+
 ### If the keyboard and mouse stop answering
 
 While another machine has focus, lanhop keeps the keyboard and mouse of the Mac from everything else, and the hotkey brings them back. lanhop gives them back by itself when it stops, when it cannot keep up with the input, when nothing reads what it captures for 10 seconds, and when its permission is taken away.
