@@ -139,6 +139,7 @@ void lanhopCursor(double *x, double *y) {
 
 void lanhopPlaceCursor(double x, double y) {
 	CGWarpMouseCursorPosition(CGPointMake(x, y));
+	CGAssociateMouseAndMouseCursorPosition(true);
 }
 
 void lanhopPutCursorBack(double x, double y) {

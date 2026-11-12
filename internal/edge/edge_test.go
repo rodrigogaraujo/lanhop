@@ -131,7 +131,7 @@ var deskEdges = []deskEdge{
 }
 
 func TestDefaultsArePushFor150msWithA50msGapAndA32UnitCorner(t *testing.T) {
-	want := Settings{PushTime: 150 * time.Millisecond, PushGap: 50 * time.Millisecond, CornerSize: 32}
+	want := Settings{PushTime: 150 * time.Millisecond, PushGap: 50 * time.Millisecond, PushPause: 700 * time.Millisecond, CornerSize: 32}
 	if got := DefaultSettings(); got != want {
 		t.Errorf("DefaultSettings = %+v, want %+v", got, want)
 	}
@@ -293,12 +293,44 @@ func TestSequencesWithTheDefaultSettings(t *testing.T) {
 			want: []crossed{{270, Right, 0.5}},
 		},
 		{
-			name: "a pause longer than the gap starts the count over",
+			name: "a short pause does not count as pushing, and what was pushed before it is kept",
 			steps: script(
 				repeat(pushRight, 0, 100),
 				repeat(pushRight, 160, 310),
 			),
-			want: []crossed{{310, Right, 0.5}},
+			want: []crossed{{210, Right, 0.5}},
+		},
+		{
+			name: "two short pushes with the finger lifted in between add up",
+			steps: script(
+				repeat(pushRight, 0, 80),
+				repeat(pushRight, 500, 600),
+			),
+			want: []crossed{{570, Right, 0.5}},
+		},
+		{
+			name: "a pause as long as the longest allowed keeps what was pushed",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 800, 900),
+			),
+			want: []crossed{{850, Right, 0.5}},
+		},
+		{
+			name: "a pause longer than the longest allowed starts the count over",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				repeat(pushRight, 810, 1000),
+			),
+			want: []crossed{{960, Right, 0.5}},
+		},
+		{
+			name: "one quick touch never crosses, however long ago it was",
+			steps: script(
+				repeat(pushRight, 0, 60),
+				move(3000, pushRight),
+			),
+			want: nil,
 		},
 		{
 			name: "a pause as long as the gap keeps the count",

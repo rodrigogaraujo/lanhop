@@ -252,10 +252,13 @@ func (s *Sharer) comeBack(arrival arrival) error {
 		return nil
 	}
 	s.leaveFocused()
+	if err := s.giveBack(); err != nil {
+		return err
+	}
 	if screen, tellsTheCursor := s.capture.(CursorCapture); tellsTheCursor {
 		if _, _, desktop, known := screen.Cursor(); known {
 			screen.PlaceCursor(arrival(desktop))
 		}
 	}
-	return s.giveBack()
+	return nil
 }

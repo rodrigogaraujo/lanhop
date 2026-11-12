@@ -169,7 +169,7 @@ func TestPushingThroughAnEdgeGivesFocusToTheNeighbourOnThatSideAndPushingBackRet
 		gets(desk, typing...),
 		gets(desk, times(reportsToCross, positioned(0, 16384)...)...),
 		gets(desk, event.Leave()),
-		then(cursorPlacedAt(1000, 125), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(1000, 125)),
 	))
 	s.expectInputAtThisMachine()
 }
@@ -208,7 +208,7 @@ func TestCursorArrivesOnTheOppositeEdgeAtTheSameProportionAlongIt(t *testing.T) 
 				gets(desk, enteredAt(test.arrivesAtX, test.arrivesAtY)...),
 				gets(desk, times(reportsToCross, positioned(test.arrivesAtX, test.arrivesAtY)...)...),
 				gets(desk, event.Leave()),
-				then(cursorPlacedAt(test.comesBackToX, test.comesBackToY), gaveInputBack),
+				then(gaveInputBack, cursorPlacedAt(test.comesBackToX, test.comesBackToY)),
 			))
 		})
 	}
@@ -224,7 +224,7 @@ func TestFiftyCrossingsBackAndForthArriveAtTheSamePlaceEveryTime(t *testing.T) {
 		gets(desk, enteredAt(0, 43646)...),
 		gets(desk, times(reportsToCross, positioned(0, 43646)...)...),
 		gets(desk, event.Leave()),
-		then(cursorPlacedAt(1000, 333), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(1000, 333)),
 	)
 	var want []string
 
@@ -347,7 +347,7 @@ func TestPushWithAButtonHeldDoesNotCross(t *testing.T) {
 			gets(desk, dropping...),
 			gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
 			gets(desk, event.Leave()),
-			then(cursorPlacedAt(0, 250), gaveInputBack),
+			then(gaveInputBack, cursorPlacedAt(0, 250)),
 		))
 	})
 }
@@ -386,7 +386,7 @@ func TestCrossingWithAKeyHeldOnAReceiverReleasesItThereBeforeLeaving(t *testing.
 		gets(desk, holding...),
 		gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
 		gets(desk, release(keyLeftShift), event.Sync(), event.Leave()),
-		then(cursorPlacedAt(0, 250), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(0, 250)),
 	))
 }
 
@@ -625,7 +625,7 @@ func TestLayoutThatAppearsWhileAReceiverHasFocusAppliesFromItsNextVisit(t *testi
 		gets(desk, enteredAt(centre, centre)...),
 		gets(desk, times(reportsToCross, positioned(farEdge, centre)...)...),
 		gets(desk, event.Leave()),
-		then(cursorPlacedAt(0, 250), gaveInputBack),
+		then(gaveInputBack, cursorPlacedAt(0, 250)),
 	))
 }
 
