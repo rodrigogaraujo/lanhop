@@ -60,7 +60,7 @@ The encryption and pairing decision will be recorded as ADR 0004 when its code l
 
 Each task is one pull request with its tests. Tasks 1 to 3 and task 6 do not depend on each other.
 
-- [ ] **1. Classify devices.** Query capabilities with `EVIOCGBIT` in `internal/evdev`, tell keyboards and relative mice from the rest, and skip lanhop's own virtual device. → Verify: test with virtual devices of each kind. `lanhop devices` prints the kind.
+- [x] **1. Classify devices.** Query capabilities with `EVIOCGBIT` in `internal/evdev`, tell keyboards and relative mice from the rest, and skip lanhop's own virtual device. → Verify: test with virtual devices of each kind. `lanhop devices` prints the kind.
 - [x] **2. Control frames and key state.** Add the control codes to `internal/event` and a tracker of held keys in `internal/keystate` that returns the releases needed to clear them. → Verify: unit tests.
 - [x] **3. Identity and trust store.** `internal/identity` creates and loads the key and certificate and formats the code. `internal/trust` stores the peers. → Verify: unit tests, including file mode 0600 and a corrupted file.
 - [x] **4. Transport.** `internal/transport` listens and dials with TLS 1.3 and pinned keys, exchanges `hello` and keeps the connection alive with `ping`. → Verify: a paired peer connects. An unpaired peer is refused in both directions. A different protocol version is refused. A silent peer is dropped within 3 seconds.

@@ -38,7 +38,15 @@ Group changes apply only to new sessions.
 lanhop devices
 ```
 
-It lists the input devices lanhop can read. A "permission denied" error means step 1 or step 3 is missing.
+It lists the input devices lanhop can read and the kind of each one:
+
+```
+/dev/input/event0  other     Power Button
+/dev/input/event3  keyboard  AT Translated Set 2 keyboard
+/dev/input/event5  mouse     USB Optical Mouse
+```
+
+The kind `other` covers what lanhop does not share, such as power buttons, touchpads and touchscreens. A "permission denied" error means step 1 or step 3 is missing.
 
 ## What this permission means
 

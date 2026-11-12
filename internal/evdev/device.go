@@ -28,6 +28,8 @@ type Device struct {
 type Info struct {
 	Path string
 	Name string
+	Kind Kind
+	Own  bool
 }
 
 func Open(path string) (*Device, error) {
@@ -39,7 +41,11 @@ func Open(path string) (*Device, error) {
 }
 
 func List() ([]Info, error) {
-	paths, err := filepath.Glob(devicePattern)
+	return listMatching(devicePattern)
+}
+
+func listMatching(pattern string) ([]Info, error) {
+	paths, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +70,15 @@ func describe(path string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	return Info{Path: path, Name: name}, nil
+	kind, err := device.kind()
+	if err != nil {
+		return Info{}, err
+	}
+	own, err := device.isOwn()
+	if err != nil {
+		return Info{}, err
+	}
+	return Info{Path: path, Name: name, Kind: kind, Own: own}, nil
 }
 
 func (d *Device) Name() (string, error) {
