@@ -32,3 +32,5 @@ jobs:
           sudo modprobe uinput || true
           go test -c -o evdev.test ./internal/evdev
           sudo ./evdev.test -test.v
+          go test -c -o lanhop.test ./cmd/lanhop
+          sudo ./lanhop.test -test.v

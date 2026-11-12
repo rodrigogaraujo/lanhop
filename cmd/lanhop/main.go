@@ -15,6 +15,7 @@ Usage:
   lanhop pair            on the machine with the keyboard: wait for another machine and pair with it
   lanhop pair ADDRESS    on the other machine: pair with the machine that waits at ADDRESS
   lanhop share           on the machine with the keyboard: share it and the mouse with the paired machines
+  lanhop receive         on the other machine: let the machine with the keyboard control this one
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
   lanhop devices         list the input devices this machine can read
@@ -26,6 +27,9 @@ Options of pair, before ADDRESS:
 
 Option of share:
   --listen ADDRESS    wait on ADDRESS instead of port 24745 of every network interface
+
+Option of receive:
+  --from NAME         receive from the trusted machine NAME, when more than one has an address
 
 lanhop keeps the key of this machine and the list of trusted machines in its
 configuration directory. Set LANHOP_CONFIG_DIR to use another directory.
@@ -67,6 +71,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return nil
 	case "devices":
 		return listDevices(stdout)
+	case "receive":
+		return receive(args, stdout)
 	case "pair":
 		return pair(args, stdin, stdout)
 	case "share":
