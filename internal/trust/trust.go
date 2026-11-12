@@ -14,11 +14,16 @@ import (
 )
 
 const (
+	MaxNameLength = 32
 	directoryMode = 0o700
 	fileMode      = 0o600
 )
 
-var validName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+var validName = regexp.MustCompile(fmt.Sprintf(`^[A-Za-z0-9_-]{1,%d}$`, MaxNameLength))
+
+func ValidName(name string) bool {
+	return validName.MatchString(name)
+}
 
 type Peer struct {
 	Name        string               `json:"name"`
@@ -86,8 +91,8 @@ func (s *Store) Remove(name string) error {
 }
 
 func (s *Store) check(candidate Peer) error {
-	if !validName.MatchString(candidate.Name) {
-		return fmt.Errorf("trust: name %q must have 1 to 32 letters, digits, hyphens or underscores", candidate.Name)
+	if !ValidName(candidate.Name) {
+		return fmt.Errorf("trust: name %q must have 1 to %d letters, digits, hyphens or underscores", candidate.Name, MaxNameLength)
 	}
 	for _, peer := range s.peers {
 		if peer.Name == candidate.Name {

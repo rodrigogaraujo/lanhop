@@ -52,9 +52,9 @@ Capture and replay are the only parts that differ between systems. The sharer an
 | Control messages | Frames with type `0xFF00`, outside the kernel's range: `hello` (protocol version), `ping`, `enter`, `leave` | One frame format for everything | Variable-length messages |
 | Liveness | Ping every second. 3 seconds of silence means the connection is lost | Meets the 3-second limit of the spec | A little idle traffic |
 | Key repeat | Repeat events are not sent | A Linux desktop generates its own repeats, and a macOS receiver generates them from a timer | Nothing |
-| Storage | `~/.config/lanhop/identity.key` (mode 0600) and `peers.json`, written by the commands | JSON is in the standard library | A format that is nicer to edit by hand |
+| Storage | `identity.pem` (mode 0600) and `peers.json`, written by the commands, in the `lanhop` folder of the user configuration directory (`~/.config/lanhop` on Linux, `~/Library/Application Support/lanhop` on macOS) or in `LANHOP_CONFIG_DIR` | JSON is in the standard library | A format that is nicer to edit by hand |
 
-The encryption and pairing decision will be recorded as ADR 0004 when its code lands.
+The encryption and pairing decision is recorded in [ADR 0004](../../docs/adr/0004-pinned-tls-and-pairing-by-comparison.md).
 
 ## Tasks
 
@@ -64,7 +64,7 @@ Each task is one pull request with its tests. Tasks 1 to 3 and task 6 do not dep
 - [x] **2. Control frames and key state.** Add the control codes to `internal/event` and a tracker of held keys in `internal/keystate` that returns the releases needed to clear them. → Verify: unit tests.
 - [x] **3. Identity and trust store.** `internal/identity` creates and loads the key and certificate and formats the code. `internal/trust` stores the peers. → Verify: unit tests, including file mode 0600 and a corrupted file.
 - [x] **4. Transport.** `internal/transport` listens and dials with TLS 1.3 and pinned keys, exchanges `hello` and keeps the connection alive with `ping`. → Verify: a paired peer connects. An unpaired peer is refused in both directions. A different protocol version is refused. A silent peer is dropped within 3 seconds.
-- [ ] **5. Pairing.** `internal/pairing` and the `pair`, `peers` and `forget` commands. → Verify: pairing succeeds only when both sides accept. With a machine in the middle, the codes shown do not match.
+- [x] **5. Pairing.** `internal/pairing` and the `pair`, `peers` and `forget` commands. → Verify: pairing succeeds only when both sides accept. With a machine in the middle, the codes shown do not match.
 - [x] **6. Hotkey detector.** `internal/hotkey`, a state machine with no I/O that turns key events into "focus machine N" when the hotkey is released. → Verify: table tests, including a hotkey pressed during a drag.
 - [ ] **7. Sharer.** `internal/sharer` and `lanhop share`: the focus logic, written against a capture interface, and the Linux capture that reads the devices, watches `/dev/input` for new ones and grabs while a receiver has focus. → Verify: unit tests with a fake capture, and an integration test with a fake keyboard made with `uinput`.
 - [ ] **8. Receiver.** `internal/receiver` and `lanhop receive`: dial with retry, replay through a replay interface, and release held keys on `leave` or on loss. → Verify: integration test that kills the connection with a key held.

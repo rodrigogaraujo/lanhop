@@ -118,6 +118,24 @@ func TestPeersThatWouldBeAmbiguousAreRejected(t *testing.T) {
 	}
 }
 
+func TestANameIsValidWhenTheStoreWouldAcceptIt(t *testing.T) {
+	cases := map[string]bool{
+		"laptop":                             true,
+		"Desk_2-b":                           true,
+		strings.Repeat("a", MaxNameLength):   true,
+		strings.Repeat("a", MaxNameLength+1): false,
+		"":                                   false,
+		"my laptop":                          false,
+		"a/b":                                false,
+		"caf\u00e9":                          false,
+	}
+	for name, want := range cases {
+		if got := ValidName(name); got != want {
+			t.Errorf("ValidName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestStoreFileIsPrivateToItsOwner(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file modes are not enforced on Windows")
