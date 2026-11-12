@@ -14,10 +14,14 @@ _Static_assert(kCGEventFlagMaskCommand == 0x100000, "the Command flag changed");
 struct lanhopTap {
 	CFMachPortRef port;
 	CFRunLoopSourceRef source;
+	CFRunLoopSourceRef keepsLoopAlive;
 	CFRunLoopRef loop;
 	uintptr_t handle;
 	bool stopping;
 };
+
+static void doNothing(void *info) {
+}
 
 static CGEventSourceRef eventSource(void) {
 	static CGEventSourceRef source;
@@ -160,9 +164,10 @@ lanhopTap *lanhopTapCreate(uintptr_t handle) {
 		return NULL;
 	}
 	tap->source = CFMachPortCreateRunLoopSource(NULL, tap->port, 0);
-	if (tap->source == NULL) {
-		CFRelease(tap->port);
-		free(tap);
+	CFRunLoopSourceContext idle = {.perform = doNothing};
+	tap->keepsLoopAlive = CFRunLoopSourceCreate(NULL, 0, &idle);
+	if (tap->source == NULL || tap->keepsLoopAlive == NULL) {
+		lanhopTapFree(tap);
 		return NULL;
 	}
 	return tap;
@@ -171,6 +176,7 @@ lanhopTap *lanhopTapCreate(uintptr_t handle) {
 void lanhopTapRun(lanhopTap *tap) {
 	tap->loop = CFRunLoopGetCurrent();
 	CFRetain(tap->loop);
+	CFRunLoopAddSource(tap->loop, tap->keepsLoopAlive, kCFRunLoopCommonModes);
 	CFRunLoopAddSource(tap->loop, tap->source, kCFRunLoopCommonModes);
 	CGEventTapEnable(tap->port, true);
 	lanhopTapReady(tap->handle);
@@ -183,13 +189,19 @@ void lanhopTapStop(lanhopTap *tap) {
 		CGEventTapEnable(tap->port, false);
 		CFRunLoopRemoveSource(tap->loop, tap->source, kCFRunLoopCommonModes);
 		CFMachPortInvalidate(tap->port);
+		CFRunLoopSourceInvalidate(tap->keepsLoopAlive);
 		CFRunLoopStop(tap->loop);
 	});
 	CFRunLoopWakeUp(tap->loop);
 }
 
 void lanhopTapFree(lanhopTap *tap) {
-	CFRelease(tap->source);
+	if (tap->source != NULL) {
+		CFRelease(tap->source);
+	}
+	if (tap->keepsLoopAlive != NULL) {
+		CFRelease(tap->keepsLoopAlive);
+	}
 	CFRelease(tap->port);
 	if (tap->loop != NULL) {
 		CFRelease(tap->loop);

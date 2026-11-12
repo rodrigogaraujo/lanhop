@@ -165,9 +165,9 @@ func (r *Replay) key(code uint16, value int32) {
 func (r *Replay) button(button int, value int32) {
 	r.flush()
 	at := r.cursor()
-	r.remember(at)
 	switch value {
 	case event.KeyPressed:
+		r.remember(at)
 		clicks := r.clicksFor(button, at)
 		r.heldButtons[button] = clicks
 		r.screen.PostMouse(MouseEvent{Action: MouseDown, At: at, Button: button, Clicks: clicks, Flags: r.flags()})
@@ -177,6 +177,7 @@ func (r *Replay) button(button int, value int32) {
 			return
 		}
 		delete(r.heldButtons, button)
+		r.remember(at)
 		r.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Button: button, Clicks: clicks, Flags: r.flags()})
 	}
 }

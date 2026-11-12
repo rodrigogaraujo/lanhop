@@ -632,3 +632,35 @@ func TestCursorMovedLocallyIsPickedUpAfterAPause(t *testing.T) {
 		t.Errorf("after a pause the cursor went to %+v, want %+v", screen.cursor, want)
 	}
 }
+
+func TestSlowSteadyMovementKeepsBuildingOnWhatWasPosted(t *testing.T) {
+	screen := &laggingScreen{fakeScreen: fakeScreen{displays: []Rect{{Width: 1000, Height: 1000}}}, reported: Point{X: 500, Y: 500}}
+	replay, clock := newReplayOn(&screen.fakeScreen)
+	replay.screen = screen
+
+	for range 4 {
+		replay.Emit(event.Relative(event.RelX, 5), event.Sync())
+		clock.advance(300 * time.Millisecond)
+	}
+
+	last := screen.posted[len(screen.posted)-1].(MouseEvent)
+	if want := (Point{X: 520, Y: 500}); last.At != want {
+		t.Errorf("after four steps the cursor was posted at %+v, want %+v", last.At, want)
+	}
+}
+
+func TestEventThatPostsNothingDoesNotExtendTheCursorMemory(t *testing.T) {
+	screen := oneDisplay()
+	replay, clock := newReplayOn(screen)
+	replay.Emit(event.Relative(event.RelX, 5), event.Sync())
+
+	clock.advance(cursorMemory - time.Millisecond)
+	replay.Emit(release(event.ButtonLeft), event.Sync())
+	screen.cursor = Point{X: 10, Y: 10}
+	clock.advance(2 * time.Millisecond)
+	replay.Emit(event.Relative(event.RelX, 1), event.Sync())
+
+	if want := (Point{X: 11, Y: 10}); screen.cursor != want {
+		t.Errorf("the cursor went to %+v, want %+v", screen.cursor, want)
+	}
+}
