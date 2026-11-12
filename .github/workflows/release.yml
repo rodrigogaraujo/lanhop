@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+            cgo: 0
+            looks_like: "ELF 64-bit LSB executable, x86-64"
+            runs_here: true
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+            cgo: 0
+            looks_like: "ELF 64-bit LSB executable, ARM aarch64"
+            runs_here: false
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+            cgo: 1
+            oldest_macos: "11.0"
+            looks_like: "Mach-O 64-bit executable arm64"
+            runs_here: true
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+            cgo: 1
+            oldest_macos: "11.0"
+            looks_like: "Mach-O 64-bit executable x86_64"
+            runs_here: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.oldest_macos }}
+        run: go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o lanhop ./cmd/lanhop
+      - name: Check the system and the architecture of the binary
+        env:
+          LOOKS_LIKE: ${{ matrix.looks_like }}
+        run: file lanhop | tee /dev/stderr | grep -F "$LOOKS_LIKE"
+      - name: Check that the Linux binary is static
+        if: matrix.os == 'linux'
+        run: file lanhop | grep -F "statically linked"
+      - name: Check the oldest macOS the binary runs on
+        if: matrix.os == 'darwin'
+        env:
+          OLDEST_MACOS: ${{ matrix.oldest_macos }}
+        run: otool -l lanhop | grep -A 4 LC_BUILD_VERSION | tee /dev/stderr | grep -F "minos $OLDEST_MACOS"
+      - name: Check the version the binary reports
+        if: matrix.runs_here
+        run: test "$(./lanhop version)" = "lanhop $VERSION"
+      - name: Check the version is in the binary
+        if: ${{ !matrix.runs_here }}
+        run: grep -a -q -F "$VERSION" lanhop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lanhop-${{ matrix.os }}-${{ matrix.arch }}
+          path: lanhop
+          if-no-files-found: error
+
+  package:
+    name: Pack the archives and install from them
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lanhop-*
+          path: built
+      - name: Pack each binary with the license and the README
+        run: |
+          mkdir release
+          for build in built/lanhop-*; do
+            name=$(basename "$build")
+            chmod 755 "$build/lanhop"
+            cp LICENSE README.md "$build/"
+            tar -czf "release/$name.tar.gz" --owner=0 --group=0 --numeric-owner -C built "$name"
+          done
+          cd release
+          sha256sum lanhop-*.tar.gz | tee SHA256SUMS
+          test "$(wc -l <SHA256SUMS)" -eq 4
+      - name: Install from these archives with install.sh
+        run: |
+          mkdir -p served/latest/download
+          cp release/* served/latest/download/
+          home=$(mktemp -d)
+          HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" sh install.sh </dev/null
+          test "$("$home/.local/bin/lanhop" version)" = "lanhop $VERSION"
+          test "$(find "$home" -type f)" = "$home/.local/bin/lanhop"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Create the release with the archives and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
