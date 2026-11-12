@@ -14,6 +14,7 @@ const usage = `lanhop shares one keyboard and mouse across computers on the same
 Usage:
   lanhop pair            on the machine with the keyboard: wait for another machine and pair with it
   lanhop pair ADDRESS    on the other machine: pair with the machine that waits at ADDRESS
+  lanhop share           on the machine with the keyboard: share it and the mouse with the paired machines
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
   lanhop devices         list the input devices this machine can read
@@ -22,6 +23,9 @@ Usage:
 Options of pair, before ADDRESS:
   --as NAME           call the other machine NAME here, when the name it proposes is taken
   --listen ADDRESS    wait on ADDRESS instead of port 24746 of every network interface
+
+Option of share:
+  --listen ADDRESS    wait on ADDRESS instead of port 24745 of every network interface
 
 lanhop keeps the key of this machine and the list of trusted machines in its
 configuration directory. Set LANHOP_CONFIG_DIR to use another directory.
@@ -65,6 +69,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return listDevices(stdout)
 	case "pair":
 		return pair(args, stdin, stdout)
+	case "share":
+		return share(args, stdout)
 	case "peers":
 		return listPeers(stdout)
 	case "forget":
