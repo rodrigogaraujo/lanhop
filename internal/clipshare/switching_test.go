@@ -106,7 +106,7 @@ func TestFeaturesThatFlapMakeTheCentralTakeOnlyAFewMarks(t *testing.T) {
 	}
 }
 
-func TestASideMachineThatCannotReachItsClipboardSaysWhyOnOneLineAndTriesAgainAtMostEvery30Seconds(t *testing.T) {
+func TestASideMachineThatCannotReachItsClipboardSaysWhyOnOneLineAndWaitsBeforeTryingAgain(t *testing.T) {
 	d := newDesk(t, "right")
 	right := d.sides["right"]
 	var attempts atomic.Int32
@@ -128,4 +128,36 @@ func TestASideMachineThatCannotReachItsClipboardSaysWhyOnOneLineAndTriesAgainAtM
 	if lines := strings.Count(right.log.String(), "\n"); lines != 1 {
 		t.Errorf("the log has %d lines, want the reason once on one line:\n%s", lines, right.log.String())
 	}
+}
+
+func TestASideMachineReachesItsClipboardAgainWithinSecondsOfItsReturnAfterAFailedAttempt(t *testing.T) {
+	d := newDesk(t, "right")
+	right := d.sides["right"]
+	first := &endingClipboard{fakeClipboard: right.clipboard, gone: make(chan struct{})}
+	plugged := &pluggedClipboard{current: first}
+	var attempts atomic.Int32
+	d.startSide(right, d.address, func() (Clipboard, error) {
+		attempts.Add(1)
+		return plugged.open()
+	})
+	d.waitUntilTakingPart(right)
+
+	plugged.plug(nil)
+	close(first.gone)
+	right.log.waitFor(t, "lanhop lost the clipboard of this machine")
+	attemptsBefore := attempts.Load()
+	d.focusOn(right.number)
+	eventually(t, "a failed attempt to reach the clipboard", func() bool { return attempts.Load() > attemptsBefore })
+
+	plugged.plug(holding("the clipboard after the person logged in again"))
+	back := time.Now()
+	for !strings.Contains(right.log.String(), "lanhop reaches the clipboard of this machine again") {
+		if time.Since(back) > 5*time.Second {
+			t.Fatalf("the side machine still could not reach its clipboard %s after it came back, with focus moving every 300 ms", time.Since(back).Round(time.Millisecond))
+		}
+		d.focusOn(thisMachine)
+		d.focusOn(right.number)
+		time.Sleep(300 * time.Millisecond)
+	}
+	d.waitUntilTheCentralSeesTakingPart("right")
 }
