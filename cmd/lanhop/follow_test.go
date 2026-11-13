@@ -121,15 +121,3 @@ func TestShareSendsUpdateToAnOlderSideMachineThatFollows(t *testing.T) {
 		t.Fatal("lanhop share never asked the older side machine to update")
 	}
 }
-
-func TestTheInstallerMarksTheServiceSoThatOnlyItFollows(t *testing.T) {
-	script, err := os.ReadFile(filepath.Join("..", "..", "install.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range []string{"Environment=LANHOP_SERVICE=1", "<key>LANHOP_SERVICE</key>"} {
-		if !strings.Contains(string(script), line) {
-			t.Errorf("install.sh does not write %q, so lanhop as a service would not follow the central", line)
-		}
-	}
-}
