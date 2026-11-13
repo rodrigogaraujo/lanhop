@@ -304,7 +304,7 @@ func TestJoinSaysTheServiceConnectsWhenOneReceives(t *testing.T) {
 	if err := join([]string{address, code.String()}, output); err != nil {
 		t.Fatalf("join: %v", err)
 	}
-	if !strings.Contains(output.String(), "should connect to \"imac\" within about 10 seconds") {
+	if !strings.Contains(output.String(), "it connects to \"imac\" within about 10 seconds") {
 		t.Errorf("lanhop join printed %q, want it to say the service connects", output.String())
 	}
 }
