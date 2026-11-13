@@ -25,18 +25,19 @@ A Developer ID certificate from Apple costs a yearly fee. The owner of the proje
 ## Decision
 
 - The project has its own code signing certificate: self-signed, RSA 2048, with the code signing usage, valid for 20 years, named `lanhop`.
-- The release workflow signs lanhop.app with it, on the macOS runner, from a temporary keychain that it deletes when it ends. The certificate and its key are secrets of the GitHub environment `release`, which needs the approval of the owner for each run ([ADR 11](0011-signed-releases-and-side-machines-that-follow-the-central.md)). Pull requests and manual runs on a branch sign with a certificate made inside the job and thrown away.
+- The release workflow signs lanhop.app with it, on the macOS runner, from a temporary keychain that it deletes when it ends. The certificate and its key are secrets of the GitHub environment `release`, which only `v` tags reach and which needs the approval of the owner for each run ([ADR 11](0011-signed-releases-and-side-machines-that-follow-the-central.md)). Pull requests and manual runs on a branch sign with a certificate made inside the job and thrown away.
 - The repository keeps the SHA-1 of the certificate, the `certificate leaf` hash, in a file. The release workflow fails when the signed app does not have the requirement with that hash and the identifier `com.github.rodrigogaraujo.lanhop`.
-- lanhop carries that identifier and that hash in its code. `lanhop update` replaces the app only with one that meets the requirement built from them, checked with the Security framework (spec 010, FR-005).
-- The owner keeps a copy of the certificate and its key outside GitHub.
+- lanhop carries that identifier in its code, with two certificate hashes: the current one, and the one of a next certificate that the owner keeps offline. `lanhop update` replaces the app only with one that meets the requirement built from the identifier and either hash, checked with the Security framework (spec 010, FR-005).
+- The owner keeps a copy of both certificates and their keys outside GitHub.
 
 ## Consequences
 
 - From the first release signed this way on, an update keeps Accessibility, if task 0 confirms it. The move from 0.1.1, signed ad hoc, to that release needs the permission one last time.
-- Local Network is expected to keep its approval too, but TN3179 says that macOS also tracks the `LC_UUID` of the program, which changes with each build. Task 0 measures it with the same test app. The firewall of macOS is measured in task 7.
+- Local Network is expected to keep its approval too, but TN3179 says that macOS also tracks the `LC_UUID` of the program, which changes with each Go build. Task 0 measures it with the same test app. If it is lost, the plan gets a task for it: either keep the `LC_UUID` of the program the same from release to release, or have `lanhop update` and `lanhop status` say that macOS asks for Local Network once after each update. The firewall of macOS is measured in task 7.
 - macOS 13 and later can ask for App Management before a program changes an app bundle. Task 0 measures whether lanhop can replace its own bundle without that question.
 - Opening the app downloaded with a browser still meets Gatekeeper, as today: the certificate does not come from Apple. The installer and `lanhop update` download without the quarantine mark, as today.
-- Anyone with the key can sign a program that macOS takes as lanhop for its permissions. To use it on a Mac, that program has to replace lanhop.app on that Mac, which needs write access there already. If the key leaks or is lost, a new certificate replaces it, and each Mac gives Accessibility once more.
+- Anyone with the key can sign a program that macOS takes as lanhop for its permissions. Any program that runs as the person on a Mac can put such an app in `~/Applications` and get the Accessibility that lanhop has, which is what macOS asks for the permission to prevent. The key has to be kept as carefully as the permission is worth.
+- If the key leaks or is lost, the next certificate replaces it. `lanhop update` takes the change, because the next hash is already in every machine, but macOS knows the new certificate as another program, so each Mac gives Accessibility once more.
 - The certificate expires in 20 years. Whether macOS checks the dates of a self-signed certificate for a requirement like this one is not measured.
 
 ## Alternatives

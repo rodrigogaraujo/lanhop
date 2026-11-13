@@ -35,7 +35,7 @@ I run `lanhop update` on the central. It updates the central, and each side mach
 1. **Given** a desk on an older release, **When** I run `lanhop update` on the central, **Then** the central moves to the latest release, and each side machine moves to the same version, without anything typed on it.
 2. **Given** `lanhop update` is running, **When** the side machines update, **Then** it prints each machine with its old and new version as each one comes back, and ends with a line that says which machines did not come back, if any.
 3. **Given** a side machine is off during the update, **When** it starts later and connects, **Then** it updates to the version of the central then.
-4. **Given** a side machine has focus when its update arrives, **When** the update is ready, **Then** it waits until focus leaves it, and until what it was handing over (a copy, a file) is done, before it restarts, so the keyboard and mouse never freeze on the machine I am using and nothing I copied is lost.
+4. **Given** a side machine has focus when its update arrives, **When** the update is ready, **Then** it waits until focus leaves it, and until what it was handing over (a copy, a file) is done, before it restarts, so the keyboard and mouse never freeze on the machine I am using. A file copy that waits on that machine for a later paste is lost at the restart, as at any restart of lanhop.
 5. **Given** I run `lanhop update` on a side machine, **When** it ends, **Then** that machine is on the latest release, and the others are not touched.
 6. **Given** every machine is already on the latest release, **When** I run `lanhop update`, **Then** it says so and changes nothing.
 
@@ -61,15 +61,17 @@ After an update, a Mac goes on controlling and sharing without a new click in Sy
 
 1. **Given** a download that does not match the signed checksums of the release, **When** lanhop checks it, **Then** nothing is replaced, the old version keeps running, and the reason is printed or written in the log.
 2. **Given** the update stops for any reason (no network, a full disk, a failed check, a crash in the middle), **When** I look at the machine, **Then** it still runs the version it had, or the new one whole, never a mix.
-3. **Given** I switched off following the central on a side machine, **When** the central updates, **Then** that machine stays on its version, and `lanhop status` on the central shows it with its version.
-4. **Given** a side machine is on a newer version than the central, **When** they connect, **Then** the side machine is not moved back.
-5. **Given** a side machine on 0.1.1 or older, which knows nothing of updates, **When** the central updates, **Then** it keeps working with keyboard and mouse, and `lanhop status` on the central says that it needs the installer line once.
+3. **Given** someone on the way, such as a proxy that reads TLS, offers an older signed release as the latest one, **When** lanhop checks it, **Then** nothing is replaced.
+4. **Given** I switched off following the central on a side machine, **When** the central updates, **Then** that machine stays on its version, and `lanhop status` on the central shows it with its version.
+5. **Given** a side machine is on a newer version than the central, **When** they connect, **Then** the side machine is not moved back.
+6. **Given** a side machine on 0.1.1 or older, which knows nothing of updates, **When** the central updates, **Then** it keeps working with keyboard and mouse, and `lanhop status` on the central says that it needs the installer line once.
 
 ## Edge cases
 
 - A release that needs more than a new program: a new launch agent key, a new udev rule, a new group. The update stops before replacing anything and prints the installer line.
 - lanhop was not installed by the installer, or runs from a folder the person cannot write.
 - lanhop runs by hand in a terminal instead of as a service.
+- A Mac whose disk cannot swap two folders in one step.
 - A build that is not a release: `dev` from the source code, or `dev-<commit>` from a run of the workflow.
 - Two `lanhop update` at the same time on one machine.
 - The central updates while a side machine is in the middle of its own update.
@@ -81,16 +83,16 @@ After an update, a Mac goes on controlling and sharing without a new click in Sy
 
 ### Functional requirements
 
-- **FR-001**: `lanhop update` MUST move the machine it runs on to the latest release, or to the version given with `--version`, and restart its service.
+- **FR-001**: `lanhop update` MUST move the machine it runs on to the latest release, or to the version given with `--version`, and restart its service. It MUST move to a lower version only when `--older` is typed with `--version` on that machine.
 - **FR-002**: A side machine MUST move to the version of its central when it connects to a central on a newer release, unless following the central is switched off on it.
 - **FR-003**: A side machine MUST NOT move to a version older than its own because of the central.
-- **FR-004**: lanhop MUST download only from the releases of the project on GitHub, and MUST replace nothing unless the download matches the checksums of that release, the checksums carry a valid signature of the project, and the signed files name the version that was asked for.
-- **FR-005**: On macOS, the new app MUST carry the same stable signature as the running one, or nothing is replaced.
-- **FR-006**: Replacing MUST be whole or nothing: after any failure, the machine runs the old version, untouched.
+- **FR-004**: lanhop MUST download only from the releases of the project on GitHub, following the redirects of GitHub, and MUST replace nothing unless the download matches the checksums of that release, the checksums carry a valid signature of the project, and the signed files name the version that was asked for.
+- **FR-005**: On macOS, the new app MUST meet the code requirement built from the identifier and the certificate hashes compiled into lanhop, or nothing is replaced.
+- **FR-006**: Replacing MUST be whole or nothing: a failure before the program is replaced leaves the old version untouched, and a crash at any moment leaves either the old program or the new one, whole.
 - **FR-007**: A side machine MUST NOT restart for an update while it has focus, before it has answered the last leave, or while a file transfer is open.
 - **FR-008**: Only a lanhop that its service started MUST follow the central. A lanhop run by hand, or a build that is not a release, MUST NOT take updates from the central.
 - **FR-009**: Machines on 0.1.0 and 0.1.1 MUST keep working with keyboard and mouse, and MUST NOT be sent Update.
-- **FR-010**: `lanhop status` on the central MUST show the version of each side machine, and say which ones cannot update by themselves.
+- **FR-010**: `lanhop status` on the central MUST show the version of each side machine, and say which ones cannot update by themselves: on 0.1.1 or older, below the oldest version the release can update from, or with updates off. The central MUST NOT send Update to a machine that needs the installer.
 - **FR-011**: From the first release with the stable signature on, an update MUST NOT need a new Accessibility, Local Network or firewall approval on macOS.
 - **FR-012**: A release that needs the installer MUST be refused by `lanhop update`, which MUST print the installer line instead.
 
