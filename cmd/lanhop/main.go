@@ -20,6 +20,7 @@ Usage:
   lanhop share           on the machine with the keyboard: share it and the mouse with the paired machines
   lanhop receive         on the other machine: let the machine with the keyboard control this one
   lanhop status          say what lanhop is doing on this machine: waiting for a permission, connecting or connected
+  lanhop update          move this machine to the latest release of lanhop, and restart its service
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
   lanhop layout          show where the layout file is and how lanhop understands it
@@ -37,6 +38,11 @@ Options of add, before NAME:
 Options of pair, before ADDRESS:
   --as NAME           call the other machine NAME here, when the name it proposes is taken
   --listen ADDRESS    wait on ADDRESS instead of port 24746 of every network interface
+
+Options of update:
+  --version VERSION   move to VERSION, such as v0.1.3, instead of the latest release
+  --older             with --version, accept a release older than this one, and stop following
+                      the version of the machine with the keyboard
 
 Option of share:
   --listen ADDRESS    wait on ADDRESS instead of port 24745 of every network interface
@@ -106,6 +112,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return share(args, stdout)
 	case "status":
 		return showStatus(args, stdout)
+	case "update":
+		return updateThisMachine(args, stdout)
 	case "peers":
 		return listPeers(stdout)
 	case "forget":
