@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
@@ -390,6 +391,22 @@ func TestAKilledConnectionReleasesWhatIsHeld(t *testing.T) {
 	d.replay.expect(t, append(held,
 		event.Key(event.KeyA, released), event.Key(event.ButtonLeft, released), event.Sync(),
 	)...)
+}
+
+func TestTheFramesOfACopyAreNotReplayed(t *testing.T) {
+	parts, err := clipboard.Slices("a copy that this receiver does not take")
+	if err != nil {
+		t.Fatalf("Slices: %v", err)
+	}
+	d, _, sharerSide := connectedDesk(t)
+
+	send(t, sharerSide, event.Enter(), event.Features(event.FeatureClipboard))
+	for _, part := range parts {
+		send(t, sharerSide, part...)
+	}
+	send(t, sharerSide, event.Key(event.KeyA, pressed), event.Sync())
+
+	d.replay.expect(t, event.Key(event.KeyA, pressed), event.Sync())
 }
 
 func TestLosingFocusSyncsInputThatWasReplayedWithoutASync(t *testing.T) {

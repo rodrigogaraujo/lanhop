@@ -21,7 +21,16 @@ const (
 	ControlPing  uint16 = 2
 	ControlEnter uint16 = 3
 	ControlLeave uint16 = 4
+
+	ControlFeatures      uint16 = 5
+	ControlClipboard     uint16 = 6
+	ControlClipboardData uint16 = 7
+	ControlClipboardAck  uint16 = 8
+
+	ControlClipboardUnchanged uint16 = 9
 )
+
+const FeatureClipboard int32 = 1 << 0
 
 const SyncReport uint16 = 0x00
 
@@ -90,6 +99,26 @@ func Enter() Event {
 
 func Leave() Event {
 	return Event{Type: TypeControl, Code: ControlLeave}
+}
+
+func Features(set int32) Event {
+	return Event{Type: TypeControl, Code: ControlFeatures, Value: set}
+}
+
+func Clipboard(length int32) Event {
+	return Event{Type: TypeControl, Code: ControlClipboard, Value: length}
+}
+
+func ClipboardData(chunk int32) Event {
+	return Event{Type: TypeControl, Code: ControlClipboardData, Value: chunk}
+}
+
+func ClipboardAck(framesRead int32) Event {
+	return Event{Type: TypeControl, Code: ControlClipboardAck, Value: framesRead}
+}
+
+func ClipboardUnchanged() Event {
+	return Event{Type: TypeControl, Code: ControlClipboardUnchanged}
 }
 
 func (e Event) IsControl() bool {
