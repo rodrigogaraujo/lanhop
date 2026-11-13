@@ -363,6 +363,48 @@ func TestAFileCopyIsForgottenWhenTheMachineWhereItWasCopiedCanNoLongerSendIt(t *
 	}
 }
 
+func TestTheCentralWithdrawsItsOwnCopyOfAKindNoSideMachineShares(t *testing.T) {
+	tests := []struct {
+		name   string
+		shared Kinds
+		other  Kinds
+		read   func(d *Desk[string]) ([]action, error)
+		want   error
+	}{
+		{"a text while only files are shared", Files, Text, func(d *Desk[string]) ([]action, error) { return d.ReadGave("secret", nil) }, ErrTextNotShared},
+		{"files while only text is shared", Text, Files, func(d *Desk[string]) ([]action, error) { return d.ReadGaveFiles(report, nil) }, ErrFilesNotShared},
+	}
+	for _, test := range tests {
+		readOnTheWayToB := func(t *testing.T, d *Desk[string]) {
+			t.Helper()
+			expect(t, "B shares one kind", d.Says("B", test.shared), action{Do: Mark, Takes: test.shared})
+			expect(t, "focus to B", d.FocusOn("B"), read())
+			actions, err := test.read(d)
+			if !errors.Is(err, test.want) {
+				t.Errorf("error = %v, want %v", err, test.want)
+			}
+			expect(t, "the central read a kind nobody takes", actions)
+		}
+		t.Run("another side machine starts to share it, "+test.name, func(t *testing.T) {
+			d := NewDesk[string](Text | Files)
+			d.Connected("A")
+			d.Connected("B")
+			readOnTheWayToB(t, d)
+
+			expect(t, "A starts to share the other kind", d.Says("A", test.other), action{Do: Mark, Takes: test.other})
+			expect(t, "focus to A", d.FocusOn("A"))
+			expect(t, "B had nothing new", d.UnchangedOn("B"))
+		})
+		t.Run("the side machine with focus starts to share it, "+test.name, func(t *testing.T) {
+			d := NewDesk[string](Text | Files)
+			d.Connected("B")
+			readOnTheWayToB(t, d)
+
+			expect(t, "B starts to share the other kind while it has focus", d.Says("B", Text|Files), action{Do: Mark, Takes: test.other})
+		})
+	}
+}
+
 func TestASideMachineThatTakesTextButNotFilesGetsNothingForAFileCopy(t *testing.T) {
 	d := deskSharingFiles(t, "A")
 	d.Connected("B")

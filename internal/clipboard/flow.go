@@ -309,7 +309,7 @@ func (d *Desk[M]) readGave(read deskCopy[M], readErr error) ([]Action[M], error)
 	if current := d.readArrived(); !current || d.on == 0 {
 		return nil, nil
 	}
-	if readErr == nil && !d.on.Has(read.kind()) {
+	if readErr == nil && !d.sharedKinds().Has(read.kind()) {
 		readErr = notShared(read.kind())
 	}
 	if readErr != nil {
