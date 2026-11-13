@@ -137,7 +137,7 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - **FR-002**: A copy made on a side machine MUST reach other side machines through the central.
 - **FR-003**: lanhop MUST write a copy only to the clipboard of the machine that has focus. A machine MUST NOT get a copy while I am not on it. The central MUST keep only the desk's last copy, in memory.
 - **FR-004**: lanhop MUST carry plain text only, encoded as UTF-8, up to 1 MiB. Formatted text MUST arrive as its plain text.
-- **FR-005**: When a copy is not text, is empty, or is larger than the limit, lanhop MUST NOT send it, MUST leave the clipboards of the other machines as they were, MUST stop handing out the copy that came before it, and MUST say why in its log.
+- **FR-005**: When a copy is not text, is empty, or is larger than the limit (a copy of files or folders is not text, even when it also offers their names or paths as text), lanhop MUST NOT send it, MUST leave the clipboards of the other machines as they were, MUST stop handing out the copy that came before it, and MUST say why in its log.
 - **FR-006**: Copies MUST travel only over the encrypted connection between paired machines of spec 001. lanhop MUST NOT write them to disk.
 - **FR-007**: Keyboard and mouse MUST keep responding while a copy is on its way.
 - **FR-008**: A machine on lanhop 0.1.0 MUST keep working with keyboard and mouse when it connects to a machine with clipboard sharing, in either role.

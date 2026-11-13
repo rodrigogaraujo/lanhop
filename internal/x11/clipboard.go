@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -56,6 +57,7 @@ const (
 	transferLifetime = 10 * time.Second
 	largestChunk     = 64 << 10
 	privateHintValue = "secret"
+	uriListLimit     = 64 << 10
 )
 
 var (
@@ -66,6 +68,7 @@ var (
 
 type atoms struct {
 	clipboard, targets, timestamp, utf8String, text, plain, plainUTF8, incr, passwordHint uint32
+	gnomeFiles, uriList, portalFiles, portalTransfer                                      uint32
 	ownProperty, timeProperty                                                             uint32
 }
 
@@ -105,6 +108,7 @@ type Clipboard struct {
 	ownedSince   uint32
 	text         []byte
 	hint         hint
+	extraOffers  map[uint32][]byte
 	transfers    []*transfer
 	readTimeout  time.Duration
 	handleEvents func(event []byte)
@@ -164,17 +168,21 @@ func open(d display, cookie []byte) (*Clipboard, error) {
 
 func (b *Clipboard) prepare() error {
 	names := map[*uint32]string{
-		&b.atoms.clipboard:    "CLIPBOARD",
-		&b.atoms.targets:      "TARGETS",
-		&b.atoms.timestamp:    "TIMESTAMP",
-		&b.atoms.timeProperty: "LANHOP_TIME",
-		&b.atoms.utf8String:   "UTF8_STRING",
-		&b.atoms.text:         "TEXT",
-		&b.atoms.plain:        "text/plain",
-		&b.atoms.plainUTF8:    "text/plain;charset=utf-8",
-		&b.atoms.incr:         "INCR",
-		&b.atoms.passwordHint: "x-kde-passwordManagerHint",
-		&b.atoms.ownProperty:  "LANHOP_CLIPBOARD",
+		&b.atoms.clipboard:      "CLIPBOARD",
+		&b.atoms.targets:        "TARGETS",
+		&b.atoms.timestamp:      "TIMESTAMP",
+		&b.atoms.timeProperty:   "LANHOP_TIME",
+		&b.atoms.utf8String:     "UTF8_STRING",
+		&b.atoms.text:           "TEXT",
+		&b.atoms.plain:          "text/plain",
+		&b.atoms.plainUTF8:      "text/plain;charset=utf-8",
+		&b.atoms.incr:           "INCR",
+		&b.atoms.passwordHint:   "x-kde-passwordManagerHint",
+		&b.atoms.gnomeFiles:     "x-special/gnome-copied-files",
+		&b.atoms.uriList:        "text/uri-list",
+		&b.atoms.portalFiles:    "application/vnd.portal.files",
+		&b.atoms.portalTransfer: "application/vnd.portal.filetransfer",
+		&b.atoms.ownProperty:    "LANHOP_CLIPBOARD",
 	}
 	for atom, name := range names {
 		reply, err := b.c.call(newRequest(opInternAtom, 0).u16(uint16(len(name))).u16(0).raw([]byte(name)).done())
@@ -284,6 +292,9 @@ func (b *Clipboard) Read() (string, error) {
 			return "", clipboard.ErrPrivate
 		}
 	}
+	if b.offersFiles(offered) {
+		return "", clipboard.ErrNotText
+	}
 	target, found := b.textTarget(offered)
 	if !found {
 		return "", clipboard.ErrNotText
@@ -314,6 +325,37 @@ func (b *Clipboard) targetsOffered() ([]uint32, error) {
 		offered = append(offered, binary.LittleEndian.Uint32(data[i:i+4]))
 	}
 	return offered, nil
+}
+
+func (b *Clipboard) offersFiles(offered []uint32) bool {
+	for _, files := range []uint32{b.atoms.gnomeFiles, b.atoms.portalFiles, b.atoms.portalTransfer} {
+		if slices.Contains(offered, files) {
+			return true
+		}
+	}
+	if !slices.Contains(offered, b.atoms.uriList) {
+		return false
+	}
+	list, err := b.convert(b.atoms.uriList, uriListLimit)
+	if err != nil {
+		return true
+	}
+	return everyAddressIsAFile(string(list))
+}
+
+func everyAddressIsAFile(list string) bool {
+	addresses := 0
+	for _, line := range strings.Split(list, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(line), "file:") {
+			return false
+		}
+		addresses++
+	}
+	return addresses > 0
 }
 
 func (b *Clipboard) textTarget(offered []uint32) (uint32, bool) {
@@ -519,9 +561,21 @@ func (b *Clipboard) answer(event []byte) {
 
 func (b *Clipboard) provide(requestor, property, target, since uint32, text []byte, offered hint) bool {
 	latin1, fitsLatin1 := utf8ToLatin1(text)
+	b.state.Lock()
+	extra, isExtra := b.extraOffers[target]
+	b.state.Unlock()
+	if isExtra {
+		b.changeProperty(requestor, property, target, 8, extra)
+		return true
+	}
 	switch target {
 	case b.atoms.targets:
 		targets := []uint32{b.atoms.targets, b.atoms.timestamp, b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain}
+		b.state.Lock()
+		for target := range b.extraOffers {
+			targets = append(targets, target)
+		}
+		b.state.Unlock()
 		if fitsLatin1 {
 			targets = append(targets, atomString)
 		}
