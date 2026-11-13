@@ -23,6 +23,15 @@ func TestTurningTheClipboardKeepsEveryOtherFeatureOfThisProcess(t *testing.T) {
 	}
 }
 
+func TestOnlyTheClipboardBitSaysWhetherTheOtherEndTakesCopies(t *testing.T) {
+	if takesCopies(event.Features(1 << 8)) {
+		t.Error("a machine that announced only another feature counts as taking copies")
+	}
+	if !takesCopies(event.Features(event.FeatureClipboard | 1<<8)) {
+		t.Error("a machine that announced the clipboard and another feature does not count as taking copies")
+	}
+}
+
 type connThatHoldsCopies struct {
 	recordingConn
 	release   chan struct{}
