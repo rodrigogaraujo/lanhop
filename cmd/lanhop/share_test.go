@@ -102,8 +102,19 @@ func startShareCapturing(t *testing.T, input *inputByHand, capture sharer.Captur
 		stop:     stop,
 		finished: make(chan error, 1),
 	}
-	go func() { started.finished <- shareUntil(done, capture, "127.0.0.1:0", started.output) }()
-	t.Cleanup(stop)
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		started.finished <- shareUntil(done, capture, "127.0.0.1:0", started.output)
+	}()
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-ended:
+		case <-time.After(testPatience):
+			t.Error("lanhop share did not stop, so it may still write in the configuration directory")
+		}
+	})
 	started.address = net.JoinHostPort("127.0.0.1", started.output.portShown(t))
 	return started
 }
