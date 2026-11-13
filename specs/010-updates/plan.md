@@ -144,14 +144,15 @@ One task, one pull request. Each verify list says what must be true before the t
 - [ ] **2. Release workflow.** As in "Release workflow" above, with a manual run that does all of it on a branch with a throwaway certificate and key, and publishes nothing. → Verify:
   - The manual run passes on the branch, and a pull request run passes with the version `v0.0.1`.
   - `ci.yml` runs each check script against a bad input and sees it fail: another certificate hash, `SHA256SUMS` or `UPDATE` changed after signing, the versions `v1.2.300` and `v1.2`, a program built with a build tag, and an `install.sh` that writes another launch agent, unit or udev rule than the one at the tag in `packaging/update-from`.
-- [ ] **3. `internal/update`.** Find the latest version from the address that `releases/latest` sends to. Download, check, unpack and replace, as in ADR 11. → Verify with unit tests, a local HTTP server and a test key. Each of these leaves the old program byte for byte and removes the new folder:
+- [x] **3. `internal/update`.** Find the latest version from the address that `releases/latest` sends to. Download, check, unpack and replace, as in ADR 11. → Verify with unit tests, a local HTTP server and a test key. Each of these leaves the old program byte for byte and removes the new folder:
   - a changed archive, a changed `SHA256SUMS`, a missing signature, a signature by an unknown key;
   - an `UPDATE` of an older release offered as the new one, and a `releases/latest` that sends to an older release;
   - a `from` above the running version;
   - a version that is not `vMAJOR.MINOR.PATCH`, and a file over its size limit;
   - a path with `..`, an absolute path, a link, a hard link, a special file, a setuid bit;
   - a program that prints another version, and a rename that fails.
-  - Also: a signature by the next key is accepted. A process killed between unpacking and swapping, and right after swapping, leaves a whole old or a whole new program, and the next start removes the leftover folder. On the macOS runner, an app signed with the test certificate passes the requirement check, an app signed ad hoc fails it, and a disk that does not offer `RENAME_SWAP`, faked in the test, is refused.
+  - Also: a signature by the next key is accepted. A process killed between unpacking and swapping, and right after swapping, leaves a whole old or a whole new program, and the next start removes the leftover folder. A swap that fails, as on a disk without `RENAME_SWAP`, leaves the old program. On the macOS runner, the real swap of an app runs.
+- [ ] **3b. The code requirement check on macOS.** After task 1, which gives the certificate hashes. `internal/update` checks the new lanhop.app with the Security framework against the requirement built from the identifier and the hashes compiled into lanhop (ADR 10, check 7 of ADR 11). → Verify on the macOS runner, with certificates made in the job: an app signed with the certificate whose hash is compiled in passes; an app signed ad hoc fails; an app signed with another certificate fails; an app with another identifier fails.
 - [ ] **4. `lanhop update` on one machine.** The command, `--version`, `--older`, the lock, the timeouts, the refusals, and the restart of the service. → Verify with tests that use a fake `launchctl` and a fake `systemctl`, as in `install_test.go`, and a local HTTP server:
   - Two runs at the same time update once.
   - On the latest release already, it says so, changes nothing and ends with status 0.
