@@ -7,6 +7,7 @@ guides_url=https://github.com/$repository/blob/main/docs
 install_command="curl -fsSL https://raw.githubusercontent.com/$repository/main/install.sh | sh"
 unit_name=lanhop.service
 agent_label=com.github.rodrigogaraujo.lanhop
+app_identifier=com.github.rodrigogaraujo.lanhop
 system_root=${LANHOP_SYSTEM_ROOT:-}
 udev_rule_path=$system_root/etc/udev/rules.d/60-lanhop.rules
 udev_rule='KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"'
@@ -29,7 +30,10 @@ Options:
 
 Environment:
   LANHOP_VERSION=v0.1.0       install that release instead of the latest one
-  LANHOP_INSTALL_DIR=DIR      put the binary in DIR instead of ~/.local/bin
+  LANHOP_INSTALL_DIR=DIR      put the binary in DIR instead of ~/.local/bin. On macOS,
+                              lanhop.app goes to /Applications, or to ~/Applications
+                              when /Applications cannot be written, and DIR gets the
+                              lanhop command
   LANHOP_ROLE=share|receive   share when the keyboard and mouse are plugged into this
                               machine, receive when another machine controls this one
   LANHOP_YES=1                agree to every step and ask nothing
@@ -157,7 +161,15 @@ settle_paths() {
     *) fail "LANHOP_INSTALL_DIR must be an absolute path, and it is $install_directory" ;;
   esac
   binary=$install_directory/lanhop
+  command_link=$binary
+  earlier_program=
+  app=
   if [ "$os" = darwin ]; then
+    if [ -w "$system_root/Applications" ]; then
+      app_directory=$system_root/Applications
+    else
+      app_directory=$HOME/Applications
+    fi
     config_directory="$HOME/Library/Application Support/lanhop"
     agent_path=$HOME/Library/LaunchAgents/$agent_label.plist
     log_path=$HOME/Library/Logs/lanhop.log
@@ -215,18 +227,49 @@ install_binary() {
   fi
 
   tar -xzf "$work/$package.tar.gz" -C "$work"
-  if [ ! -f "$work/$package/lanhop" ]; then
+  if [ "$os" = darwin ] && [ -d "$work/$package/lanhop.app" ]; then
+    install_app
+  elif [ -f "$work/$package/lanhop" ]; then
+    mkdir -p "$install_directory"
+    cp "$work/$package/lanhop" "$binary.new"
+    chmod 755 "$binary.new"
+    mv -f "$binary.new" "$binary"
+  else
     fail "$package.tar.gz has no $package/lanhop in it. Nothing was installed."
   fi
-  mkdir -p "$install_directory"
-  cp "$work/$package/lanhop" "$binary.new"
-  chmod 755 "$binary.new"
-  mv -f "$binary.new" "$binary"
   rm -rf "$work"
   trap - EXIT
 
   installed=$("$binary" version) || fail "$binary was installed, but it does not run on this machine"
-  say "Installed $installed in $binary"
+  if [ -n "$app" ]; then
+    say "Installed $installed in $app"
+    say "The lanhop command in $command_link runs it."
+  else
+    say "Installed $installed in $binary"
+  fi
+}
+
+install_app() {
+  unpacked=$work/$package/lanhop.app
+  if [ ! -f "$unpacked/Contents/MacOS/lanhop" ]; then
+    fail "$package.tar.gz has no $package/lanhop.app/Contents/MacOS/lanhop in it. Nothing was installed."
+  fi
+  app=$app_directory/lanhop.app
+  binary=$app/Contents/MacOS/lanhop
+  if [ -e "$command_link" ] || [ -L "$command_link" ]; then
+    if [ "$(readlink "$command_link" 2>/dev/null || true)" != "$binary" ]; then
+      earlier_program=$command_link
+    fi
+  fi
+  mkdir -p "$app_directory" "$install_directory"
+  rm -rf "$app.new"
+  cp -R "$unpacked" "$app.new"
+  chmod 755 "$app.new/Contents/MacOS/lanhop"
+  rm -rf "$app"
+  mv "$app.new" "$app"
+  rm -f "$command_link.new"
+  ln -s "$binary" "$command_link.new"
+  mv -f "$command_link.new" "$command_link"
 }
 
 advise_about_path() {
@@ -240,7 +283,7 @@ to the file your shell reads when it starts, such as ~/.profile or ~/.zshrc:
 
     export PATH="$install_directory:\$PATH"
 
-Until then, type the whole path: $binary
+Until then, type the whole path: $command_link
 EOF
       ;;
   esac
@@ -416,6 +459,14 @@ set_up_linux() {
 
 write_agent() {
   mkdir -p "$(dirname "$agent_path")" "$(dirname "$log_path")"
+  associated=
+  if [ -n "$app" ]; then
+    associated="  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>$app_identifier</string>
+  </array>
+"
+  fi
   cat >"$agent_path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -423,7 +474,7 @@ write_agent() {
 <dict>
   <key>Label</key>
   <string>$agent_label</string>
-  <key>ProgramArguments</key>
+${associated}  <key>ProgramArguments</key>
   <array>
     <string>$binary</string>
     <string>$role</string>
@@ -447,6 +498,10 @@ EOF
 }
 
 explain_accessibility() {
+  if [ -n "$app" ]; then
+    explain_accessibility_of_the_app
+    return 0
+  fi
   cat <<EOF
 
 macOS lets a program read and control the keyboard and mouse only after you allow it
@@ -462,6 +517,35 @@ If lanhop is already in the list from an earlier install, select it, remove it w
 - button and add it again: macOS ties the permission to the exact program it approved.
 $guides_url/setup-macos.md says more.
 
+EOF
+}
+
+explain_accessibility_of_the_app() {
+  cat <<EOF
+
+macOS lets a program read and control the keyboard and mouse only after you allow it
+under Accessibility. Started at login, the program to allow is the lanhop app, not the
+terminal. In System Settings > Privacy & Security > Accessibility:
+
+  1. Click the + button under the list. macOS asks for your password or Touch ID.
+  2. Choose lanhop in $app_directory and click Open.
+  3. Make sure the switch next to lanhop is on.
+
+$guides_url/setup-macos.md says more.
+
+EOF
+}
+
+explain_earlier_program() {
+  if [ -z "$earlier_program" ]; then
+    return 0
+  fi
+  cat <<EOF
+
+$earlier_program now runs the lanhop app. For macOS, the lanhop of an earlier install
+was another program. If System Settings > Privacy & Security lists a "lanhop" or an
+"a.out" from before under Accessibility or Local Network, select it and remove it with
+the - button. Switching it on does nothing for the app.
 EOF
 }
 
@@ -494,6 +578,7 @@ EOF
   fi
   write_agent
   say "Wrote $agent_path"
+  explain_earlier_program
   explain_accessibility
   system open "$accessibility_pane" || problem "System Settings did not open. Open that pane by hand."
   if [ "$someone_answers" = yes ]; then
@@ -634,14 +719,29 @@ remove_agent() {
   say "Removed $agent_path"
 }
 
+is_the_app() {
+  [ -f "$1/Contents/Info.plist" ] && grep -q "<string>$app_identifier</string>" "$1/Contents/Info.plist"
+}
+
+remove_apps() {
+  for candidate in "$system_root/Applications/lanhop.app" "$HOME/Applications/lanhop.app"; do
+    if is_the_app "$candidate"; then
+      rm -rf "$candidate"
+      say "Removed $candidate"
+    fi
+  done
+}
+
 uninstall_lanhop() {
   if [ "$os" = darwin ]; then
     remove_agent
+    remove_apps
   else
     remove_unit
     remove_udev_rule
   fi
-  if [ -e "$binary" ]; then
+  rm -f "$config_directory/status"
+  if [ -e "$binary" ] || [ -L "$binary" ]; then
     rm -f "$binary"
     say "Removed $binary"
   else

@@ -35,6 +35,8 @@ const (
 	agentLogFile   = "Library/Logs/lanhop.log"
 	linuxPeersFile = ".config/lanhop/peers.json"
 	macPeersFile   = "Library/Application Support/lanhop/peers.json"
+	appDirectory   = "Applications/lanhop.app"
+	appProgram     = appDirectory + "/Contents/MacOS/lanhop"
 
 	usageWithTheEditor    = "lanhop layout --edit   arrange the machines on the desk by dragging them"
 	usageWithoutTheEditor = "lanhop layout          show where the layout file is"
@@ -111,7 +113,7 @@ const agentOfTheService = `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
   <key>Label</key>
   <string>com.github.rodrigogaraujo.lanhop</string>
-  <key>ProgramArguments</key>
+%[4]s  <key>ProgramArguments</key>
   <array>
     <string>%[1]s</string>
     <string>%[2]s</string>
@@ -133,14 +135,30 @@ const agentOfTheService = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
+const appAssociation = `  <key>AssociatedBundleIdentifiers</key>
+  <array>
+    <string>com.github.rodrigogaraujo.lanhop</string>
+  </array>
+`
+
+const infoOfTheApp = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.github.rodrigogaraujo.lanhop</string>
+</dict>
+</plist>
+`
+
 var builds = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"}
 
 type releases struct {
-	t     *testing.T
-	root  string
-	url   string
-	calls string
-	usage string
+	t             *testing.T
+	root          string
+	url           string
+	calls         string
+	usage         string
+	withoutTheApp bool
 }
 
 func newReleases(t *testing.T) *releases {
@@ -164,7 +182,16 @@ func (r *releases) publish(directory, version string) {
 	var sums strings.Builder
 	for _, build := range builds {
 		name := "lanhop-" + build
-		archive := packed(r.t, name, fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage))
+		program := fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage)
+		files := []archived{{name + "/lanhop", program, 0o700}}
+		if strings.HasPrefix(build, "darwin-") && !r.withoutTheApp {
+			files = []archived{
+				{name + "/lanhop.app/Contents/Info.plist", infoOfTheApp, 0o644},
+				{name + "/lanhop.app/Contents/MacOS/lanhop", program, 0o700},
+			}
+		}
+		files = append(files, archived{name + "/LICENSE", "MIT License\n", 0o644}, archived{name + "/README.md", "# lanhop\n", 0o644})
+		archive := packed(r.t, files...)
 		r.write(filepath.Join(directory, name+".tar.gz"), archive)
 		fmt.Fprintf(&sums, "%x  %s.tar.gz\n", sha256.Sum256(archive), name)
 	}
@@ -209,20 +236,18 @@ func (r *releases) lanhopWasRunWith() []string {
 	return strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
 }
 
-func packed(t *testing.T, name, binary string) []byte {
+type archived struct {
+	name    string
+	content string
+	mode    int64
+}
+
+func packed(t *testing.T, contents ...archived) []byte {
 	t.Helper()
 	var archive bytes.Buffer
 	zipped := gzip.NewWriter(&archive)
 	files := tar.NewWriter(zipped)
-	for _, file := range []struct {
-		name    string
-		content string
-		mode    int64
-	}{
-		{name + "/lanhop", binary, 0o700},
-		{name + "/LICENSE", "MIT License\n", 0o644},
-		{name + "/README.md", "# lanhop\n", 0o644},
-	} {
+	for _, file := range contents {
 		header := &tar.Header{Name: file.name, Mode: file.mode, Size: int64(len(file.content)), Typeflag: tar.TypeReg}
 		if err := files.WriteHeader(header); err != nil {
 			t.Fatal(err)
@@ -270,7 +295,23 @@ func newMachine(t *testing.T, shell, system, architecture string, from *releases
 		"LANHOP_TERMINAL":       filepath.Join(m.aside, "no terminal"),
 	}
 	m.withGroups(notInTheInputGroup)
+	if err := os.MkdirAll(m.inRoot("Applications"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return m
+}
+
+func (m *machine) inRoot(name string) string {
+	return filepath.Join(m.root, filepath.FromSlash(name))
+}
+
+func (m *machine) linkTarget(name string) string {
+	m.t.Helper()
+	target, err := os.Readlink(m.path(name))
+	if err != nil {
+		m.t.Fatalf("%s is not a link: %v", name, err)
+	}
+	return target
 }
 
 func (m *machine) withGroups(groups string) {
@@ -530,7 +571,14 @@ func TestInstallsTheBuildOfThisSystemAndArchitecture(t *testing.T) {
 				if info.Mode().Perm() != 0o755 {
 					t.Errorf("mode of the binary = %o, want 755", info.Mode().Perm())
 				}
-				expectMention(t, output, "Installed lanhop 1.0.0 "+found.build+" in "+m.path(binaryFile))
+				if found.system == "Darwin" {
+					expectMention(t, output, "Installed lanhop 1.0.0 "+found.build+" in "+m.inRoot(appDirectory)+"\n", "The lanhop command in "+m.path(binaryFile)+" runs it.")
+					if target := m.linkTarget(binaryFile); target != m.inRoot(appProgram) {
+						t.Errorf("%s links to %s, want the program in the app, %s", binaryFile, target, m.inRoot(appProgram))
+					}
+				} else {
+					expectMention(t, output, "Installed lanhop 1.0.0 "+found.build+" in "+m.path(binaryFile))
+				}
 			})
 		}
 	})
@@ -852,10 +900,10 @@ func TestTheLaunchAgentRunsTheInstalledBinaryInTheChosenRole(t *testing.T) {
 				m.settings["LANHOP_ROLE"] = role
 				m.settings["LANHOP_YES"] = "1"
 				output := m.mustRun()
-				if got, want := m.read(agentFile), fmt.Sprintf(agentOfTheService, m.path(binaryFile), role, m.path(agentLogFile)); got != want {
+				if got, want := m.read(agentFile), fmt.Sprintf(agentOfTheService, m.inRoot(appProgram), role, m.path(agentLogFile), appAssociation); got != want {
 					t.Errorf("launch agent:\n%s\nwant:\n%s", got, want)
 				}
-				expectMention(t, output, "System Settings > Privacy & Security > Accessibility", "type "+m.path(binaryFile))
+				expectMention(t, output, "System Settings > Privacy & Security > Accessibility", "the program to allow is the lanhop app", "Choose lanhop in "+m.inRoot("Applications")+" and click Open")
 			})
 		}
 	})
@@ -1208,7 +1256,12 @@ func TestADirectoryAServiceFileCannotNameGetsTheBinaryAndNoService(t *testing.T)
 		for _, system := range []string{"Linux", "Darwin"} {
 			for _, directory := range []string{`R&D`, `a"b`, `a\b`, `a$b`, `50%`, `a<b`, `a>b`} {
 				t.Run(system+" in "+directory, func(t *testing.T) {
-					m := newMachine(t, shell, system, "x86_64", newReleases(t))
+					published := newReleases(t)
+					if system == "Darwin" {
+						published.withoutTheApp = true
+						published.publish(latestRelease, "1.0.0")
+					}
+					m := newMachine(t, shell, system, "x86_64", published)
 					m.settings["LANHOP_INSTALL_DIR"] = m.path(directory)
 					m.settings["LANHOP_ROLE"] = "share"
 					m.settings["LANHOP_YES"] = "1"
@@ -1263,6 +1316,9 @@ func TestRunningItAgainUpgradesAndLeavesTheSameFiles(t *testing.T) {
 				expectSame(t, "files in the home directory", m.files(), twice.files)
 				if again := m.read(twice.service); again != service {
 					t.Errorf("the service file changed:\n%s\nwas:\n%s", again, service)
+				}
+				if twice.system == "Darwin" {
+					expectSame(t, "entries in Applications", entriesOf(t, m.inRoot("Applications")), []string{"lanhop.app"})
 				}
 			})
 		}
@@ -1334,7 +1390,7 @@ func TestUninstallRemovesWhatWasInstalledAndKeepsTheConfiguration(t *testing.T) 
 			kept:     macPeersFile,
 			commands: []string{stopTheAgent},
 			files:    []string{macPeersFile},
-			says:     []string{"are kept in {home}/Library/Application Support/lanhop\n", "remove lanhop from System Settings > Privacy & Security > Accessibility"},
+			says:     []string{"Removed {root}/Applications/lanhop.app\n", "are kept in {home}/Library/Application Support/lanhop\n", "remove lanhop from System Settings > Privacy & Security > Accessibility"},
 		},
 	}
 	inEveryShell(t, func(t *testing.T, shell string) {
@@ -1360,6 +1416,7 @@ func TestUninstallRemovesWhatWasInstalledAndKeepsTheConfiguration(t *testing.T) 
 				expectSame(t, "system commands", commandsIn(output), m.named(removal.commands...))
 				expectSame(t, "files in the home directory", m.files(), removal.files)
 				expectMention(t, output, m.named(removal.says...)...)
+				expectSame(t, "entries in Applications", entriesOf(t, m.inRoot("Applications")), []string{})
 			})
 		}
 	})
@@ -1386,5 +1443,94 @@ func TestHelpNamesEveryOptionAndVariable(t *testing.T) {
 		output := m.mustRun("--help")
 		expectMention(t, output, "--uninstall", "LANHOP_VERSION", "LANHOP_INSTALL_DIR", "LANHOP_ROLE", "LANHOP_YES")
 		expectSame(t, "files in the home directory", m.files(), []string{})
+	})
+}
+
+func entriesOf(t *testing.T, directory string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func TestTheAppGoesToTheApplicationsOfTheHomeWhenTheSystemOnesCannotBeWritten(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		if err := os.Remove(m.inRoot("Applications")); err != nil {
+			t.Fatal(err)
+		}
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "files in the home directory", m.files(), []string{binaryFile, appDirectory + "/Contents/Info.plist", appProgram, agentFile})
+		if target := m.linkTarget(binaryFile); target != m.path(appProgram) {
+			t.Errorf("%s links to %s, want %s", binaryFile, target, m.path(appProgram))
+		}
+		if !strings.Contains(m.read(agentFile), "<string>"+m.path(appProgram)+"</string>") {
+			t.Errorf("the launch agent does not run the app in the home directory:\n%s", m.read(agentFile))
+		}
+		expectMention(t, output, "Choose lanhop in "+m.path("Applications")+" and click Open")
+
+		m.mustRun("--uninstall")
+		expectSame(t, "files in the home directory after uninstall", m.files(), []string{})
+	})
+}
+
+func TestAProgramOfAnEarlierInstallBecomesALinkToTheAppAndItsOldPermissionsAreNamed(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		writeFile(t, m.path(binaryFile), []byte("#!/bin/sh\necho 'lanhop v0.1.0'\n"), 0o755)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		if target := m.linkTarget(binaryFile); target != m.inRoot(appProgram) {
+			t.Errorf("%s links to %s, want %s", binaryFile, target, m.inRoot(appProgram))
+		}
+		expectMention(t, output, m.path(binaryFile)+" now runs the lanhop app", `"a.out"`, "remove it with\nthe - button")
+
+		again := m.mustRun()
+		if strings.Contains(again, "now runs the lanhop app") {
+			t.Errorf("the second run talks about an earlier program again:\n%s", again)
+		}
+	})
+}
+
+func TestAReleaseWithoutTheAppInstallsTheBareProgramOnAMac(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		published.withoutTheApp = true
+		published.publish("download/v0.1.0", "0.1.0")
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.settings["LANHOP_VERSION"] = "v0.1.0"
+		m.settings["LANHOP_ROLE"] = "share"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		if got, want := m.installedVersion(), "lanhop 0.1.0 darwin-arm64"; got != want {
+			t.Errorf("installed %q, want %q", got, want)
+		}
+		expectSame(t, "files in the home directory", m.files(), []string{binaryFile, agentFile})
+		expectSame(t, "entries in Applications", entriesOf(t, m.inRoot("Applications")), []string{})
+		if got, want := m.read(agentFile), fmt.Sprintf(agentOfTheService, m.path(binaryFile), "share", m.path(agentLogFile), ""); got != want {
+			t.Errorf("launch agent:\n%s\nwant:\n%s", got, want)
+		}
+		expectMention(t, output, "Installed lanhop 0.1.0 darwin-arm64 in "+m.path(binaryFile), "type "+m.path(binaryFile))
+	})
+}
+
+func TestUninstallLeavesALanhopAppThatIsNotThisOne(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		other := appDirectory + "/Contents/Info.plist"
+		writeFile(t, m.inRoot(other), []byte("<plist><dict><key>CFBundleIdentifier</key><string>org.example.lanhop</string></dict></plist>\n"), 0o644)
+		m.mustRun("--uninstall")
+		if _, err := os.Stat(m.inRoot(other)); err != nil {
+			t.Errorf("uninstall removed a lanhop.app that is not this one: %v", err)
+		}
 	})
 }
