@@ -58,14 +58,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
+	return exitCodeFor(dispatch(args[0], args[1:], stdin, stdout), stderr)
+}
+
+func exitCodeFor(err error, stderr io.Writer) int {
 	var misuse usageError
-	err := dispatch(args[0], args[1:], stdin, stdout)
 	switch {
 	case err == nil:
 		return 0
 	case errors.As(err, &misuse):
 		fmt.Fprintf(stderr, "lanhop: %s\n\n%s", misuse, usage)
 		return 2
+	case errors.Is(err, errAskAgainAfterARestart):
+		return 1
 	default:
 		fmt.Fprintln(stderr, "lanhop:", err)
 		return 1

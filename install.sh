@@ -19,6 +19,7 @@ check_limit=600
 central_wait=60
 blocked_patience=15
 stopped_patience=25
+accessibility_restart=15
 start_wait=10
 service_started=no
 showing=no
@@ -549,12 +550,14 @@ macOS lets a program read and control the keyboard and mouse only after you allo
 under Accessibility. Started at login, the program to allow is the lanhop app, not the
 terminal. In System Settings > Privacy & Security > Accessibility:
 
-  1. Click the + button under the list. macOS asks for your password or Touch ID.
-  2. $(how_to_choose_the_app)
-  3. Make sure the switch next to lanhop is on.
+  1. If the list already has a lanhop or an a.out, select it and remove it with the
+     - button. Switching it on again is not enough: macOS ties the permission to the
+     exact program it approved, and this lanhop is a new one.
+  2. Click the + button under the list. macOS asks for your password or Touch ID.
+  3. $(how_to_choose_the_app)
+  4. Make sure the switch next to lanhop is on.
 
-If lanhop is already in the list from an earlier install, select it, remove it with the
-- button and add it again: macOS ties the permission to the exact program it approved.
+$(how_lanhop_notices_the_permission)
 $guides_url/setup-macos.md says more.
 
 EOF
@@ -583,6 +586,10 @@ EOF
 
 stop_agent() {
   system launchctl bootout "gui/$user_id/$agent_label"
+}
+
+restart_agent() {
+  system launchctl kickstart -k "gui/$user_id/$agent_label" 2>/dev/null || true
 }
 
 start_agent() {
@@ -619,7 +626,7 @@ EOF
     fi
   fi
   stop_agent 2>/dev/null || true
-  if start_agent; then
+  if start_agent 2>/dev/null || { sleep 3 && start_agent; }; then
     service_started=yes
     say "lanhop is running, and it starts every time you log in. It writes what it does in $log_path"
   else
@@ -711,6 +718,18 @@ EOF
   ask
   if [ -n "$reply" ]; then
     outliving_ctrl_c lanhop_as_the_service_runs_it pair "$reply" <&3 || problem "the machines are not paired. Run \"lanhop pair $reply\" again when both are ready."
+  fi
+}
+
+asks_again_by_itself() {
+  grep -q 'to ask macOS again for the Accessibility permission' "$binary" 2>/dev/null
+}
+
+how_lanhop_notices_the_permission() {
+  if asks_again_by_itself; then
+    printf 'lanhop notices the permission by itself within about 20 seconds.'
+  else
+    printf 'If lanhop does not notice the permission, restart it with:\n  launchctl kickstart -k gui/%s/%s' "$(id -u)" "$agent_label"
   fi
 }
 
@@ -809,6 +828,11 @@ check_service() {
   previous=
   begun=$(seconds_now)
   since=$begun
+  last_restart=$begun
+  restarts_itself=yes
+  if [ "$os" = darwin ] && ! asks_again_by_itself; then
+    restarts_itself=no
+  fi
   while :; do
     line=$(current_status)
     state=${line%%:*}
@@ -824,7 +848,13 @@ check_service() {
         say "$line"
         return 0
         ;;
-      accessibility) ask_for_accessibility ;;
+      accessibility)
+        ask_for_accessibility
+        if [ "$restarts_itself" = no ] && [ $((now - last_restart)) -ge "$accessibility_restart" ]; then
+          last_restart=$now
+          restart_agent
+        fi
+        ;;
       connecting) warn_about_the_local_network_alert ;;
       blocked)
         warn_about_the_local_network_alert
