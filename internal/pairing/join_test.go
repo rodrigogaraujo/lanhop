@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/porttest"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
@@ -534,7 +535,7 @@ func TestJoinLooksInItsOwnStoreBeforeConnecting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJoinCode: %v", err)
 	}
-	nobody := closedAddress(t)
+	nobody := porttest.RefusingAddress(t)
 
 	joinedBefore := newMachine(t, "office")
 	stored := trust.Peer{Name: "imac", Fingerprint: central.identity.Fingerprint, Address: loopbackSharing}
@@ -564,15 +565,4 @@ func TestJoinLooksInItsOwnStoreBeforeConnecting(t *testing.T) {
 	if got := joinsWith(t, formerCentral, nobody, code); !errors.Is(got.err, ErrNotWaiting) {
 		t.Errorf("join on a former central with nothing listening = %v, want ErrNotWaiting", got.err)
 	}
-}
-
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	address := listener.Addr().String()
-	listener.Close()
-	return address
 }

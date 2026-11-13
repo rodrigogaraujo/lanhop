@@ -18,6 +18,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
+	"github.com/rodrigogaraujo/lanhop/internal/porttest"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
@@ -412,7 +413,7 @@ func TestJoinWithNothingListeningLooksAtItsOwnStoreFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewJoinCode: %v", err)
 	}
-	nobody := closedLoopbackAddress(t)
+	nobody := porttest.RefusingAddress(t)
 
 	var usage usageError
 	if err := join([]string{nobody, "not-a-code"}, &screen{}); !errors.As(err, &usage) {
@@ -477,15 +478,4 @@ func expectStoredCentral(t *testing.T, directory string, central joiningMachine)
 	if got := trustedIn(t, directory).Peers(); !slices.Equal(got, want) {
 		t.Errorf("the new machine trusts %+v, want %+v", got, want)
 	}
-}
-
-func closedLoopbackAddress(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	address := listener.Addr().String()
-	listener.Close()
-	return address
 }
