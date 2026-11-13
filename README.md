@@ -88,7 +88,7 @@ Each release also has the archives themselves, one per system and architecture, 
 - [ ] Automatic discovery on the local network
 - [ ] Clipboard sharing
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
-  - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 fixes
+  - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 is meant to fix
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
   - [ ] Homebrew formula
 
