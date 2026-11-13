@@ -39,7 +39,7 @@ I select a file in the file manager of one machine and copy it. I move to anothe
 
 I start dragging a file on one screen, push it through the edge toward the machine next to it, and drop it in a folder or a window there.
 
-**Why this priority**: it is the gesture the owner asked for, but it needs more of each system than copy and paste does, and on some desktops it cannot work (see the plan).
+**Why this priority**: it is the gesture the owner asked for, but it needs more of each system than copy and paste does, and it cannot reach a Linux machine in a Wayland session (see the plan).
 
 **Independent test**: drag a file from the desktop of one machine across the edge, and drop it on the desktop of the next one.
 
@@ -48,7 +48,7 @@ I start dragging a file on one screen, push it through the edge toward the machi
 1. **Given** I drag a file on one machine, **When** I push it through an edge that has a neighbour, **Then** the cursor crosses with the file still held, and dropping it in a folder of the neighbour, or in a window that takes dropped files, puts the file there once it has arrived.
 2. **Given** I hold the mouse button to move a window or select text, **When** I push against an edge, **Then** nothing crosses, as spec 002 says.
 3. **Given** I drag a file across and change my mind, **When** I drag it back across the edge or press Escape, **Then** nothing is dropped and nothing is left behind.
-4. **Given** the neighbour cannot take a dragged file, **When** I push a dragged file against that edge, **Then** nothing crosses, and lanhop's log says why.
+4. **Given** the neighbour cannot take a dragged file, because it is a Linux machine in a Wayland session or because file sharing is off there, **When** I push a dragged file against that edge, **Then** nothing crosses, and the central says in its log and in `lanhop status`, once per run of lanhop and per machine, that dragging cannot reach that machine and that copying and pasting the file works instead.
 5. **Given** I drag a file to the Trash or to a sidebar near an edge, **When** the cursor touches that edge on the way, **Then** nothing crosses. A file drag crosses only after a longer push than the cursor alone, never in a corner, and never through the edge where a dock sits.
 
 ### Story 3 - Keep control of what arrives (Priority: P2)
@@ -92,7 +92,7 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 - **FR-007**: Machines on older versions MUST keep working with keyboard, mouse and text, and MUST NOT be sent files.
 - **FR-008**: A dragged file MUST cross an edge only while the system reports a drag of files. Holding a button for anything else MUST keep blocking crossings (FR-008 of spec 002).
 - **FR-009**: Files left in the arrival folder MUST be removed after a day.
-- **FR-010**: On each system, lanhop MUST say in its log, once, when it cannot share files there and why.
+- **FR-010**: On each system, lanhop MUST say in its log, once, when it cannot share files there and why. When a dragged file cannot reach a neighbour, the central MUST also say so in `lanhop status`. lanhop shows nothing on the screen for it.
 - **FR-011**: A file path that arrives MUST stay inside the arrival folder: lanhop MUST refuse absolute paths, `..` and links, and MUST NOT follow links when it creates files.
 - **FR-012**: When a copy offers both files and text, the files MUST win. A machine that takes text but not files MUST NOT get the names or paths of the files as text.
 - **FR-013**: lanhop MUST keep the arrival folder under a total size it allows itself, removing the oldest files first, and MUST NOT start a transfer that does not fit.
@@ -100,7 +100,7 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 
 ### Out of scope for this feature
 
-- Dragging between machines where the plan finds it cannot work. From or to a Wayland application on Linux is the likely case, deduced and to be measured in task 8.
+- Dragging between machines where the plan finds it cannot work, apart from the notice of story 2 scenario 4. From or to a Wayland application on Linux is the likely case, deduced and to be measured in task 8.
 - Syncing folders, or keeping a copy up to date when the original changes.
 - Images and other content copied as data rather than as a file.
 - Windows. It is spec 003.
@@ -110,13 +110,17 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 - **SC-001**: A file of 10 MiB copied on one machine can be pasted on the next one within 2 seconds of focus arriving, on a wired network.
 - **SC-002**: While 100 MiB travel over a link of 100 Mbit/s, no key or mouse movement arrives more than 50 ms later than it would without them.
 - **SC-003**: Stage A works from a Mac to a Mac, from a Mac to Linux and from Linux to a Mac.
-- **SC-004**: Stage B works at least from a Mac to a Mac. The plan says which other directions work.
+- **SC-004**: Stage B works at the desk from a Mac to a Mac, from a Mac to Linux and from Linux to a Mac, with Linux in an X11 session. From Linux to Linux it passes in containers, between lanhop and small test programs, because the desk has one Linux machine.
 
 ## Assumptions
 
 - The machines are paired and connected, and text copy and paste of spec 005 works between them.
 - The person uses Finder on macOS and Nautilus or another file manager that follows the GNOME conventions on Linux.
 
+## Decisions taken
+
+1. **Scope of the first release.** The owner asked for every direction between the systems supported today (translated: "no, everything"). The release that brings text copy and paste also brings stage A and stage B from a Mac to a Mac, from a Mac to Linux, from Linux to a Mac and from Linux to Linux. Windows is a later release ([spec 003](README.md)).
+
 ## Open questions
 
-1. **Scope of the first release.** Which directions of dragging must the next release have? The plan proposes Mac to Mac first, because the desk is mostly Macs and the Linux machine runs X11.
+1. **A notice on the screen.** When a dragged file cannot reach a neighbour, lanhop says so in its log and in `lanhop status` only. Should it also show a notice on the screen? Nothing visible is added without the owner's OK.
