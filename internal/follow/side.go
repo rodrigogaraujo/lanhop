@@ -80,8 +80,13 @@ func (s *Side) Connected(conn receiver.Connection) func(event.Event) {
 	s.mutex.Lock()
 	s.conn = conn
 	s.mutex.Unlock()
-	conn.Send(event.Features(s.config.Features.Value()), event.Version(s.config.Running.Value()))
+	s.announce(conn)
+	conn.Send(event.Version(s.config.Running.Value()))
 	return s.heard
+}
+
+func (s *Side) announce(conn receiver.Connection) {
+	conn.Send(event.Features(s.config.Features.Value()))
 }
 
 func (s *Side) FocusArrives() {
@@ -124,9 +129,9 @@ func (s *Side) followTheSwitch() {
 	if !changed {
 		return
 	}
-	value := s.config.Features.Turn(features.Follows, now)
+	s.config.Features.Turn(features.Follows, now)
 	if conn != nil {
-		conn.Send(event.Features(value))
+		s.announce(conn)
 	}
 }
 
