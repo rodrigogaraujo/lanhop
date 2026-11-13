@@ -20,13 +20,13 @@ type centralNews struct {
 
 type sideMachine struct {
 	takes   bool
+	stale   int
 	answers []*answerDue
 }
 
 type answerDue struct {
-	timer   *time.Timer
-	gaveUp  bool
-	stopped bool
+	timer  *time.Timer
+	gaveUp bool
 }
 
 type Central struct {
@@ -242,7 +242,11 @@ func (c *Central) moveFocus(toASide bool, l *link) {
 
 func (c *Central) awaitTheAnswerOf(l *link) {
 	machine := c.sides[l]
-	if machine == nil || !machine.takes || !c.on {
+	if machine == nil {
+		return
+	}
+	if !machine.takes || !c.on {
+		machine.stale++
 		return
 	}
 	due := &answerDue{}
@@ -254,7 +258,7 @@ func (c *Central) awaitTheAnswerOf(l *link) {
 
 func (c *Central) noAnswerIn(l *link, due *answerDue) {
 	machine := c.sides[l]
-	if machine == nil || due.gaveUp || due.stopped || !slices.Contains(machine.answers, due) {
+	if machine == nil || due.gaveUp || !slices.Contains(machine.answers, due) {
 		return
 	}
 	due.gaveUp = true
@@ -263,12 +267,26 @@ func (c *Central) noAnswerIn(l *link, due *answerDue) {
 
 func (c *Central) answerWasOwed(l *link) bool {
 	machine := c.sides[l]
-	if machine == nil || len(machine.answers) == 0 {
+	switch {
+	case machine == nil:
 		return false
+	case machine.stale > 0:
+		machine.stale--
+		return true
+	case len(machine.answers) > 0:
+		machine.answers[0].timer.Stop()
+		machine.answers = machine.answers[1:]
+		return true
 	}
-	machine.answers[0].timer.Stop()
-	machine.answers = machine.answers[1:]
-	return true
+	return false
+}
+
+func stopWaitingFor(machine *sideMachine) {
+	for _, due := range machine.answers {
+		due.timer.Stop()
+	}
+	machine.stale += len(machine.answers)
+	machine.answers = nil
 }
 
 func (c *Central) forgetAnswersOf(l *link) {
@@ -289,7 +307,7 @@ func (c *Central) says(l *link, takes bool) {
 	}
 	machine.takes = takes
 	if !takes {
-		c.forgetAnswersOf(l)
+		stopWaitingFor(machine)
 		l.stopCopies()
 	}
 	c.do(c.desk.Says(l, onlyText(takes)))
@@ -334,10 +352,7 @@ func (c *Central) switchTo(on bool) {
 	actions := c.desk.Switch(onlyText(on))
 	if !on {
 		for l, machine := range c.sides {
-			for _, due := range machine.answers {
-				due.timer.Stop()
-				due.stopped = true
-			}
+			stopWaitingFor(machine)
 			if l.stopCopies() {
 				c.desk.SendStopped(l)
 			}

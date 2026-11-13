@@ -614,12 +614,12 @@ func TestASideMachineUnderACentralWithoutFilesNeverMovesFiles(t *testing.T) {
 	expect(t, "connect", s.Connected(), toCentral{Do: Announce, Takes: Text | Files})
 	s.FocusArrives()
 
-	expect(t, "focus leaves before the central says anything", s.FocusLeaves())
+	expect(t, "focus leaves before the central says anything", s.FocusLeaves(), toCentral{Do: Unchanged})
 	sent, err := s.ReadGaveFiles(report, nil)
 	if err != nil {
 		t.Fatalf("ReadGaveFiles: %v", err)
 	}
-	expect(t, "a file copy", sent)
+	expect(t, "a file copy", sent, toCentral{Do: Unchanged})
 	s.FocusArrives()
 	expect(t, "the central asks for files", s.CentralWantsFiles(1), stopped(1))
 	expect(t, "the central sends files", s.CentralSendsFiles(2), stopped(2))

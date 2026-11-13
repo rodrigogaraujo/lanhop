@@ -167,11 +167,8 @@ func (d *Desk[M]) Says(side M, takes Kinds) []Action[M] {
 	if d.hasCopy && !takes.Has(d.last.kind()) {
 		machine.holds = 0
 	}
-	if owing := d.answers[side]; owing != nil && d.shares(machine) == 0 {
-		owing.due, owing.late = 0, 0
-	}
-	if takes == 0 {
-		delete(d.answers, side)
+	if d.shares(machine) == 0 {
+		d.stopWaitingFor(side)
 	}
 	if !takes.Has(Files) {
 		d.forgetFilesCopiedOn(side)
@@ -196,10 +193,9 @@ func (d *Desk[M]) Switch(on Kinds) []Action[M] {
 		d.staleReads += d.readsDue
 		d.readsDue = 0
 	}
-	for side, owing := range d.answers {
-		if machine, connected := d.sides[side]; !connected || d.shares(machine) == 0 {
-			owing.stale += owing.due + owing.late
-			owing.due, owing.late = 0, 0
+	for side, machine := range d.sides {
+		if d.shares(machine) == 0 {
+			d.stopWaitingFor(side)
 		}
 	}
 	actions := make([]Action[M], 0, len(d.connected)+1)
@@ -361,16 +357,29 @@ func (d *Desk[M]) takingPart() bool {
 }
 
 func (d *Desk[M]) awaitTheSideThatLostFocus() {
-	if !d.focusOnSide || d.on == 0 {
+	if !d.focusOnSide {
 		return
 	}
-	if machine, connected := d.sides[d.focused]; connected && d.shares(machine) != 0 {
-		owing := d.answers[d.focused]
-		if owing == nil {
-			owing = &owed{}
-			d.answers[d.focused] = owing
-		}
+	machine, connected := d.sides[d.focused]
+	if !connected {
+		return
+	}
+	owing := d.answers[d.focused]
+	if owing == nil {
+		owing = &owed{}
+		d.answers[d.focused] = owing
+	}
+	if d.shares(machine) == 0 {
+		owing.stale++
+	} else {
 		owing.due++
+	}
+}
+
+func (d *Desk[M]) stopWaitingFor(side M) {
+	if owing := d.answers[side]; owing != nil {
+		owing.stale += owing.due + owing.late
+		owing.due, owing.late = 0, 0
 	}
 }
 
@@ -547,16 +556,13 @@ func (s *Side) FocusArrives() {
 func (s *Side) FocusLeaves() []Action[ToCentral] {
 	s.focused = false
 	actions := s.stopReceiving()
-	if s.sharing() != 0 {
-		actions = append(actions, Action[ToCentral]{Do: Read})
+	if s.sharing() == 0 {
+		return append(actions, Action[ToCentral]{Do: Unchanged})
 	}
-	return actions
+	return append(actions, Action[ToCentral]{Do: Read})
 }
 
 func (s *Side) ReadUnchanged() []Action[ToCentral] {
-	if s.sharing() == 0 {
-		return nil
-	}
 	return []Action[ToCentral]{{Do: Unchanged}}
 }
 
@@ -615,7 +621,7 @@ func (s *Side) TransferEnded(transfer int) {
 
 func (s *Side) answer(kind Kinds, answer Action[ToCentral], readErr error) ([]Action[ToCentral], error) {
 	if s.sharing() == 0 {
-		return nil, nil
+		return []Action[ToCentral]{{Do: Unchanged}}, nil
 	}
 	if readErr == nil && !s.sharing().Has(kind) {
 		readErr = notShared(kind)

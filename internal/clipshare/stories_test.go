@@ -123,7 +123,7 @@ func TestASideMachineOnTheOldVersionKeepsGettingInputAndNeverGetsACopy(t *testin
 	}
 }
 
-func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndAnswersNothing(t *testing.T) {
+func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndSaysOnlyThatNothingChanged(t *testing.T) {
 	central, side := newIdentity(t), newIdentity(t)
 	listener, err := transport.Listen("127.0.0.1:0", transportFor(central), pairedMachines{{Name: "laptop", Fingerprint: side.Fingerprint}})
 	if err != nil {
@@ -155,6 +155,10 @@ func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndAnswersNothing(t
 	if err != nil || first != event.Features(event.FeatureClipboard) {
 		t.Fatalf("the side machine first sent %+v, %v, want Features with bit 0", first, err)
 	}
+	answer, err := conn.Receive()
+	if err != nil || answer != event.ClipboardUnchanged() {
+		t.Fatalf("the side machine answered the leave with %+v, %v, want unchanged", answer, err)
+	}
 	quiet := make(chan event.Event, 1)
 	go func() {
 		if next, err := conn.Receive(); err == nil {
@@ -163,7 +167,7 @@ func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndAnswersNothing(t
 	}()
 	select {
 	case next := <-quiet:
-		t.Errorf("the side machine sent %+v after the leave, want nothing", next)
+		t.Errorf("the side machine sent %+v after its answer, want nothing more", next)
 	case <-time.After(settling):
 	}
 	if reads := board.timesRead(); reads != 0 {
