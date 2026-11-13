@@ -591,12 +591,14 @@ func (b *Clipboard) continueTransfer(requestor, property uint32) {
 	current := b.transfers[index]
 	part := current.data[:min(b.chunk, len(current.data))]
 	current.data = current.data[len(part):]
+	lastToThisWindow := false
 	if len(part) == 0 {
 		b.transfers = slices.Delete(b.transfers, index, index+1)
+		lastToThisWindow = !slices.ContainsFunc(b.transfers, func(t *transfer) bool { return t.requestor == requestor })
 	}
 	b.state.Unlock()
 	b.changeProperty(requestor, property, current.kind, 8, part)
-	if len(part) == 0 {
+	if lastToThisWindow {
 		b.c.send(newRequest(opChangeWindowAttributes, 0).u32(requestor).u32(attributeEventMask).u32(0).done())
 	}
 }
