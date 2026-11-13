@@ -3,6 +3,7 @@ package receiver
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"slices"
 	"sync"
@@ -251,14 +252,88 @@ func connectedDesk(t *testing.T) (*desk, *transport.Listener, *transport.Conn) {
 	return d, listener, accept(t, listener)
 }
 
-func addressNobodyListensOn(t *testing.T) string {
+type heldAddress struct {
+	listener net.Listener
+	mutex    sync.Mutex
+	sharer   string
+	piped    []net.Conn
+}
+
+func holdAddress(t *testing.T) *heldAddress {
 	t.Helper()
 	listener, err := net.Listen("tcp", loopback)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer listener.Close()
-	return listener.Addr().String()
+	held := &heldAddress{listener: listener}
+	t.Cleanup(held.close)
+	go held.serve()
+	return held
+}
+
+func (h *heldAddress) String() string {
+	return h.listener.Addr().String()
+}
+
+func (h *heldAddress) passTo(sharer *transport.Listener) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.sharer = sharer.Addr().String()
+}
+
+func (h *heldAddress) refuse() {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.sharer = ""
+	for _, conn := range h.piped {
+		conn.Close()
+	}
+	h.piped = nil
+}
+
+func (h *heldAddress) close() {
+	h.listener.Close()
+	h.refuse()
+}
+
+func (h *heldAddress) serve() {
+	for {
+		receiver, err := h.listener.Accept()
+		if err != nil {
+			return
+		}
+		go h.pass(receiver)
+	}
+}
+
+func (h *heldAddress) pass(receiver net.Conn) {
+	sharer, reached := h.reachTheSharer(receiver)
+	if !reached {
+		receiver.Close()
+		return
+	}
+	go pipe(sharer, receiver)
+	pipe(receiver, sharer)
+}
+
+func (h *heldAddress) reachTheSharer(receiver net.Conn) (net.Conn, bool) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	if h.sharer == "" {
+		return nil, false
+	}
+	sharer, err := net.Dial("tcp", h.sharer)
+	if err != nil {
+		return nil, false
+	}
+	h.piped = append(h.piped, receiver, sharer)
+	return sharer, true
+}
+
+func pipe(to, from net.Conn) {
+	io.Copy(to, from)
+	to.Close()
+	from.Close()
 }
 
 func TestInputIsReplayedOnlyBetweenEnterAndLeave(t *testing.T) {
@@ -458,15 +533,22 @@ func TestInputSyncedOnLeaveIsNotSyncedAgainWhenTheConnectionIsLost(t *testing.T)
 }
 
 func TestTheReceiverReconnectsWhenTheSharerComesBackAndKeepsItsReplay(t *testing.T) {
-	d, listener, sharerSide := connectedDesk(t)
-	address := listener.Addr().String()
+	d := newDesk(t)
+	address := holdAddress(t)
+	listener := d.sharerListens(t, loopback)
+	address.passTo(listener)
+	d.receiverRuns(t, address.String())
+	sharerSide := accept(t, listener)
 	send(t, sharerSide, event.Enter(), event.Key(event.KeyA, pressed), event.Sync())
 	d.replay.expect(t, event.Key(event.KeyA, pressed), event.Sync())
 
+	address.refuse()
 	listener.Close()
 	sharerSide.Close()
 	lost := d.failuresAfter(t, 2)
-	sharerSide = accept(t, d.sharerListens(t, address))
+	listener = d.sharerListens(t, loopback)
+	address.passTo(listener)
+	sharerSide = accept(t, listener)
 	send(t, sharerSide,
 		event.Key(keyB, pressed), event.Sync(),
 		event.Enter(),
@@ -515,7 +597,7 @@ func TestStoppingIsPromptReleasesWhatIsHeldAndClosesTheReplay(t *testing.T) {
 
 func TestStoppingDoesNotWaitForTheReconnectDelay(t *testing.T) {
 	d := newDesk(t)
-	config := d.config(addressNobodyListensOn(t))
+	config := d.config(holdAddress(t).String())
 	d.start(t, func(ctx context.Context) error { return Run(ctx, config) })
 	d.failuresAfter(t, 1)
 
@@ -529,7 +611,7 @@ func TestStoppingDoesNotWaitForTheReconnectDelay(t *testing.T) {
 
 func TestAnUnreachableSharerIsRetriedWithPausesThatGrow(t *testing.T) {
 	d := newDesk(t)
-	d.receiverRuns(t, addressNobodyListensOn(t))
+	d.receiverRuns(t, holdAddress(t).String())
 
 	attempts := d.failuresAfter(t, 5)
 
@@ -553,10 +635,11 @@ func TestTheRetryDelayStartsOverAfterAConnection(t *testing.T) {
 	growing := retryDelays{first: 10 * time.Millisecond, longest: time.Minute}
 	delayWithoutStartingOver := 640 * time.Millisecond
 	d := newDesk(t)
-	address := addressNobodyListensOn(t)
-	d.receiverRunsRetrying(t, address, growing)
+	address := holdAddress(t)
+	d.receiverRunsRetrying(t, address.String(), growing)
 	d.failuresAfter(t, 6)
-	listener := d.sharerListens(t, address)
+	listener := d.sharerListens(t, loopback)
+	address.passTo(listener)
 
 	accept(t, listener).Close()
 	lost := time.Now()

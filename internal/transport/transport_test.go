@@ -49,7 +49,17 @@ func configFor(machine *identity.Identity) Config {
 
 type rejections chan error
 
-func (r rejections) record(_ net.Addr, reason error) { r <- reason }
+func (r rejections) record(_ net.Addr, reason error) {
+	if refusedByTheDialer(reason) {
+		return
+	}
+	r <- reason
+}
+
+func refusedByTheDialer(reason error) bool {
+	var refused *net.OpError
+	return errors.As(reason, &refused) && refused.Op == "remote error"
+}
 
 func (r rejections) next(t *testing.T) error {
 	t.Helper()
