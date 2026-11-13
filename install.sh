@@ -46,6 +46,10 @@ Environment:
   LANHOP_ROLE=share|receive   share when the keyboard and mouse are plugged into this
                               machine, receive when another machine controls this one
   LANHOP_YES=1                agree to every step and ask nothing
+  LANHOP_JOIN="ADDRESS CODE"  join the machine with the keyboard as a side machine, with
+                              the address and the code that "lanhop add" printed there.
+                              It agrees to every step, and still waits for the
+                              permissions of macOS
 
 To uninstall from another directory than ~/.local/bin, give LANHOP_INSTALL_DIR again.
 EOF
@@ -122,7 +126,7 @@ is_no() {
 }
 
 agrees() {
-  if [ "${LANHOP_YES:-}" = 1 ]; then
+  if [ "${LANHOP_YES:-}" = 1 ] || [ -n "${LANHOP_JOIN:-}" ]; then
     return 0
   fi
   if [ "$someone_answers" != yes ]; then
@@ -198,6 +202,29 @@ check_role() {
     '' | share | receive) ;;
     *) fail "LANHOP_ROLE must be share or receive, and it is $LANHOP_ROLE" ;;
   esac
+  if [ -z "${LANHOP_JOIN:-}" ]; then
+    return 0
+  fi
+  if [ "${LANHOP_ROLE:-receive}" != receive ]; then
+    fail "LANHOP_JOIN makes this machine a side machine, so it cannot come with LANHOP_ROLE=$LANHOP_ROLE"
+  fi
+  case $LANHOP_JOIN in
+    *[!A-Za-z0-9.:\ -]* | *' '*' '* | ' '* | *' ') fail "LANHOP_JOIN must hold the address and the code that lanhop add printed, and it is $LANHOP_JOIN" ;;
+    *' '*) ;;
+    *) fail "LANHOP_JOIN must hold the address and the code that lanhop add printed, and it is $LANHOP_JOIN" ;;
+  esac
+}
+
+join_central() {
+  if [ -z "${LANHOP_JOIN:-}" ]; then
+    return 0
+  fi
+  central_address=${LANHOP_JOIN%% *}
+  join_code=${LANHOP_JOIN#* }
+  say ""
+  say "Joining the machine with the keyboard at $central_address."
+  lanhop_as_the_service_runs_it join "$central_address" "$join_code" ||
+    fail "this machine did not join, so nothing that starts lanhop at login was written. Run lanhop add again on the machine with the keyboard, and type the new line here."
 }
 
 download() {
@@ -290,12 +317,49 @@ install_app() {
   mv -f "$command_link.new" "$command_link"
 }
 
+shell_profile() {
+  login_shell=${SHELL:-}
+  case ${login_shell##*/} in
+    zsh) say "${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash)
+      if [ "$os" != darwin ]; then
+        say "$HOME/.bashrc"
+        return 0
+      fi
+      for candidate in .bash_profile .bash_login .profile; do
+        if [ -e "$HOME/$candidate" ]; then
+          say "$HOME/$candidate"
+          return 0
+        fi
+      done
+      say "$HOME/.bash_profile"
+      ;;
+  esac
+}
+
 advise_about_path() {
   case ":$PATH:" in
-    *":$install_directory:"*) ;;
-    *)
-      cat <<EOF
-
+    *":$install_directory:"*) return 0 ;;
+  esac
+  path_line="export PATH=\"$install_directory:\$PATH\""
+  profile=$(shell_profile)
+  case $install_directory in
+    *\"* | *\\* | *\$* | *\`*) profile= ;;
+  esac
+  if [ -n "$profile" ] && [ -f "$profile" ] && grep -qxF "$path_line" "$profile"; then
+    say ""
+    say "$profile puts $install_directory on the PATH already, so a new terminal finds lanhop."
+    return 0
+  fi
+  say ""
+  if [ -n "$profile" ] && agrees "$install_directory is not on your PATH. Add it in $profile?"; then
+    if printf '\n%s\n' "$path_line" 2>/dev/null >>"$profile"; then
+      say "Added $install_directory to the PATH in $profile, so a new terminal finds lanhop. In this one, type the whole path: $command_link"
+      return 0
+    fi
+    problem "could not write in $profile"
+  fi
+  cat <<EOF
 $install_directory is not on your PATH. To run lanhop by its name, add this line
 to the file your shell reads when it starts, such as ~/.profile or ~/.zshrc:
 
@@ -303,12 +367,14 @@ to the file your shell reads when it starts, such as ~/.profile or ~/.zshrc:
 
 Until then, type the whole path: $command_link
 EOF
-      ;;
-  esac
 }
 
 choose_role() {
   role=${LANHOP_ROLE:-}
+  if [ -n "${LANHOP_JOIN:-}" ]; then
+    role=receive
+    return 0
+  fi
   if [ -n "$role" ] || [ "$someone_answers" != yes ]; then
     return 0
   fi
@@ -681,6 +747,9 @@ EOF
 }
 
 explain_pairing() {
+  if [ -n "${LANHOP_JOIN:-}" ]; then
+    return 0
+  fi
   if [ "$role" = share ]; then
     cat <<EOF
 
@@ -914,6 +983,7 @@ install_lanhop() {
     explain_what_is_left
     return 0
   fi
+  join_central
   if [ "$os" = darwin ]; then
     set_up_macos
   else
