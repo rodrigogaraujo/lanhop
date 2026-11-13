@@ -16,3 +16,4 @@ A spec is agreed on before its code is written. To propose a feature, open an is
 | 005 | Clipboard sharing | Not started | |
 | [006](006-packages) | Packages and services (systemd, udev, launchd, Homebrew) | Draft | |
 | [007](007-layout-editor) | A drag-and-drop editor for the layout file | Draft | |
+| [008](008-permissions-checked) | An installer that asks for every permission and checks it | Draft | |

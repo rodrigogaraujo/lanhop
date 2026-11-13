@@ -75,10 +75,51 @@ jobs:
       - name: Check the version is in the binary
         if: ${{ !matrix.runs_here }}
         run: grep -a -q -F "$VERSION" lanhop
+      - name: Put the program in lanhop.app and sign it
+        if: matrix.os == 'darwin'
+        run: |
+          bundle_version=${VERSION#v}
+          bundle_version=${bundle_version%%-*}
+          case $bundle_version in
+            '' | *[!0-9.]*) bundle_version=0.0.0 ;;
+          esac
+          mkdir -p lanhop.app/Contents/MacOS
+          sed "s/@VERSION@/$bundle_version/g" packaging/macos/Info.plist >lanhop.app/Contents/Info.plist
+          plutil -lint lanhop.app/Contents/Info.plist
+          cp lanhop lanhop.app/Contents/MacOS/lanhop
+          codesign --force --sign - --identifier com.github.rodrigogaraujo.lanhop lanhop.app
+          echo "BUNDLE_VERSION=$bundle_version" >>"$GITHUB_ENV"
+      - name: Check the identity of lanhop.app
+        if: matrix.os == 'darwin'
+        env:
+          OLDEST_MACOS: ${{ matrix.oldest_macos }}
+        run: |
+          codesign --verify --strict --verbose=2 lanhop.app
+          codesign --display --verbose=2 lanhop.app 2>signature
+          cat signature
+          grep -Fx "Identifier=com.github.rodrigogaraujo.lanhop" signature
+          grep -E "^Info.plist entries=[1-9]" signature
+          test "$(plutil -extract CFBundleIdentifier raw lanhop.app/Contents/Info.plist)" = com.github.rodrigogaraujo.lanhop
+          test "$(plutil -extract CFBundleShortVersionString raw lanhop.app/Contents/Info.plist)" = "$BUNDLE_VERSION"
+          test "$(plutil -extract LSMinimumSystemVersion raw lanhop.app/Contents/Info.plist)" = "$OLDEST_MACOS"
+          otool -l lanhop.app/Contents/MacOS/lanhop | grep -q LC_UUID
+      - name: Check the version the program in lanhop.app reports
+        if: matrix.os == 'darwin' && matrix.runs_here
+        run: test "$(lanhop.app/Contents/MacOS/lanhop version)" = "lanhop $VERSION"
+      - name: Gather what goes into the archive
+        env:
+          TARGET_OS: ${{ matrix.os }}
+        run: |
+          mkdir out
+          if [ "$TARGET_OS" = darwin ]; then
+            mv lanhop.app out/
+          else
+            mv lanhop out/
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: lanhop-${{ matrix.os }}-${{ matrix.arch }}
-          path: lanhop
+          path: out/
           if-no-files-found: error
 
   package:
@@ -96,13 +137,26 @@ jobs:
           mkdir release
           for build in built/lanhop-*; do
             name=$(basename "$build")
-            chmod 755 "$build/lanhop"
+            if [ -d "$build/lanhop.app" ]; then
+              chmod 755 "$build/lanhop.app/Contents/MacOS/lanhop"
+            else
+              chmod 755 "$build/lanhop"
+            fi
             cp LICENSE README.md "$build/"
             tar -czf "release/$name.tar.gz" --owner=0 --group=0 --numeric-owner -C built "$name"
           done
           cd release
           sha256sum lanhop-*.tar.gz | tee SHA256SUMS
           test "$(wc -l <SHA256SUMS)" -eq 4
+      - name: Check what each archive holds
+        run: |
+          for arch in amd64 arm64; do
+            tar -tzf "release/lanhop-linux-$arch.tar.gz" | grep -Fx "lanhop-linux-$arch/lanhop"
+            tar -tzf "release/lanhop-darwin-$arch.tar.gz" >listing
+            grep -Fx "lanhop-darwin-$arch/lanhop.app/Contents/MacOS/lanhop" listing
+            grep -Fx "lanhop-darwin-$arch/lanhop.app/Contents/Info.plist" listing
+            grep -Fx "lanhop-darwin-$arch/lanhop.app/Contents/_CodeSignature/CodeResources" listing
+          done
       - name: Install from these archives with install.sh
         run: |
           mkdir -p served/latest/download
@@ -117,10 +171,36 @@ jobs:
           path: release/
           if-no-files-found: error
 
+  check-mac-archive:
+    name: Unpack the macOS archive on a Mac and check the app
+    needs: package
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - name: Check the signature and the program after packing
+        run: |
+          for arch in arm64 amd64; do
+            tar -xzf "release/lanhop-darwin-$arch.tar.gz"
+            codesign --verify --strict --verbose=2 "lanhop-darwin-$arch/lanhop.app"
+          done
+          test "$(lanhop-darwin-arm64/lanhop.app/Contents/MacOS/lanhop version)" = "lanhop $VERSION"
+      - name: Install from these archives with install.sh on a Mac
+        if: github.ref_type == 'tag'
+        run: |
+          mkdir -p served/latest/download
+          cp release/* served/latest/download/
+          home=$(mktemp -d)
+          HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" sh install.sh </dev/null
+          test "$("$home/.local/bin/lanhop" version)" = "lanhop $VERSION"
+
   publish:
     name: Publish the release
     if: github.ref_type == 'tag'
-    needs: package
+    needs: [package, check-mac-archive]
     runs-on: ubuntu-latest
     permissions:
       contents: write
