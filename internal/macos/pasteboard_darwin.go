@@ -46,6 +46,8 @@ func (p Pasteboard) Read() (string, error) {
 		return "", clipboard.ErrNotText
 	case C.LANHOP_PASTEBOARD_TOO_LARGE:
 		return "", clipboard.ErrTooLarge
+	case C.LANHOP_PASTEBOARD_EMPTY:
+		return "", clipboard.ErrEmpty
 	}
 	defer C.free(unsafe.Pointer(text))
 	return C.GoStringN(text, C.int(length)), nil
@@ -78,7 +80,36 @@ func (p Pasteboard) cName() *C.char {
 	return C.CString(p.name)
 }
 
+func (p Pasteboard) writeTyped(kind, data string, text *string) error {
+	name := p.cName()
+	defer C.free(unsafe.Pointer(name))
+	cKind := C.CString(kind)
+	defer C.free(unsafe.Pointer(cKind))
+	cData := C.CString(data)
+	defer C.free(unsafe.Pointer(cData))
+	var plain *C.char
+	var plainLength int
+	if text != nil {
+		plain = C.CString(*text)
+		defer C.free(unsafe.Pointer(plain))
+		plainLength = len(*text)
+	}
+	if C.lanhop_pasteboard_write_typed(name, cKind, cData, C.int64_t(len(data)), plain, C.int64_t(plainLength)) == C.LANHOP_PASTEBOARD_REFUSED {
+		return ErrPasteboardRefused
+	}
+	return nil
+}
+
+func (p Pasteboard) empty() {
+	name := p.cName()
+	defer C.free(unsafe.Pointer(name))
+	C.lanhop_pasteboard_empty(name)
+}
+
 func (p Pasteboard) release() {
+	if p.name == "" {
+		return
+	}
 	name := p.cName()
 	defer C.free(unsafe.Pointer(name))
 	C.lanhop_pasteboard_release(name)

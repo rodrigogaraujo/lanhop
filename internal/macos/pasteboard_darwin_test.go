@@ -77,11 +77,22 @@ func TestEachWriteMovesTheMarkAndReadingDoesNot(t *testing.T) {
 	}
 }
 
-func TestAPasteboardWithoutTextIsNotText(t *testing.T) {
+func TestAPasteboardWithNothingOnItIsEmpty(t *testing.T) {
 	p := pasteboardOfThisTest(t)
 
+	if _, err := p.Read(); !errors.Is(err, clipboard.ErrEmpty) {
+		t.Errorf("Read of a pasteboard with nothing on it: error = %v, want %v", err, clipboard.ErrEmpty)
+	}
+}
+
+func TestACopyWithoutTextIsNotText(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if err := p.writeTyped("public.png", "\x89PNG\r\n\x1a\n", nil); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
 	if _, err := p.Read(); !errors.Is(err, clipboard.ErrNotText) {
-		t.Errorf("Read of a pasteboard with nothing on it: error = %v, want %v", err, clipboard.ErrNotText)
+		t.Errorf("Read of an image: error = %v, want %v", err, clipboard.ErrNotText)
 	}
 }
 
@@ -95,6 +106,33 @@ func TestACopyThatAPasswordManagerMarkedPrivateIsNotRead(t *testing.T) {
 
 	if !errors.Is(err, clipboard.ErrPrivate) || got != "" {
 		t.Errorf("Read = %q, %v, want nothing and %v", got, err, clipboard.ErrPrivate)
+	}
+}
+
+func TestAnEmptiedPasteboardIsEmptyRatherThanNotText(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if _, err := p.Write("a password"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	p.empty()
+
+	if _, err := p.Read(); !errors.Is(err, clipboard.ErrEmpty) {
+		t.Errorf("Read after the pasteboard was emptied: error = %v, want %v", err, clipboard.ErrEmpty)
+	}
+}
+
+func TestFormattedTextIsReadAsItsPlainText(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	const rtf = `{\rtf1\ansi{\fonttbl\f0 Helvetica;}\f0\b bold\b0  and plain}`
+	plain := "bold and plain"
+	if err := p.writeTyped("public.rtf", rtf, &plain); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	got, err := p.Read()
+
+	if err != nil || got != plain {
+		t.Errorf("Read = %q, %v, want the plain text", got, err)
 	}
 }
 
