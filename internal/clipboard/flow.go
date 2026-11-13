@@ -69,6 +69,7 @@ type ToCentral struct{}
 type sideMachine struct {
 	takes Kinds
 	holds int
+	sent  int
 }
 
 type owed struct {
@@ -176,8 +177,8 @@ func (d *Desk[M]) Says(side M, takes Kinds) []Action[M] {
 		d.forgetFilesCopiedOn(side)
 	}
 	var actions []Action[M]
-	if d.sharedKinds()&^sharedBefore != 0 {
-		actions = append(actions, Action[M]{Do: Mark})
+	if started := d.sharedKinds() &^ sharedBefore; started != 0 {
+		actions = append(actions, Action[M]{Do: Mark, Takes: started})
 	}
 	return append(actions, d.deliverToFocused()...)
 }
@@ -205,8 +206,8 @@ func (d *Desk[M]) Switch(on Kinds) []Action[M] {
 	for _, side := range d.connected {
 		actions = append(actions, Action[M]{Do: Announce, To: side, Takes: on})
 	}
-	if d.sharedKinds()&^sharedBefore != 0 {
-		actions = append(actions, Action[M]{Do: Mark})
+	if started := d.sharedKinds() &^ sharedBefore; started != 0 {
+		actions = append(actions, Action[M]{Do: Mark, Takes: started})
 	}
 	return append(actions, d.deliverToFocused()...)
 }
@@ -257,7 +258,7 @@ func (d *Desk[M]) ReadGaveFiles(files FileCopy, readErr error) ([]Action[M], err
 }
 
 func (d *Desk[M]) SendStopped(side M) {
-	if machine, connected := d.sides[side]; connected {
+	if machine, connected := d.sides[side]; connected && machine.holds == machine.sent {
 		machine.holds = 0
 	}
 }
@@ -288,7 +289,7 @@ func (d *Desk[M]) FilesArrived(transfer int) []Action[M] {
 	d.moving = nil
 	if !moving.toASide {
 		d.centralHolds = moving.number
-		return []Action[M]{{Do: WriteFiles, Transfer: transfer, FileCopy: d.last.files}}
+		return []Action[M]{{Do: WriteFiles, Transfer: transfer}}
 	}
 	if machine, connected := d.sides[moving.to]; connected {
 		machine.holds = moving.number
@@ -397,9 +398,13 @@ func (d *Desk[M]) writeOffAnswersOf(side M) {
 }
 
 func (d *Desk[M]) forgetFilesCopiedOn(side M) {
-	if d.hasCopy && d.last.filesOnASide && d.last.filesOn == side {
+	if d.filesAreOn(side) {
 		d.withdraw()
 	}
+}
+
+func (d *Desk[M]) filesAreOn(side M) bool {
+	return d.hasCopy && d.last.filesOnASide && d.last.filesOn == side
 }
 
 func (d *Desk[M]) readArrived() (current bool) {
@@ -448,13 +453,13 @@ func (d *Desk[M]) deliverToFocused() []Action[M] {
 		return append(actions, Action[M]{Do: Write, Text: d.last.text})
 	}
 	machine, connected := d.sides[d.focused]
-	if !connected || !d.shares(machine).Has(kind) || machine.holds == d.number {
+	if !connected || !d.shares(machine).Has(kind) || machine.holds == d.number || d.filesAreOn(d.focused) {
 		return actions
 	}
 	if kind == Files {
 		return append(actions, d.startTransfer()...)
 	}
-	machine.holds = d.number
+	machine.holds, machine.sent = d.number, d.number
 	return append(actions, Action[M]{Do: Send, To: d.focused, Text: d.last.text})
 }
 
@@ -466,10 +471,10 @@ func (d *Desk[M]) startTransfer() []Action[M] {
 	d.moving = &transfer[M]{id: d.transfers, number: d.number, to: d.focused, toASide: d.focusOnSide}
 	var actions []Action[M]
 	if d.last.filesOnASide {
-		actions = append(actions, Action[M]{Do: Fetch, To: d.last.filesOn, Transfer: d.transfers, FileCopy: d.last.files})
+		actions = append(actions, Action[M]{Do: Fetch, To: d.last.filesOn, Transfer: d.transfers})
 	}
 	if d.focusOnSide {
-		actions = append(actions, Action[M]{Do: Deliver, To: d.focused, Transfer: d.transfers, FileCopy: d.last.files})
+		actions = append(actions, Action[M]{Do: Deliver, To: d.focused, Transfer: d.transfers})
 	}
 	return actions
 }
@@ -628,8 +633,8 @@ func (s *Side) sharingChanged(sharedBefore Kinds) []Action[ToCentral] {
 		s.offersFiles = false
 		actions = s.stopTransfers()
 	}
-	if s.sharing()&^sharedBefore != 0 {
-		actions = append(actions, Action[ToCentral]{Do: Mark})
+	if started := s.sharing() &^ sharedBefore; started != 0 {
+		actions = append(actions, Action[ToCentral]{Do: Mark, Takes: started})
 	}
 	return actions
 }

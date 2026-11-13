@@ -37,11 +37,14 @@ var (
 	ErrFilesTooLarge  = errors.New("clipboard: the file copy is larger than 4 GiB")
 	ErrFilesNotShared = errors.New("clipboard: the copy holds files, and files are not shared with the other machine")
 	ErrTextNotShared  = errors.New("clipboard: the copy is text, and text is not shared with the other machine")
+	ErrNegativeFiles  = errors.New("clipboard: the file copy has a negative number of files or a negative size")
 )
 
 func sendableFiles(files FileCopy) error {
 	switch {
-	case files.FilesAndFolders <= 0:
+	case files.FilesAndFolders < 0 || files.Bytes < 0:
+		return fmt.Errorf("%w: %d files and folders, %d bytes", ErrNegativeFiles, files.FilesAndFolders, files.Bytes)
+	case files.FilesAndFolders == 0:
 		return ErrEmpty
 	case files.FilesAndFolders > FilesAndFoldersLimit:
 		return fmt.Errorf("%w: %d", ErrTooManyFiles, files.FilesAndFolders)

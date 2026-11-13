@@ -14,19 +14,10 @@ var (
 	atLimit = FileCopy{FilesAndFolders: FilesAndFoldersLimit, Bytes: FileCopyLimit}
 )
 
-func fetch(from string, transfer int, files FileCopy) action {
-	return action{Do: Fetch, To: from, Transfer: transfer, FileCopy: files}
-}
-
-func deliver(to string, transfer int, files FileCopy) action {
-	return action{Do: Deliver, To: to, Transfer: transfer, FileCopy: files}
-}
-
-func writeFiles(transfer int, files FileCopy) action {
-	return action{Do: WriteFiles, Transfer: transfer, FileCopy: files}
-}
-
-func stop(transfer int) action { return action{Do: Stop, Transfer: transfer} }
+func fetch(from string, transfer int) action { return action{Do: Fetch, To: from, Transfer: transfer} }
+func deliver(to string, transfer int) action { return action{Do: Deliver, To: to, Transfer: transfer} }
+func writeFiles(transfer int) action         { return action{Do: WriteFiles, Transfer: transfer} }
+func stop(transfer int) action               { return action{Do: Stop, Transfer: transfer} }
 
 func describe(files FileCopy) toCentral { return toCentral{Do: Describe, FileCopy: files} }
 func sendFiles(transfer int) toCentral  { return toCentral{Do: SendFiles, Transfer: transfer} }
@@ -41,7 +32,7 @@ func deskSharing(t *testing.T, kinds Kinds, sides ...string) *Desk[string] {
 		expect(t, "connect "+side, d.Connected(side), announce(side, kinds))
 		var startsToTakePart []action
 		if i == 0 {
-			startsToTakePart = []action{{Do: Mark}}
+			startsToTakePart = []action{{Do: Mark, Takes: kinds}}
 		}
 		expect(t, side+" says what it takes", d.Says(side, kinds), startsToTakePart...)
 	}
@@ -76,14 +67,14 @@ func aFileCopyOfAReaches(t *testing.T, d *Desk[string], side string) {
 	d.FocusOn("A")
 	d.ReadUnchanged()
 	expect(t, "focus from A to "+side, d.FocusOn(side))
-	expect(t, "the file copy of A arrives", fileCopyFrom(t, d, "A", report), fetch("A", 1, report), deliver(side, 1, report))
+	expect(t, "the file copy of A arrives", fileCopyFrom(t, d, "A", report), fetch("A", 1), deliver(side, 1))
 }
 
 func sideTaking(t *testing.T, own, central Kinds) *Side {
 	t.Helper()
 	s := NewSide(own)
 	expect(t, "connect", s.Connected(), toCentral{Do: Announce, Takes: own})
-	expect(t, "the central says what it takes", s.CentralSays(central), toCentral{Do: Mark})
+	expect(t, "the central says what it takes", s.CentralSays(central), toCentral{Do: Mark, Takes: own & central})
 	s.FocusArrives()
 	return s
 }
@@ -107,7 +98,7 @@ func TestAFileCopyOnTheCentralGoesToTheSideMachineThatGetsFocus(t *testing.T) {
 	d := deskSharingFiles(t, "A")
 
 	expect(t, "focus to A", d.FocusOn("A"), read())
-	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1, report))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1))
 	expect(t, "the files arrive on A", d.FilesArrived(1))
 	expect(t, "focus back on the central", d.FocusOnCentral())
 	expect(t, "A had nothing new", d.UnchangedOn("A"))
@@ -122,8 +113,8 @@ func TestAFileCopyOnASideMachineIsWrittenOnTheCentralOnlyOnceItsFilesHaveArrived
 	d.FocusOn("A")
 	d.ReadUnchanged()
 	expect(t, "focus back on the central", d.FocusOnCentral())
-	expect(t, "the file copy of A arrives", fileCopyFrom(t, d, "A", report), fetch("A", 1, report))
-	expect(t, "the files of A arrive", d.FilesArrived(1), writeFiles(1, report))
+	expect(t, "the file copy of A arrives", fileCopyFrom(t, d, "A", report), fetch("A", 1))
+	expect(t, "the files of A arrive", d.FilesArrived(1), writeFiles(1))
 	expect(t, "the same transfer reports its files again", d.FilesArrived(1))
 }
 
@@ -142,8 +133,8 @@ func TestAFileCopyPassingThroughTheCentralIsWrittenThereOnlyWhenFocusComesBack(t
 	d.FilesArrived(1)
 
 	expect(t, "focus back on the central", d.FocusOnCentral())
-	expect(t, "B had nothing new", d.UnchangedOn("B"), fetch("A", 2, report))
-	expect(t, "the files reach the central", d.FilesArrived(2), writeFiles(2, report))
+	expect(t, "B had nothing new", d.UnchangedOn("B"), fetch("A", 2))
+	expect(t, "the files reach the central", d.FilesArrived(2), writeFiles(2))
 }
 
 func TestAFileCopyThatVisitedTheCentralIsFetchedAgainFromWhereItWasCopied(t *testing.T) {
@@ -151,17 +142,17 @@ func TestAFileCopyThatVisitedTheCentralIsFetchedAgainFromWhereItWasCopied(t *tes
 	d.FocusOn("A")
 	d.ReadUnchanged()
 	d.FocusOnCentral()
-	expect(t, "the file copy of A arrives at the central", fileCopyFrom(t, d, "A", report), fetch("A", 1, report))
-	expect(t, "the files of A arrive", d.FilesArrived(1), writeFiles(1, report))
+	expect(t, "the file copy of A arrives at the central", fileCopyFrom(t, d, "A", report), fetch("A", 1))
+	expect(t, "the files of A arrive", d.FilesArrived(1), writeFiles(1))
 
 	expect(t, "focus to B", d.FocusOn("B"), read())
-	expect(t, "the central still holds the files of A", d.ReadUnchanged(), fetch("A", 2, report), deliver("B", 2, report))
+	expect(t, "the central still holds the files of A", d.ReadUnchanged(), fetch("A", 2), deliver("B", 2))
 }
 
 func TestAFileCopyReachesOnlyTheMachinesThatGetFocus(t *testing.T) {
 	d := deskSharingFiles(t, "A", "B")
 	expect(t, "focus to A", d.FocusOn("A"), read())
-	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1, report))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1))
 	d.FilesArrived(1)
 
 	expect(t, "focus back on the central", d.FocusOnCentral())
@@ -169,7 +160,7 @@ func TestAFileCopyReachesOnlyTheMachinesThatGetFocus(t *testing.T) {
 	expect(t, "focus to A again", d.FocusOn("A"), read())
 	expect(t, "the central had nothing new", d.ReadUnchanged())
 	expect(t, "focus to B, later", d.FocusOn("B"))
-	expect(t, "A had nothing new", d.UnchangedOn("A"), deliver("B", 2, report))
+	expect(t, "A had nothing new", d.UnchangedOn("A"), deliver("B", 2))
 }
 
 func TestTheNewestCopyWinsBetweenTextAndFiles(t *testing.T) {
@@ -183,7 +174,7 @@ func TestTheNewestCopyWinsBetweenTextAndFiles(t *testing.T) {
 		{
 			name:      "text on the central after files on A",
 			onA:       func(d *Desk[string]) []action { actions, _ := d.FileCopyFrom("A", report); return actions },
-			onAWrites: []action{fetch("A", 1, report)},
+			onAWrites: []action{fetch("A", 1)},
 			central:   func(t *testing.T, d *Desk[string]) []action { return readGave(t, d, "newer text") },
 			toB:       []action{send("B", "newer text")},
 		},
@@ -192,7 +183,7 @@ func TestTheNewestCopyWinsBetweenTextAndFiles(t *testing.T) {
 			onA:       func(d *Desk[string]) []action { return d.CopyFrom("A", "older text") },
 			onAWrites: []action{write("older text")},
 			central:   func(t *testing.T, d *Desk[string]) []action { return readGaveFiles(t, d, project) },
-			toB:       []action{deliver("B", 1, project)},
+			toB:       []action{deliver("B", 1)},
 		},
 	}
 	for _, test := range tests {
@@ -217,7 +208,7 @@ func TestAFileTransferStopsWhenANewerCopyReachesTheDesk(t *testing.T) {
 	d.FocusOnCentral()
 	d.GaveUpOn("A")
 	expect(t, "focus to B", d.FocusOn("B"), read())
-	expect(t, "the central read a file copy", readGaveFiles(t, d, project), deliver("B", 1, project))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, project), deliver("B", 1))
 
 	expect(t, "the late text of A arrives", d.CopyFrom("A", "late text"), stop(1), send("B", "late text"))
 	expect(t, "the files of the stopped transfer arrive anyway", d.FilesArrived(1))
@@ -226,14 +217,14 @@ func TestAFileTransferStopsWhenANewerCopyReachesTheDesk(t *testing.T) {
 func TestAFileTransferStopsWhenFocusLeavesTheMachineReceivingItAndStartsAgainAtTheNextVisit(t *testing.T) {
 	d := deskSharingFiles(t, "A", "B")
 	expect(t, "focus to A", d.FocusOn("A"), read())
-	expect(t, "the central read a file copy", readGaveFiles(t, d, project), deliver("A", 1, project))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, project), deliver("A", 1))
 
 	expect(t, "focus passes on to B before the files have arrived", d.FocusOn("B"), stop(1))
 	expect(t, "the files of the stopped transfer arrive anyway", d.FilesArrived(1))
-	expect(t, "A had nothing new", d.UnchangedOn("A"), deliver("B", 2, project))
+	expect(t, "A had nothing new", d.UnchangedOn("A"), deliver("B", 2))
 	expect(t, "the files reach B", d.FilesArrived(2))
 	expect(t, "focus back to A", d.FocusOn("A"))
-	expect(t, "B had nothing new", d.UnchangedOn("B"), deliver("A", 3, project))
+	expect(t, "B had nothing new", d.UnchangedOn("B"), deliver("A", 3))
 }
 
 func TestAFileTransferToTheCentralStopsWhenFocusLeavesIt(t *testing.T) {
@@ -241,13 +232,13 @@ func TestAFileTransferToTheCentralStopsWhenFocusLeavesIt(t *testing.T) {
 	d.FocusOn("A")
 	d.ReadUnchanged()
 	d.FocusOnCentral()
-	expect(t, "the file copy of A arrives", fileCopyFrom(t, d, "A", project), fetch("A", 1, project))
+	expect(t, "the file copy of A arrives", fileCopyFrom(t, d, "A", project), fetch("A", 1))
 
 	expect(t, "focus to B before the files have arrived", d.FocusOn("B"), read(), stop(1))
-	expect(t, "the central had nothing new", d.ReadUnchanged(), fetch("A", 2, project), deliver("B", 2, project))
+	expect(t, "the central had nothing new", d.ReadUnchanged(), fetch("A", 2), deliver("B", 2))
 	expect(t, "the files of the stopped transfer arrive anyway", d.FilesArrived(1))
 	expect(t, "focus back on the central before B has them", d.FocusOnCentral(), stop(2))
-	expect(t, "B had nothing new", d.UnchangedOn("B"), fetch("A", 3, project))
+	expect(t, "B had nothing new", d.UnchangedOn("B"), fetch("A", 3))
 }
 
 func TestAFileTransferStopsWhenTheMachineReceivingItCanNoLongerTakeIt(t *testing.T) {
@@ -264,7 +255,7 @@ func TestAFileTransferStopsWhenTheMachineReceivingItCanNoLongerTakeIt(t *testing
 		t.Run(test.name, func(t *testing.T) {
 			d := deskSharingFiles(t, "A", "B")
 			d.FocusOn("A")
-			expect(t, "the central read a file copy", readGaveFiles(t, d, project), deliver("A", 1, project))
+			expect(t, "the central read a file copy", readGaveFiles(t, d, project), deliver("A", 1))
 
 			expect(t, "the transfer can no longer go on", test.end(d), test.want...)
 		})
@@ -274,7 +265,7 @@ func TestAFileTransferStopsWhenTheMachineReceivingItCanNoLongerTakeIt(t *testing
 func TestAFileTransferThatEndsEarlyIsTriedAgainOnlyAtTheNextVisit(t *testing.T) {
 	d := deskSharingFiles(t, "A", "B")
 	d.FocusOn("A")
-	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1, report))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1))
 	d.TransferEnded(7)
 	d.TransferEnded(1)
 
@@ -283,7 +274,7 @@ func TestAFileTransferThatEndsEarlyIsTriedAgainOnlyAtTheNextVisit(t *testing.T) 
 	expect(t, "focus back on the central", d.FocusOnCentral())
 	expect(t, "A had nothing new", d.UnchangedOn("A"))
 	expect(t, "focus to A again", d.FocusOn("A"), read())
-	expect(t, "the central had nothing new", d.ReadUnchanged(), deliver("A", 2, report))
+	expect(t, "the central had nothing new", d.ReadUnchanged(), deliver("A", 2))
 }
 
 func TestAFileCopyWaitsForTheAnswerOfTheMachineThatLostFocus(t *testing.T) {
@@ -292,7 +283,7 @@ func TestAFileCopyWaitsForTheAnswerOfTheMachineThatLostFocus(t *testing.T) {
 		answer func(d *Desk[string]) []action
 		toB    []action
 	}{
-		{"A had nothing new", func(d *Desk[string]) []action { return d.UnchangedOn("A") }, []action{deliver("B", 2, report)}},
+		{"A had nothing new", func(d *Desk[string]) []action { return d.UnchangedOn("A") }, []action{deliver("B", 2)}},
 		{"A emptied its clipboard", func(d *Desk[string]) []action { return d.WithdrawalFrom("A") }, nil},
 		{"A did not answer in time", func(d *Desk[string]) []action { return d.GaveUpOn("A") }, nil},
 	}
@@ -300,7 +291,7 @@ func TestAFileCopyWaitsForTheAnswerOfTheMachineThatLostFocus(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			d := deskSharingFiles(t, "A", "B")
 			d.FocusOn("A")
-			expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1, report))
+			expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1))
 			d.FilesArrived(1)
 
 			expect(t, "focus from A to B", d.FocusOn("B"))
@@ -318,16 +309,35 @@ func TestAMachineNeverGetsBackItsOwnFileCopy(t *testing.T) {
 	expect(t, "A stops taking text and keeps taking files", d.Says("A", Files))
 }
 
+func TestAFileCopyNeverGoesBackToTheSideMachineItWasCopiedOn(t *testing.T) {
+	d := deskSharingFiles(t, "A", "B", "C")
+	aSendToAIsCutShortAfterALateAnswerOfA(t, d, func(d *Desk[string]) []action { return fileCopyFrom(t, d, "A", project) })
+
+	expect(t, "A had nothing new", d.UnchangedOn("A"), fetch("A", 1), deliver("C", 1))
+	expect(t, "the files reach C", d.FilesArrived(1))
+	expect(t, "focus back to A", d.FocusOn("A"))
+	expect(t, "C had nothing new", d.UnchangedOn("C"))
+}
+
+func TestASideMachineThatStopsTakingFilesKeepsTheTextItHolds(t *testing.T) {
+	d := deskSharingFiles(t, "A")
+	expect(t, "focus to A", d.FocusOn("A"), read())
+	expect(t, "the central read a text", readGave(t, d, "x"), send("A", "x"))
+
+	expect(t, "A stops taking files", d.Says("A", Text))
+	expect(t, "A takes files again", d.Says("A", Text|Files), action{Do: Mark, Takes: Files})
+}
+
 func TestAFileCopyReadAgainIsANewCopyEvenWithTheSameDescription(t *testing.T) {
 	d := deskSharingFiles(t, "A")
 	d.FocusOn("A")
-	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1, report))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1))
 	d.FilesArrived(1)
 	d.FocusOnCentral()
 	d.UnchangedOn("A")
 
 	expect(t, "focus to A again", d.FocusOn("A"), read())
-	expect(t, "the central copied files of the same number and size", readGaveFiles(t, d, report), deliver("A", 2, report))
+	expect(t, "the central copied files of the same number and size", readGaveFiles(t, d, report), deliver("A", 2))
 }
 
 func TestAFileCopyIsForgottenWhenTheMachineWhereItWasCopiedCanNoLongerSendIt(t *testing.T) {
@@ -365,7 +375,7 @@ func TestASideMachineThatTakesTextButNotFilesGetsNothingForAFileCopy(t *testing.
 	expect(t, "focus to B again", d.FocusOn("B"), read())
 	expect(t, "the central read a file copy", readGaveFiles(t, d, report))
 	expect(t, "focus to A", d.FocusOn("A"))
-	expect(t, "B had nothing new", d.UnchangedOn("B"), deliver("A", 1, report))
+	expect(t, "B had nothing new", d.UnchangedOn("B"), deliver("A", 1))
 }
 
 func TestASideMachineThatTakesTextButNotFilesWithdrawsItsFileCopy(t *testing.T) {
@@ -423,7 +433,7 @@ func TestASideMachineThatTakesFilesButNotTextGetsFilesAndNoText(t *testing.T) {
 	d.UnchangedOn("B")
 
 	expect(t, "focus to B again", d.FocusOn("B"), read())
-	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("B", 1, report))
+	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("B", 1))
 	expect(t, "the files reach B", d.FilesArrived(1))
 	expect(t, "focus to A", d.FocusOn("A"))
 	expect(t, "B answers with a text it does not share", d.CopyFrom("B", "a text B should have kept"))
@@ -456,6 +466,7 @@ func TestAFileCopyThatIsNotCarriedWithdrawsTheLastOne(t *testing.T) {
 		{"more than 10 000 files and folders", Text | Files, FileCopy{FilesAndFolders: FilesAndFoldersLimit + 1, Bytes: 1}, nil, ErrTooManyFiles},
 		{"more than 4 GiB", Text | Files, FileCopy{FilesAndFolders: 1, Bytes: FileCopyLimit + 1}, nil, ErrFilesTooLarge},
 		{"no file at all", Text | Files, FileCopy{}, nil, ErrEmpty},
+		{"a negative size", Text | Files, FileCopy{FilesAndFolders: 1, Bytes: -1}, nil, ErrNegativeFiles},
 		{"a list too slow to count", Text | Files, FileCopy{}, tooSlow, tooSlow},
 	}
 	for _, test := range tests {
@@ -476,7 +487,7 @@ func TestAFileCopyThatIsNotCarriedWithdrawsTheLastOne(t *testing.T) {
 	}
 }
 
-func TestAFileCopyOverTheLimitFromASideMachineCountsAsAWithdrawal(t *testing.T) {
+func TestAFileCopyFromASideMachineThatCannotBeSentCountsAsAWithdrawal(t *testing.T) {
 	tests := []struct {
 		name  string
 		files FileCopy
@@ -484,6 +495,8 @@ func TestAFileCopyOverTheLimitFromASideMachineCountsAsAWithdrawal(t *testing.T) 
 	}{
 		{"more than 10 000 files and folders", FileCopy{FilesAndFolders: FilesAndFoldersLimit + 1, Bytes: 1}, ErrTooManyFiles},
 		{"more than 4 GiB", FileCopy{FilesAndFolders: 1, Bytes: FileCopyLimit + 1}, ErrFilesTooLarge},
+		{"a negative size", FileCopy{FilesAndFolders: 1, Bytes: -1}, ErrNegativeFiles},
+		{"a negative number of files", FileCopy{FilesAndFolders: -1, Bytes: 1}, ErrNegativeFiles},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -512,6 +525,7 @@ func TestASideMachineWithdrawsAFileCopyItCannotSend(t *testing.T) {
 		{"more than 10 000 files and folders", FileCopy{FilesAndFolders: FilesAndFoldersLimit + 1, Bytes: 1}, nil, ErrTooManyFiles},
 		{"more than 4 GiB", FileCopy{FilesAndFolders: 1, Bytes: FileCopyLimit + 1}, nil, ErrFilesTooLarge},
 		{"no file at all", FileCopy{}, nil, ErrEmpty},
+		{"a negative size", FileCopy{FilesAndFolders: 1, Bytes: -1}, nil, ErrNegativeFiles},
 		{"a list too slow to count", FileCopy{}, tooSlow, tooSlow},
 	}
 	for _, test := range tests {
@@ -533,7 +547,7 @@ func TestASideMachineWithdrawsAFileCopyItCannotSend(t *testing.T) {
 func TestAFileCopyAtTheLimitIsSent(t *testing.T) {
 	d := deskSharingFiles(t, "A")
 	expect(t, "focus to A", d.FocusOn("A"), read())
-	expect(t, "the central read a file copy at the limit", readGaveFiles(t, d, atLimit), deliver("A", 1, atLimit))
+	expect(t, "the central read a file copy at the limit", readGaveFiles(t, d, atLimit), deliver("A", 1))
 
 	s := sideSharingFiles(t)
 	describedFiles(t, s, atLimit)
@@ -550,7 +564,7 @@ func TestSideMachinesWithoutFilesGetNoFileAction(t *testing.T) {
 	expect(t, "focus to the side machine that takes text only", d.FocusOn("text only"))
 	expect(t, "frames from the old side machine", fileCopyFrom(t, d, "old", project))
 	expect(t, "focus to B", d.FocusOn("B"))
-	expect(t, "the side machine that takes text only had nothing new", d.UnchangedOn("text only"), deliver("B", 1, report))
+	expect(t, "the side machine that takes text only had nothing new", d.UnchangedOn("text only"), deliver("B", 1))
 }
 
 func TestASideMachineUnderACentralWithoutFilesNeverMovesFiles(t *testing.T) {
@@ -567,7 +581,7 @@ func TestASideMachineUnderACentralWithoutFilesNeverMovesFiles(t *testing.T) {
 	s.FocusArrives()
 	expect(t, "the central asks for files", s.CentralWantsFiles(1), stopped(1))
 	expect(t, "the central sends files", s.CentralSendsFiles(2), stopped(2))
-	expect(t, "the central takes text only", s.CentralSays(Text), toCentral{Do: Mark})
+	expect(t, "the central takes text only", s.CentralSays(Text), toCentral{Do: Mark, Takes: Text})
 	expect(t, "the central sends files again", s.CentralSendsFiles(3), stopped(3))
 }
 
@@ -686,9 +700,9 @@ func TestASideMachineForgetsTransfersThatEnded(t *testing.T) {
 func TestAnnouncementsCarryEveryKindThatIsOn(t *testing.T) {
 	d := NewDesk[string](Text | Files)
 	expect(t, "connect A", d.Connected("A"), announce("A", Text|Files))
-	expect(t, "A takes text and files", d.Says("A", Text|Files), action{Do: Mark})
+	expect(t, "A takes text and files", d.Says("A", Text|Files), action{Do: Mark, Takes: Text | Files})
 	expect(t, "files switched off", d.Switch(Text), announce("A", Text))
-	expect(t, "files switched on again", d.Switch(Text|Files), announce("A", Text|Files), action{Do: Mark})
+	expect(t, "files switched on again", d.Switch(Text|Files), announce("A", Text|Files), action{Do: Mark, Takes: Files})
 
 	s := NewSide(Files)
 	expect(t, "connect", s.Connected(), toCentral{Do: Announce, Takes: Files})
@@ -719,23 +733,63 @@ func TestTheCentralTakesAFreshMarkWhenItStartsToShareAKind(t *testing.T) {
 	d.Connected("B")
 	d.Connected("C")
 
-	expect(t, "A takes text", d.Says("A", Text), action{Do: Mark})
-	expect(t, "B takes text and files", d.Says("B", Text|Files), action{Do: Mark})
+	expect(t, "A takes text", d.Says("A", Text), action{Do: Mark, Takes: Text})
+	expect(t, "B takes text and files", d.Says("B", Text|Files), action{Do: Mark, Takes: Files})
 	expect(t, "C takes files", d.Says("C", Files))
 	expect(t, "B takes text only", d.Says("B", Text))
 	expect(t, "C stops taking files", d.Says("C", none))
-	expect(t, "B takes files again", d.Says("B", Text|Files), action{Do: Mark})
+	expect(t, "B takes files again", d.Says("B", Text|Files), action{Do: Mark, Takes: Files})
 }
 
-func TestASideMachineTakesAFreshMarkWhenItStartsToShareAKind(t *testing.T) {
-	s := NewSide(Text | Files)
-	s.Connected()
+var oneKindThenTheOther = []struct {
+	name    string
+	first   Kinds
+	started Kinds
+}{
+	{"files after text", Text, Files},
+	{"text after files", Files, Text},
+}
 
-	expect(t, "the central takes text", s.CentralSays(Text), toCentral{Do: Mark})
-	expect(t, "the central takes files too", s.CentralSays(Text|Files), toCentral{Do: Mark})
-	expect(t, "the central says the same again", s.CentralSays(Text|Files))
-	expect(t, "files switched off", s.Switch(Text), toCentral{Do: Announce, Takes: Text})
-	expect(t, "files switched on", s.Switch(Text|Files), toCentral{Do: Announce, Takes: Text | Files}, toCentral{Do: Mark})
+func TestTheCentralTakesAFreshMarkOnlyForTheKindThatStartsToBeShared(t *testing.T) {
+	for _, test := range oneKindThenTheOther {
+		t.Run("a side machine takes it, "+test.name, func(t *testing.T) {
+			d := NewDesk[string](Text | Files)
+			d.Connected("A")
+			d.Connected("B")
+
+			expect(t, "A takes one kind", d.Says("A", test.first), action{Do: Mark, Takes: test.first})
+			expect(t, "B takes both", d.Says("B", Text|Files), action{Do: Mark, Takes: test.started})
+			expect(t, "A takes both too", d.Says("A", Text|Files))
+		})
+		t.Run("the central switches it on, "+test.name, func(t *testing.T) {
+			d := NewDesk[string](test.first)
+			d.Connected("A")
+
+			expect(t, "A takes both", d.Says("A", Text|Files), action{Do: Mark, Takes: test.first})
+			expect(t, "the other kind switched on", d.Switch(Text|Files), announce("A", Text|Files), action{Do: Mark, Takes: test.started})
+		})
+	}
+}
+
+func TestASideMachineTakesAFreshMarkOnlyForTheKindThatStartsToBeShared(t *testing.T) {
+	for _, test := range oneKindThenTheOther {
+		t.Run("the central takes it, "+test.name, func(t *testing.T) {
+			s := NewSide(Text | Files)
+			s.Connected()
+
+			expect(t, "the central takes one kind", s.CentralSays(test.first), toCentral{Do: Mark, Takes: test.first})
+			expect(t, "the central takes both", s.CentralSays(Text|Files), toCentral{Do: Mark, Takes: test.started})
+			expect(t, "the central says the same again", s.CentralSays(Text|Files))
+		})
+		t.Run("its own switch turns it on, "+test.name, func(t *testing.T) {
+			s := NewSide(test.first)
+			s.Connected()
+
+			expect(t, "the central takes both", s.CentralSays(Text|Files), toCentral{Do: Mark, Takes: test.first})
+			expect(t, "the other kind switched on", s.Switch(Text|Files), toCentral{Do: Announce, Takes: Text | Files}, toCentral{Do: Mark, Takes: test.started})
+			expect(t, "the other kind switched off", s.Switch(test.first), toCentral{Do: Announce, Takes: test.first})
+		})
+	}
 }
 
 func TestSwitchingFilesOffOnTheCentralForgetsAFileCopyAndKeepsAText(t *testing.T) {
@@ -746,7 +800,7 @@ func TestSwitchingFilesOffOnTheCentralForgetsAFileCopyAndKeepsAText(t *testing.T
 		toB  []action
 	}{
 		{"a text stays", func(t *testing.T, d *Desk[string]) []action { return readGave(t, d, "x") }, []action{send("A", "x")}, []action{send("B", "x")}},
-		{"a file copy is forgotten", func(t *testing.T, d *Desk[string]) []action { return readGaveFiles(t, d, report) }, []action{deliver("A", 1, report)}, nil},
+		{"a file copy is forgotten", func(t *testing.T, d *Desk[string]) []action { return readGaveFiles(t, d, report) }, []action{deliver("A", 1)}, nil},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -756,7 +810,7 @@ func TestSwitchingFilesOffOnTheCentralForgetsAFileCopyAndKeepsAText(t *testing.T
 			d.FilesArrived(1)
 
 			expect(t, "files switched off", d.Switch(Text), announce("A", Text), announce("B", Text))
-			expect(t, "files switched on again", d.Switch(Text|Files), announce("A", Text|Files), announce("B", Text|Files), action{Do: Mark})
+			expect(t, "files switched on again", d.Switch(Text|Files), announce("A", Text|Files), announce("B", Text|Files), action{Do: Mark, Takes: Files})
 			expect(t, "focus from A to B", d.FocusOn("B"))
 			expect(t, "A had nothing new", d.UnchangedOn("A"), test.toB...)
 		})
@@ -766,9 +820,9 @@ func TestSwitchingFilesOffOnTheCentralForgetsAFileCopyAndKeepsAText(t *testing.T
 func TestASideMachineLeftWithNothingToShareIsNotWaitedFor(t *testing.T) {
 	d := NewDesk[string](Text | Files)
 	d.Connected("A")
-	expect(t, "A takes files only", d.Says("A", Files), action{Do: Mark})
+	expect(t, "A takes files only", d.Says("A", Files), action{Do: Mark, Takes: Files})
 	d.Connected("B")
-	expect(t, "B takes text and files", d.Says("B", Text|Files), action{Do: Mark})
+	expect(t, "B takes text and files", d.Says("B", Text|Files), action{Do: Mark, Takes: Text})
 	expect(t, "focus to A", d.FocusOn("A"), read())
 	expect(t, "the central read a text, which A does not take", readGave(t, d, "x"))
 	expect(t, "focus from A to B", d.FocusOn("B"))
