@@ -252,7 +252,7 @@ func TestASideMachineSaysWhenItsClipboardDidNotChange(t *testing.T) {
 
 	expect(t, "nothing new", s.ReadUnchanged(), toCentral{Do: Unchanged})
 	s.Switch(none)
-	expect(t, "nothing new while off", s.ReadUnchanged())
+	expect(t, "nothing new while off", s.ReadUnchanged(), toCentral{Do: Unchanged})
 }
 
 func TestACentralWhoseWriteWasSkippedSendsItsOwnCopyOnTheNextLeave(t *testing.T) {
@@ -321,12 +321,12 @@ func TestASideMachineThatSwitchesOffInsteadOfAnsweringIsNotWaitedFor(t *testing.
 	expect(t, "A says it no longer takes copies", d.Says("A", none), send("B", "x"))
 }
 
-func TestASideMachineThatIsOffNeitherReadsNorWrites(t *testing.T) {
+func TestASideMachineThatIsOffNeitherReadsNorWritesAndAnswersEveryLeave(t *testing.T) {
 	s := NewSide(none)
 	expect(t, "connect", s.Connected(), toCentral{Do: Announce, Takes: none})
 	s.CentralSays(Text)
 
-	expect(t, "focus leaves", s.FocusLeaves())
+	expect(t, "focus leaves", s.FocusLeaves(), toCentral{Do: Unchanged})
 	expect(t, "a copy arrives", s.CopyFromCentral("x"))
 }
 
@@ -375,7 +375,7 @@ func TestSwitchingASideMachineTellsTheCentral(t *testing.T) {
 
 	expect(t, "switch off", s.Switch(none), toCentral{Do: Announce, Takes: none})
 	expect(t, "switch off again", s.Switch(none))
-	expect(t, "focus leaves while off", s.FocusLeaves())
+	expect(t, "focus leaves while off", s.FocusLeaves(), toCentral{Do: Unchanged})
 	expect(t, "switch on", s.Switch(Text), toCentral{Do: Announce, Takes: Text}, toCentral{Do: Mark, Takes: Text})
 	expect(t, "focus leaves while on", s.FocusLeaves(), toCentral{Do: Read})
 }
@@ -390,23 +390,23 @@ func TestASideMachineOnTheOldVersionGetsNoCopyAndIsNotWaitedFor(t *testing.T) {
 	expect(t, "frames from the old side machine", d.CopyFrom("old", "y"))
 }
 
-func TestASideMachineConnectedToACentralOnTheOldVersionReadsNothing(t *testing.T) {
+func TestASideMachineConnectedToACentralOnTheOldVersionReadsNothingAndSaysOnlyThatNothingChanged(t *testing.T) {
 	s := NewSide(Text)
 	s.Connected()
 
-	expect(t, "focus leaves", s.FocusLeaves())
-	expect(t, "nothing new", s.ReadUnchanged())
+	expect(t, "focus leaves", s.FocusLeaves(), toCentral{Do: Unchanged})
+	expect(t, "nothing new", s.ReadUnchanged(), toCentral{Do: Unchanged})
 	actions, err := s.ReadGave("x", nil)
 	if err != nil {
 		t.Fatalf("ReadGave: %v", err)
 	}
-	expect(t, "a read", actions)
+	expect(t, "a read", actions, toCentral{Do: Unchanged})
 }
 
 func TestASideMachineThatReconnectsGetsTheLastCopyAgain(t *testing.T) {
 	s := connectedSide(t)
 	expect(t, "reconnect", s.Connected(), toCentral{Do: Announce, Takes: Text})
-	expect(t, "focus leaves before the central says it takes copies", s.FocusLeaves())
+	expect(t, "focus leaves before the central says it takes copies", s.FocusLeaves(), toCentral{Do: Unchanged})
 
 	d := deskWith(t, "A")
 	copyOnTheCentralGoesTo(t, d, "A", "x")

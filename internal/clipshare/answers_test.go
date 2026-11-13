@@ -123,3 +123,67 @@ func TestASideMachineThatConnectsAgainWhileACopyIsOnItsWayGetsTheWholeCopyWhenFo
 		return len(got) == 1 && got[0] == large
 	})
 }
+
+func TestASideMachineWhoseReadOutlastedTheCentralBeingSwitchedOffKeepsMovingItsCopies(t *testing.T) {
+	d := newDesk(t, "slow", "right")
+	slow, right := d.sideJoins("slow"), d.sideJoins("right")
+	d.waitUntilTakingPart(slow, right)
+	release := slow.clipboard.holdReadsUntilReleased()
+	t.Cleanup(release)
+	readWhileOff := "copied on slow before the central was switched off"
+
+	d.focusOn(slow.number)
+	slow.clipboard.personCopies(readWhileOff)
+	d.focusOn(right.number)
+	time.Sleep(testSilenceLimit + settling)
+	d.switchedOn.Store(false)
+	d.focusOn(thisMachine)
+	d.waitUntilTheCentralIs(false)
+	time.Sleep(settling)
+	release()
+	eventually(t, "slow finishing its read", func() bool { return slow.clipboard.timesRead() >= 1 })
+	time.Sleep(settling)
+	d.switchedOn.Store(true)
+	marksBefore := slow.clipboard.timesMarked()
+	d.focusOn(right.number)
+	d.waitUntilTheCentralIs(true)
+	eventually(t, "slow taking a fresh mark once the central is on again", func() bool { return slow.clipboard.timesMarked() > marksBefore })
+
+	for _, text := range []string{"the first copy on slow after the switch", "the second copy on slow after the switch"} {
+		d.focusOn(slow.number)
+		slow.clipboard.personCopies(text)
+		d.focusOn(right.number)
+		waitUntilItHolds(t, "right", right.clipboard, text)
+	}
+	if slices.ContainsFunc(right.clipboard.written(), func(w timedWrite) bool { return w.text == readWhileOff }) {
+		t.Error("right got the copy that slow read while the central was off")
+	}
+}
+
+func TestASideMachineSwitchedOffAndOnWhileItOwedAnAnswerKeepsMovingItsCopies(t *testing.T) {
+	d := newDesk(t, "slow", "right")
+	slow, right := d.sideJoins("slow"), d.sideJoins("right")
+	d.waitUntilTakingPart(slow, right)
+	release := slow.clipboard.holdReadsUntilReleased()
+	t.Cleanup(release)
+
+	d.focusOn(slow.number)
+	slow.clipboard.personCopies("copied on slow before it was switched off")
+	d.focusOn(right.number)
+	time.Sleep(settling)
+	slow.switchedOn.Store(false)
+	d.focusOn(slow.number)
+	eventually(t, "the central seeing slow switch off", func() bool { return !slices.Contains(namesTakingPart(t, d.runtime), "slow") })
+	release()
+	eventually(t, "slow finishing its read", func() bool { return slow.clipboard.timesRead() >= 1 })
+	slow.switchedOn.Store(true)
+	d.focusOn(right.number)
+	d.waitUntilTheCentralSeesTakingPart("right", "slow")
+
+	for _, text := range []string{"the first copy on slow after it was switched on", "the second copy on slow after it was switched on"} {
+		d.focusOn(slow.number)
+		slow.clipboard.personCopies(text)
+		d.focusOn(right.number)
+		waitUntilItHolds(t, "right", right.clipboard, text)
+	}
+}

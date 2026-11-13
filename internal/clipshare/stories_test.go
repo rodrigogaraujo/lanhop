@@ -123,7 +123,7 @@ func TestASideMachineOnTheOldVersionKeepsGettingInputAndNeverGetsACopy(t *testin
 	}
 }
 
-func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndAnswersNothing(t *testing.T) {
+func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndSaysOnlyThatNothingChanged(t *testing.T) {
 	central, side := newIdentity(t), newIdentity(t)
 	listener, err := transport.Listen("127.0.0.1:0", transportFor(central), pairedMachines{{Name: "laptop", Fingerprint: side.Fingerprint}})
 	if err != nil {
@@ -151,20 +151,37 @@ func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndAnswersNothing(t
 	if err := conn.Send(event.Enter(), press(event.KeyA), event.Sync(), event.Leave()); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	first, err := conn.Receive()
-	if err != nil || first != event.Features(event.FeatureClipboard) {
-		t.Fatalf("the side machine first sent %+v, %v, want Features with bit 0", first, err)
-	}
-	quiet := make(chan event.Event, 1)
+	frames := make(chan event.Event, 16)
 	go func() {
-		if next, err := conn.Receive(); err == nil {
-			quiet <- next
+		defer close(frames)
+		for {
+			frame, err := conn.Receive()
+			if err != nil {
+				return
+			}
+			select {
+			case frames <- frame:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
-	select {
-	case next := <-quiet:
-		t.Errorf("the side machine sent %+v after the leave, want nothing", next)
-	case <-time.After(settling):
+	nextWithin := func(limit time.Duration) (event.Event, bool) {
+		select {
+		case frame, open := <-frames:
+			return frame, open
+		case <-time.After(limit):
+			return event.Event{}, false
+		}
+	}
+	if first, sent := nextWithin(testPatience); !sent || first != event.Features(event.FeatureClipboard) {
+		t.Fatalf("the side machine first sent %+v (sent: %v), want Features with bit 0", first, sent)
+	}
+	if answer, sent := nextWithin(testPatience); !sent || answer != event.ClipboardUnchanged() {
+		t.Fatalf("the side machine answered the leave with %+v (sent: %v), want unchanged", answer, sent)
+	}
+	if next, sent := nextWithin(settling); sent {
+		t.Errorf("the side machine sent %+v after its answer, want nothing more", next)
 	}
 	if reads := board.timesRead(); reads != 0 {
 		t.Errorf("the side machine read its clipboard %d times, want never", reads)
