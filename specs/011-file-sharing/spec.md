@@ -48,7 +48,7 @@ I start dragging a file on one screen, push it through the edge toward the machi
 1. **Given** I drag a file on one machine, **When** I push it through an edge that has a neighbour, **Then** the cursor crosses with the file still held, and dropping it in a folder of the neighbour, or in a window that takes dropped files, puts the file there once it has arrived.
 2. **Given** I hold the mouse button to move a window or select text, **When** I push against an edge, **Then** nothing crosses, as spec 002 says.
 3. **Given** I drag a file across and change my mind, **When** I drag it back across the edge or press Escape, **Then** nothing is dropped and nothing is left behind.
-4. **Given** the neighbour cannot take a dragged file, **When** I push a dragged file against that edge, **Then** nothing crosses, and lanhop's log says why.
+4. **Given** the neighbour cannot take a dragged file, for example a Linux machine in a Wayland session, **When** I push a dragged file against that edge, **Then** nothing crosses, and lanhop tells me, once, that dragging cannot reach that machine and that copying and pasting the file works instead.
 5. **Given** I drag a file to the Trash or to a sidebar near an edge, **When** the cursor touches that edge on the way, **Then** nothing crosses. A file drag crosses only after a longer push than the cursor alone, never in a corner, and never through the edge where a dock sits.
 
 ### Story 3 - Keep control of what arrives (Priority: P2)
@@ -110,13 +110,13 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 - **SC-001**: A file of 10 MiB copied on one machine can be pasted on the next one within 2 seconds of focus arriving, on a wired network.
 - **SC-002**: While 100 MiB travel over a link of 100 Mbit/s, no key or mouse movement arrives more than 50 ms later than it would without them.
 - **SC-003**: Stage A works from a Mac to a Mac, from a Mac to Linux and from Linux to a Mac.
-- **SC-004**: Stage B works at least from a Mac to a Mac. The plan says which other directions work.
+- **SC-004**: Stage B works from a Mac to a Mac, from a Mac to Linux, from Linux to a Mac and from Linux to Linux, with Linux in an X11 session.
 
 ## Assumptions
 
 - The machines are paired and connected, and text copy and paste of spec 005 works between them.
 - The person uses Finder on macOS and Nautilus or another file manager that follows the GNOME conventions on Linux.
 
-## Open questions
+## Decisions taken
 
-1. **Scope of the first release.** Which directions of dragging must the next release have? The plan proposes Mac to Mac first, because the desk is mostly Macs and the Linux machine runs X11.
+1. **Scope of the first release.** The owner asked for every direction between the systems supported today: "no, everything". The release with file sharing has stage A and stage B from a Mac to a Mac, from a Mac to Linux, from Linux to a Mac and from Linux to Linux. Windows is a later release.

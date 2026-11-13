@@ -19,7 +19,9 @@ Nothing in this table was measured yet. Each row says what the plan relies on, a
 | Drop on the neighbour | A drag session from a window of lanhop under the cursor, offering file promises, and file URLs once the files have arrived. Finder and programs that take promises accept the drop at once, others once the files have arrived. It needs an AppKit run loop on the main thread | lanhop acts as an XDND source toward the window under the cursor, in pure Go, grabs the pointer while it does, and lets the drop happen only once the files have arrived, because XDND has no promises | Likely impossible directly. GNOME may carry a drag from an X11 program into a Wayland one, so lanhop as an X11 source could reach some |
 | End the drag left behind | Post Escape on the source after the crossing, then a release of the button, which the capture otherwise swallows | Same, through the virtual devices | - |
 
-The proposal for the first release is stage A everywhere and stage B from a Mac to a Mac, because the desk is four Macs and one Linux machine on X11. Linux to and from a Mac for stage B comes after.
+The first release has stage A and stage B in every direction between macOS and Linux in an X11 session: Mac to Mac, Mac to Linux, Linux to a Mac and Linux to Linux. The Linux machine of the desk runs an X11 session of GNOME 46, measured for [ADR 9](../../docs/adr/0009-the-linux-clipboard-through-the-x11-selection.md), so XDND works there.
+
+**Linux in a Wayland session.** A program outside the compositor can neither see a drag of a Wayland application nor start one into it. On such a machine stage A still works through Xwayland, as text does. A file drag pushed toward it does not cross, and lanhop tells the person once that dragging cannot reach that machine and that copying and pasting the file works instead. A drag that starts in an X11 application of that session may still work through Xwayland, which task 8 checks if a Wayland session can be tried.
 
 ## How a file copy moves (stage A)
 
@@ -55,7 +57,7 @@ The rules of who gets which copy are those of spec 005 and ADR 8, with these add
 | When files move in stage A | While a machine that does not hold the copy has focus | Same rule as text, and a machine passed through keeps nothing | A paste right after arriving waits for large files |
 | Where files land | An arrival folder in the cache, until pasted or dropped | Nothing appears in the person's folders without a paste or a drop | Disk space for a day, within 8 GiB |
 | Text in a file copy | The files win, and the names or paths are never sent as text | Paths reveal folders and names | A machine that takes only text gets nothing |
-| Which drag directions first | Mac to Mac | The desk is mostly Macs, and Wayland likely rules out part of Linux | Linux in stage B waits |
+| Drag directions | Every direction between macOS and Linux in an X11 session | The owner asked for all of them | Linux in a Wayland session falls back to copy and paste, with a notice |
 | Control codes | 10 to 15 for files. The work on `lanhop update` starts at 16 | No clash between features | Nothing |
 
 ## Tasks
@@ -81,15 +83,17 @@ Each task is one pull request with its tests. Stage A comes first, and stage B s
 
 **Stage B: drag across the edge**
 
-- [ ] **8. Research: dragging.** Measure on a Mac that the drag pasteboard reveals a file drag to a background program, that Escape then a button release ends the source drag without a drop, and that lanhop can start a drag session with file promises from a window of its own while the mouse is driven by posted events. Measure on the Linux machine `XdndSelection` and an XDND drop from a pure Go source, and whether GNOME on Wayland carries such a drop into a Wayland program, if a Wayland session can be tried. → Verify: ADR 15 records what works on each system and the directions of the first release.
+- [ ] **8. Research: dragging.** Measure on a Mac that the drag pasteboard reveals a file drag to a background program, that Escape then a button release ends the source drag without a drop, and that lanhop can start a drag session with file promises from a window of its own while the mouse is driven by posted events. Measure on the Linux machine `XdndSelection` and an XDND drop from a pure Go source, and whether GNOME on Wayland carries such a drop into a Wayland program, if a Wayland session can be tried. → Verify: ADR 15 records what works on each system, with the measurements.
 - [ ] **9. Crossing with a file drag.** The edge watcher crosses with a button held only during a file drag, after the longer push, outside corners and the Dock edge, and the source drag is ended. → Verify: table tests of the edge watcher with and without a drag, and every scenario of story 3 of spec 002 still passing.
-- [ ] **10. Drop on a Mac.** The drag session, and the AppKit run loop it needs. → Verify: CI builds it. At the desk, a file dragged from a Mac lands where it is dropped on another Mac.
-- [ ] **11. Test at the desk, stage B.** Story 2 with the person, in the directions ADR 15 chose (SC-004).
+- [ ] **10. Drop on a Mac.** The drag session, and the AppKit run loop it needs. → Verify: CI builds it. At the desk, a file dragged from a Mac lands where it is dropped on another Mac, and one dragged from Linux lands on a Mac.
+- [ ] **11. Drop on Linux.** lanhop as an XDND source in `internal/x11`, toward the window under the cursor, with the pointer grabbed and the drop held until the files have arrived. → Verify: tests against Xvfb with a small XDND target, including a drop before the files have arrived. At the desk, a file dragged from a Mac lands where it is dropped on the Linux machine.
+- [ ] **12. Seeing a drag on Linux.** `XdndSelection` watched through `XFIXES`, so that a drag that starts on the Linux machine can cross. → Verify: tests against Xvfb with a small XDND source. At the desk, a file dragged from the Linux machine lands on a Mac.
+- [ ] **13. Test at the desk, stage B.** Story 2 with the person: Mac to Mac, Mac to Linux and Linux to a Mac. The desk has one Linux machine, so Linux to Linux is checked with two Xvfb displays and two lanhop processes in a container, and by anyone with two Linux machines (SC-004).
 
 ## Done when
 
 - [ ] Every acceptance scenario of stories 1 and 3 passes at the desk in the directions of SC-003.
-- [ ] Story 2 passes at the desk in the directions ADR 15 chose.
+- [ ] Story 2 passes at the desk from a Mac to a Mac, from a Mac to Linux and from Linux to a Mac, and from Linux to Linux in containers.
 - [ ] The README says what can be dragged where, and what cannot.
 
 ## Risks
@@ -99,4 +103,5 @@ Each task is one pull request with its tests. Stage A comes first, and stage B s
 - **The cache can be emptied.** macOS may empty `~/Library/Caches` when the disk is short of room. A file copy that arrived is then gone, and has to travel again.
 - **Large files right after a move.** A paste of a large file right after moving gives the previous clipboard until the file has arrived.
 - **A shared queue.** On a busy Wi-Fi link, file bytes and keys share the air even in separate streams. Task 2 measures it, and the data connection is paced if needed.
-- **Wayland.** Dragging from or to a Wayland application on Linux likely cannot work. lanhop says so once in its log (FR-010).
+- **Wayland.** Dragging from or to a Wayland application on Linux cannot work. lanhop tells the person once and points to copy and paste of the file (story 2 scenario 4, FR-010).
+- **Linux to Linux at the desk.** There is one Linux machine, so that direction is tested in containers, not with the person.
