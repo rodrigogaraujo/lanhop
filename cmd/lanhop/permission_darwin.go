@@ -4,13 +4,10 @@ package main
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/macos"
 )
-
-const agentLabel = "com.github.rodrigogaraujo.lanhop"
 
 func waitUntilAllowedToControl(ctx context.Context, waiting func()) error {
 	return waitForPermission(ctx, macos.CanPost, waiting, permissionCheckInterval, giveUpForAFreshAnswerAfter())
@@ -22,7 +19,7 @@ func waitUntilAllowedToShare(ctx context.Context, waiting func()) error {
 }
 
 func giveUpForAFreshAnswerAfter() time.Duration {
-	if os.Getenv("XPC_SERVICE_NAME") == agentLabel {
+	if startedByTheLaunchAgent() {
 		return freshAnswerAfter
 	}
 	return 0

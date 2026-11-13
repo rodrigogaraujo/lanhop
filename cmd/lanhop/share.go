@@ -69,7 +69,7 @@ func share(args []string, stdout io.Writer) (err error) {
 	}
 
 	record := openStatus()
-	quiet := askedAgainAfterARestart(record.lastReport())
+	quiet := quietAboutThePermission(record)
 	defer func() { record.ended(err) }()
 	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopWaiting()

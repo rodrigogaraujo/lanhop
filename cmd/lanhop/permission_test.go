@@ -87,17 +87,34 @@ func TestOnlyALanhopThatEndedToAskAgainIsQuietAboutThePermission(t *testing.T) {
 
 func TestTheNoticeAboutThePermissionIsNotRepeatedByTheLanhopThatLaunchdStartedAgain(t *testing.T) {
 	useConfigDirectory(t)
+	t.Setenv("XPC_SERVICE_NAME", agentLabel)
 	var stdout bytes.Buffer
 	first := connectionReport{stdout: &stdout, record: openStatus(), sharer: trust.Peer{Name: "iMac", Address: centralAddress}}
 	first.waitingForPermission()
 	first.record.ended(errAskAgainAfterARestart)
 
 	again := connectionReport{stdout: &stdout, record: openStatus(), sharer: trust.Peer{Name: "iMac", Address: centralAddress}}
-	again.quiet = askedAgainAfterARestart(again.record.lastReport())
+	again.quiet = quietAboutThePermission(again.record)
 	again.waitingForPermission()
 
 	if got := strings.Count(stdout.String(), waitingForAccessibility); got != 1 {
 		t.Errorf("the notice was printed %d times, want once:\n%s", got, stdout.String())
 	}
 	expectState(t, lanhopStatus(t), "accessibility")
+}
+
+func TestALanhopStartedByHandAlwaysSaysWhatItWaitsFor(t *testing.T) {
+	useConfigDirectory(t)
+	t.Setenv("XPC_SERVICE_NAME", "")
+	openStatus().ended(errAskAgainAfterARestart)
+	if quietAboutThePermission(openStatus()) {
+		t.Error("a lanhop started by hand stays quiet about the permission because the service left that error")
+	}
+}
+
+func TestTheServiceThatEndsToAskAgainPrintsNothingAndExitsWithAnError(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := exitCodeFor(errAskAgainAfterARestart, &stderr); code != 1 || stderr.Len() != 0 {
+		t.Errorf("exit code = %d, stderr = %q, want 1 and nothing printed", code, stderr.String())
+	}
 }

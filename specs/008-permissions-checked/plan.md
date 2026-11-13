@@ -46,7 +46,7 @@ lanhop.app/
 
 The installer reads only the first word. People read the sentence.
 
-**Waiting for Accessibility.** When the permission is missing, the service writes `accessibility` and checks again every second, instead of ending. On three Macs on 2026-11-13 (macOS 15.5, 26.5 and 26.6), a running process never saw the permission it was given, not even through `AXIsProcessTrusted`, and a new process started with `launchctl kickstart -k` saw it at once. So the service started by launchd (`XPC_SERVICE_NAME` is its label) ends after 10 seconds of waiting with an error that says why, and launchd starts a new process 10 seconds later, as the launch agent asks on any error. The new process reads that error in the status file and does not print the notice again. A lanhop started by hand keeps waiting: there the permission belongs to the terminal, which has to be started again anyway.
+**Waiting for Accessibility.** When the permission is missing, the service writes `accessibility` and checks again every second, instead of ending. On three Macs on 2026-11-13 (macOS 15.5, 26.5 and 26.6), a running process never saw the permission it was given, not even through `AXIsProcessTrusted`, and a new process started with `launchctl kickstart -k` saw it at once. So the service started by launchd (`XPC_SERVICE_NAME` is its label) ends after 10 seconds of waiting with an error that says why, and launchd starts a new process within 10 seconds, as the launch agent asks on any error. The new process reads that error in the status file and does not print the notice again. A lanhop started by hand keeps waiting: there the permission belongs to the terminal, which has to be started again anyway.
 
 ## The installer on a Mac
 

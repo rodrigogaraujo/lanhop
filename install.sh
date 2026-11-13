@@ -829,6 +829,10 @@ check_service() {
   begun=$(seconds_now)
   since=$begun
   last_restart=$begun
+  restarts_itself=yes
+  if [ "$os" = darwin ] && ! asks_again_by_itself; then
+    restarts_itself=no
+  fi
   while :; do
     line=$(current_status)
     state=${line%%:*}
@@ -846,7 +850,7 @@ check_service() {
         ;;
       accessibility)
         ask_for_accessibility
-        if [ "$os" = darwin ] && ! asks_again_by_itself && [ $((now - last_restart)) -ge "$accessibility_restart" ]; then
+        if [ "$restarts_itself" = no ] && [ $((now - last_restart)) -ge "$accessibility_restart" ]; then
           last_restart=$now
           restart_agent
         fi

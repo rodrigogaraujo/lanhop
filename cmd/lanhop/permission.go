@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/status"
@@ -11,6 +12,7 @@ import (
 const waitingForAccessibility = "lanhop waits for the Accessibility permission: in System Settings > Privacy & Security > Accessibility, allow the program that starts lanhop, as docs/setup-macos.md explains. lanhop carries on by itself once it is allowed."
 
 const (
+	agentLabel              = "com.github.rodrigogaraujo.lanhop"
 	permissionCheckInterval = time.Second
 	freshAnswerAfter        = 10 * time.Second
 )
@@ -46,4 +48,12 @@ func waitForPermission(ctx context.Context, granted func() bool, waiting func(),
 
 func askedAgainAfterARestart(previous status.Report) bool {
 	return previous.State == status.Stopped && previous.Error == errAskAgainAfterARestart.Error()
+}
+
+func startedByTheLaunchAgent() bool {
+	return os.Getenv("XPC_SERVICE_NAME") == agentLabel
+}
+
+func quietAboutThePermission(record statusFile) bool {
+	return startedByTheLaunchAgent() && askedAgainAfterARestart(record.lastReport())
 }

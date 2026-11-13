@@ -107,7 +107,7 @@ func receive(args []string, stdout io.Writer) (err error) {
 		return usageError("receive takes no argument, only its option")
 	}
 	report := connectionReport{stdout: stdout, record: openStatus()}
-	report.quiet = askedAgainAfterARestart(report.record.lastReport())
+	report.quiet = quietAboutThePermission(report.record)
 	defer func() { report.record.ended(err) }()
 
 	trusted, err := openTrusted()
