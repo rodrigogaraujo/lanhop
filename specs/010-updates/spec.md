@@ -1,6 +1,6 @@
 # Feature Specification: Updating without work
 
-**Created**: 2026-11-13 · **Status**: Draft · **Depends on**: [spec 006](../006-packages/spec.md), [spec 008](../008-permissions-checked/spec.md)
+**Created**: 2026-11-13 · **Status**: Draft · **Depends on**: [spec 005](../005-clipboard-sharing/spec.md) (the Features frame), [spec 006](../006-packages/spec.md), [spec 008](../008-permissions-checked/spec.md)
 
 I run one command on the machine that has the keyboard and mouse, and every machine of my desk ends up on the new version. On a Mac, macOS does not ask for its permissions again.
 
@@ -11,7 +11,7 @@ Today a new version means the installer line on each machine, one by one. On a M
 Two things cause the work:
 
 - Nothing in lanhop knows how to update itself, or the other machines.
-- The macOS app is signed ad hoc. macOS ties the Accessibility permission to the exact build, so each new build is a stranger to it ([ADR 6](../../docs/adr/0006-an-app-bundle-with-its-own-identifier-on-macos.md) and spec 008 measured this).
+- The macOS app is signed ad hoc. macOS ties the Accessibility permission to the exact build, so each new build is a stranger to it. Three Macs of the desk showed this on 2026-11-13 ([ADR 10](../../docs/adr/0010-a-stable-signature-from-a-certificate-of-the-project.md)).
 
 ## Terms
 
@@ -35,7 +35,7 @@ I run `lanhop update` on the central. It updates the central, and each side mach
 1. **Given** a desk on an older release, **When** I run `lanhop update` on the central, **Then** the central moves to the latest release, and each side machine moves to the same version, without anything typed on it.
 2. **Given** `lanhop update` is running, **When** the side machines update, **Then** it prints each machine with its old and new version as each one comes back, and ends with a line that says which machines did not come back, if any.
 3. **Given** a side machine is off during the update, **When** it starts later and connects, **Then** it updates to the version of the central then.
-4. **Given** a side machine has focus when its update arrives, **When** the update is ready, **Then** it waits until focus leaves it before it restarts, so the keyboard and mouse never freeze on the machine I am using.
+4. **Given** a side machine has focus when its update arrives, **When** the update is ready, **Then** it waits until focus leaves it, and until what it was handing over (a copy, a file) is done, before it restarts, so the keyboard and mouse never freeze on the machine I am using and nothing I copied is lost.
 5. **Given** I run `lanhop update` on a side machine, **When** it ends, **Then** that machine is on the latest release, and the others are not touched.
 6. **Given** every machine is already on the latest release, **When** I run `lanhop update`, **Then** it says so and changes nothing.
 
@@ -70,7 +70,7 @@ After an update, a Mac goes on controlling and sharing without a new click in Sy
 - A release that needs more than a new program: a new launch agent key, a new udev rule, a new group. The update stops before replacing anything and prints the installer line.
 - lanhop was not installed by the installer, or runs from a folder the person cannot write.
 - lanhop runs by hand in a terminal instead of as a service.
-- A build of the source code, whose version is `dev`.
+- A build that is not a release: `dev` from the source code, or `dev-<commit>` from a run of the workflow.
 - Two `lanhop update` at the same time on one machine.
 - The central updates while a side machine is in the middle of its own update.
 - GitHub cannot be reached, or answers slowly.
@@ -84,12 +84,12 @@ After an update, a Mac goes on controlling and sharing without a new click in Sy
 - **FR-001**: `lanhop update` MUST move the machine it runs on to the latest release, or to the version given with `--version`, and restart its service.
 - **FR-002**: A side machine MUST move to the version of its central when it connects to a central on a newer release, unless following the central is switched off on it.
 - **FR-003**: A side machine MUST NOT move to a version older than its own because of the central.
-- **FR-004**: lanhop MUST download only from the releases of the project on GitHub, and MUST replace nothing unless the download matches the checksums of that release and the checksums carry a valid signature of the project.
+- **FR-004**: lanhop MUST download only from the releases of the project on GitHub, and MUST replace nothing unless the download matches the checksums of that release, the checksums carry a valid signature of the project, and the signed files name the version that was asked for.
 - **FR-005**: On macOS, the new app MUST carry the same stable signature as the running one, or nothing is replaced.
 - **FR-006**: Replacing MUST be whole or nothing: after any failure, the machine runs the old version, untouched.
-- **FR-007**: A side machine with focus MUST NOT restart for an update until focus leaves it.
-- **FR-008**: Only lanhop running as a service MUST follow the central. A lanhop run by hand, or a `dev` build, MUST NOT take updates from the central.
-- **FR-009**: Machines on 0.1.0 and 0.1.1 MUST keep working with keyboard, mouse and text, and MUST NOT be sent anything about updates.
+- **FR-007**: A side machine MUST NOT restart for an update while it has focus, before it has answered the last leave, or while a file transfer is open.
+- **FR-008**: Only a lanhop that its service started MUST follow the central. A lanhop run by hand, or a build that is not a release, MUST NOT take updates from the central.
+- **FR-009**: Machines on 0.1.0 and 0.1.1 MUST keep working with keyboard and mouse, and MUST NOT be sent Update.
 - **FR-010**: `lanhop status` on the central MUST show the version of each side machine, and say which ones cannot update by themselves.
 - **FR-011**: From the first release with the stable signature on, an update MUST NOT need a new Accessibility, Local Network or firewall approval on macOS.
 - **FR-012**: A release that needs the installer MUST be refused by `lanhop update`, which MUST print the installer line instead.
