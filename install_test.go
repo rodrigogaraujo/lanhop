@@ -79,7 +79,12 @@ join)
     echo 'lanhop: 10.0.0.5 is not waiting for a machine to join' >&2
     exit 1
   fi
-  echo 'Joined "iMac" at 10.0.0.5:24745.'
+  if [ -e '%[4]s.joined' ]; then
+    echo 'This machine already trusts "iMac", the central of this join code.'
+  else
+    : >'%[4]s.joined'
+    echo 'Joined "iMac" at 10.0.0.5:24745.'
+  fi
   ;;
 status)
   if [ -s '%[4]s' ]; then
@@ -2169,6 +2174,7 @@ func TestAJoinLineInstallsASideMachineWithoutAQuestionAndJoinsBeforeTheService(t
 		published := newReleases(t)
 		m := newMachine(t, shell, "Linux", "x86_64", published)
 		m.settings["LANHOP_JOIN"] = joinLine
+		m.typing()
 		output := m.mustRun()
 		expectNoQuestion(t, output)
 		expectSame(t, "system commands", commandsIn(output), m.named(joinTheInputGroup, writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules, reloadTheUnits, enableTheUnit))
@@ -2221,22 +2227,55 @@ func TestARefusedJoinStopsTheInstallerBeforeAnyService(t *testing.T) {
 	})
 }
 
-func TestAJoinLineThatCannotBeUsedStopsBeforeDownloading(t *testing.T) {
-	for _, settings := range []map[string]string{
-		{"LANHOP_JOIN": joinLine, "LANHOP_ROLE": "share"},
-		{"LANHOP_JOIN": "10.0.0.5"},
-		{"LANHOP_JOIN": "10.0.0.5 CODE extra"},
-		{"LANHOP_JOIN": "10.0.0.5 $(reboot)"},
-	} {
+func TestAJoinLineTypedAgainAfterTheJoinRunsToTheEnd(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
 		published := newReleases(t)
-		m := newMachine(t, "sh", "Linux", "x86_64", published)
-		maps.Copy(m.settings, settings)
-		output, code := m.run()
-		if code == 0 || !strings.Contains(output, "LANHOP_") {
-			t.Errorf("settings %v: exit code %d, want a refusal that names the setting:\n%s", settings, code, output)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.settings["LANHOP_JOIN"] = joinLine
+		m.mustRun()
+		output := m.mustRun()
+		expectMention(t, output, `already trusts "iMac"`)
+		expectSame(t, "files in the home directory", m.files(), []string{unitFile, binaryFile, ruleRecordFile})
+		if strings.Contains(output, "did not join") {
+			t.Errorf("the second run reports a failed join:\n%s", output)
 		}
-		expectSame(t, "files in the home directory", m.files(), []string{})
-	}
+	})
+}
+
+func TestAJoinLineAddsLanhopToThePathWithoutAQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.settings["LANHOP_JOIN"] = joinLine
+		m.settings["SHELL"] = "/usr/bin/zsh"
+		m.typing()
+		output := m.mustRun()
+		expectNoQuestion(t, output)
+		expectMention(t, output, "Added "+m.path(".local/bin")+" to the PATH in "+m.path(".zshrc"))
+	})
+}
+
+func TestAJoinLineThatCannotBeUsedStopsBeforeDownloading(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, settings := range []map[string]string{
+			{"LANHOP_JOIN": joinLine, "LANHOP_ROLE": "share"},
+			{"LANHOP_JOIN": "10.0.0.5"},
+			{"LANHOP_JOIN": "10.0.0.5 CODE extra"},
+			{"LANHOP_JOIN": "10.0.0.5 $(reboot)"},
+			{"LANHOP_JOIN": "10.0.0.5 "},
+			{"LANHOP_JOIN": " RF4K-Q7MZ-2XPA-HB3T-W6NC-5LDE"},
+			{"LANHOP_JOIN": "10.0.0.5\tRF4K-Q7MZ-2XPA-HB3T-W6NC-5LDE"},
+		} {
+			published := newReleases(t)
+			m := newMachine(t, shell, "Linux", "x86_64", published)
+			maps.Copy(m.settings, settings)
+			output, code := m.run()
+			if code == 0 || !strings.Contains(output, "LANHOP_") {
+				t.Errorf("settings %q: exit code %d, want a refusal that names the setting:\n%s", settings, code, output)
+			}
+			expectSame(t, "files in the home directory", m.files(), []string{})
+		}
+	})
 }
 
 func TestTheInstallerPutsLanhopOnThePathInTheFileOfTheShell(t *testing.T) {
@@ -2244,16 +2283,22 @@ func TestTheInstallerPutsLanhopOnThePathInTheFileOfTheShell(t *testing.T) {
 		name, system, shell string
 		existing            []string
 		profile             string
+		zdotdir             string
 	}{
-		{"zsh on Linux", "Linux", "/usr/bin/zsh", nil, ".zshrc"},
-		{"zsh on macOS", "Darwin", "/bin/zsh", nil, ".zshrc"},
-		{"bash on Linux", "Linux", "/bin/bash", nil, ".bashrc"},
-		{"bash on macOS with a profile", "Darwin", "/bin/bash", []string{".profile"}, ".profile"},
-		{"bash on macOS without one", "Darwin", "/bin/bash", nil, ".bash_profile"},
+		{"zsh on Linux", "Linux", "/usr/bin/zsh", nil, ".zshrc", ""},
+		{"zsh on macOS", "Darwin", "/bin/zsh", nil, ".zshrc", ""},
+		{"bash on Linux", "Linux", "/bin/bash", nil, ".bashrc", ""},
+		{"bash on macOS with a profile", "Darwin", "/bin/bash", []string{".profile"}, ".profile", ""},
+		{"bash on macOS without one", "Darwin", "/bin/bash", nil, ".bash_profile", ""},
+		{"zsh with ZDOTDIR", "Linux", "/usr/bin/zsh", []string{"zsh/.keep"}, ".zshrc", "zsh"},
 	} {
 		t.Run(setup.name, func(t *testing.T) {
 			published := newReleases(t)
 			m := newMachine(t, "sh", setup.system, "arm64", published)
+			if setup.zdotdir != "" {
+				m.settings["ZDOTDIR"] = m.path(setup.zdotdir)
+				setup.profile = setup.zdotdir + "/" + setup.profile
+			}
 			for _, name := range setup.existing {
 				writeFile(t, m.path(name), []byte("# mine\n"), 0o644)
 			}
@@ -2280,6 +2325,31 @@ func TestThePathLineWaitsForAYesAndOtherShellsGetTheAdvice(t *testing.T) {
 	expectMention(t, output, "Add it in "+m.path(".zshrc")+"? [y/N]", "is not on your PATH")
 	if slices.Contains(m.files(), ".zshrc") {
 		t.Errorf("the installer wrote .zshrc after a no")
+	}
+
+	agreeing := newMachine(t, "sh", "Linux", "x86_64", newReleases(t))
+	agreeing.settings["SHELL"] = "/usr/bin/zsh"
+	agreeing.typing("y")
+	output = agreeing.mustRun()
+	expectMention(t, output, "Added "+agreeing.path(".local/bin")+" to the PATH in "+agreeing.path(".zshrc"))
+
+	unwritable := newMachine(t, "sh", "Linux", "x86_64", newReleases(t))
+	if err := os.MkdirAll(unwritable.path(".zshrc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unwritable.settings["SHELL"] = "/usr/bin/zsh"
+	unwritable.settings["LANHOP_YES"] = "1"
+	output = unwritable.mustRun()
+	expectMention(t, output, "could not write in "+unwritable.path(".zshrc"), "add this line")
+
+	oddFolder := newMachine(t, "sh", "Linux", "x86_64", newReleases(t))
+	oddFolder.settings["SHELL"] = "/usr/bin/zsh"
+	oddFolder.settings["LANHOP_YES"] = "1"
+	oddFolder.settings["LANHOP_INSTALL_DIR"] = oddFolder.path("odd$folder")
+	output = oddFolder.mustRun()
+	expectMention(t, output, "add this line")
+	if slices.Contains(oddFolder.files(), ".zshrc") {
+		t.Errorf("the installer wrote a PATH line for a folder with a dollar sign")
 	}
 
 	other := newMachine(t, "sh", "Linux", "x86_64", newReleases(t))

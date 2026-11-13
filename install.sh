@@ -209,7 +209,7 @@ check_role() {
     fail "LANHOP_JOIN makes this machine a side machine, so it cannot come with LANHOP_ROLE=$LANHOP_ROLE"
   fi
   case $LANHOP_JOIN in
-    *[!A-Za-z0-9.:\ -]* | *' '*' '*) fail "LANHOP_JOIN must hold the address and the code that lanhop add printed, and it is $LANHOP_JOIN" ;;
+    *[!A-Za-z0-9.:\ -]* | *' '*' '* | ' '* | *' ') fail "LANHOP_JOIN must hold the address and the code that lanhop add printed, and it is $LANHOP_JOIN" ;;
     *' '*) ;;
     *) fail "LANHOP_JOIN must hold the address and the code that lanhop add printed, and it is $LANHOP_JOIN" ;;
   esac
@@ -320,7 +320,7 @@ install_app() {
 shell_profile() {
   login_shell=${SHELL:-}
   case ${login_shell##*/} in
-    zsh) say "$HOME/.zshrc" ;;
+    zsh) say "${ZDOTDIR:-$HOME}/.zshrc" ;;
     bash)
       if [ "$os" != darwin ]; then
         say "$HOME/.bashrc"
@@ -343,23 +343,23 @@ advise_about_path() {
   esac
   path_line="export PATH=\"$install_directory:\$PATH\""
   profile=$(shell_profile)
+  case $install_directory in
+    *\"* | *\\* | *\$* | *\`*) profile= ;;
+  esac
   if [ -n "$profile" ] && [ -f "$profile" ] && grep -qxF "$path_line" "$profile"; then
     say ""
     say "$profile puts $install_directory on the PATH already, so a new terminal finds lanhop."
     return 0
   fi
-  if [ -n "$profile" ]; then
-    say ""
-    if agrees "$install_directory is not on your PATH. Add it in $profile?"; then
-      printf '\n%s\n' "$path_line" >>"$profile"
+  say ""
+  if [ -n "$profile" ] && agrees "$install_directory is not on your PATH. Add it in $profile?"; then
+    if printf '\n%s\n' "$path_line" 2>/dev/null >>"$profile"; then
       say "Added $install_directory to the PATH in $profile, so a new terminal finds lanhop. In this one, type the whole path: $command_link"
       return 0
     fi
+    problem "could not write in $profile"
   fi
-  case ":$PATH:" in
-    *)
-      cat <<EOF
-
+  cat <<EOF
 $install_directory is not on your PATH. To run lanhop by its name, add this line
 to the file your shell reads when it starts, such as ~/.profile or ~/.zshrc:
 
@@ -367,8 +367,6 @@ to the file your shell reads when it starts, such as ~/.profile or ~/.zshrc:
 
 Until then, type the whole path: $command_link
 EOF
-      ;;
-  esac
 }
 
 choose_role() {
