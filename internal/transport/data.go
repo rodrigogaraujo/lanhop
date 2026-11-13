@@ -110,12 +110,6 @@ func (d *DataConn) take(wanted dataRole) error {
 	return ErrDataUsedBothWays
 }
 
-func (d *DataConn) isWriting() bool {
-	d.roleMutex.Lock()
-	defer d.roleMutex.Unlock()
-	return d.role == writing
-}
-
 func (d *DataConn) acknowledge(read int) {
 	d.acking.Lock()
 	defer d.acking.Unlock()
@@ -135,13 +129,12 @@ func (d *DataConn) acknowledge(read int) {
 func (d *DataConn) readAcks() {
 	for {
 		frame, err := wire.Read(d.secured)
+		if err == nil && (!frame.IsControl() || frame.Code != event.ControlDataAck) {
+			err = ErrDataNotAnAck
+		}
 		if err != nil {
 			d.endedBy = err
-			close(d.ended)
-			return
-		}
-		if !frame.IsControl() || frame.Code != event.ControlDataAck {
-			d.endedBy = ErrDataNotAnAck
+			d.secured.Close()
 			close(d.ended)
 			return
 		}
@@ -164,7 +157,7 @@ func (d *DataConn) TellAllArrived() error {
 		return nil
 	}
 	d.told = true
-	return wire.Write(d.secured, event.AllArrived())
+	return wire.Write(d.secured, event.AllArrived(d.blocksRead))
 }
 
 func (d *DataConn) AwaitAllArrived(ctx context.Context) error {
@@ -201,14 +194,18 @@ func (d *DataConn) Write(data []byte) (int, error) {
 }
 
 func (d *DataConn) SetDeadline(deadline time.Time) error {
-	if d.isWriting() {
+	d.roleMutex.Lock()
+	defer d.roleMutex.Unlock()
+	if d.role == writing {
 		return d.secured.SetWriteDeadline(deadline)
 	}
 	return d.secured.SetDeadline(deadline)
 }
 
 func (d *DataConn) SetReadDeadline(deadline time.Time) error {
-	if d.isWriting() {
+	d.roleMutex.Lock()
+	defer d.roleMutex.Unlock()
+	if d.role == writing {
 		return nil
 	}
 	return d.secured.SetReadDeadline(deadline)

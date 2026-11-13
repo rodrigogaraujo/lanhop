@@ -804,8 +804,51 @@ func TestNoAcknowledgementFollowsTheLastAnswer(t *testing.T) {
 	if err := writer.AwaitAllArrived(ctx); err != nil {
 		t.Fatalf("AwaitAllArrived = %v, want nil", err)
 	}
-	if got := writer.acknowledged.Load(); got != 1 {
-		t.Errorf("the writer saw %d blocks acknowledged, want 1: nothing after the last answer", got)
+	reader.acking.Lock()
+	sent := reader.blocksRead
+	reader.acking.Unlock()
+	if sent != 1 {
+		t.Errorf("the reader acknowledged %d blocks, want 1: nothing after the last answer", sent)
+	}
+}
+
+func TestAReadDeadlineSetBeforeTheFirstWriteDoesNotStopTheAcknowledgements(t *testing.T) {
+	writer, reader := connectedForData(t)
+	if err := writer.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	written := writeInTheBackground(t, writer, 32<<10)
+	readExactly(t, reader, 32<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := reader.TellAllArrived(); err != nil {
+		t.Fatalf("TellAllArrived: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); err != nil {
+		t.Fatalf("AwaitAllArrived after a read deadline set before writing = %v, want nil", err)
+	}
+}
+
+func TestAWriterStopsWhenSomethingElseThanAnAcknowledgementComesBack(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 8<<10)
+	readExactly(t, reader, 8<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := wire.Write(reader.secured, event.Hello()); err != nil {
+		t.Fatalf("writing a stray frame: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); !errors.Is(err, ErrDataNotAnAck) {
+		t.Fatalf("AwaitAllArrived after a stray frame = %v, want ErrDataNotAnAck", err)
+	}
+	if _, err := writer.Write(make([]byte, 1)); err == nil {
+		t.Errorf("Write after a stray frame came back succeeded, want the closed connection to refuse it")
 	}
 }
 
@@ -881,8 +924,8 @@ func TestTheValueOfAnAcknowledgementCarriesTheBlocksAndTheLastAnswer(t *testing.
 	if blocks, all := event.SplitDataAck(event.DataAck(1234).Value); blocks != 1234 || all {
 		t.Errorf("DataAck(1234) reads as %d, %t, want 1234, false", blocks, all)
 	}
-	if _, all := event.SplitDataAck(event.AllArrived().Value); !all {
-		t.Errorf("AllArrived does not read as the last answer")
+	if blocks, all := event.SplitDataAck(event.AllArrived(7).Value); blocks != 7 || !all {
+		t.Errorf("AllArrived(7) reads as %d, %t, want 7, true", blocks, all)
 	}
 	pastTheLargest := event.TransferNumberMax
 	pastTheLargest++

@@ -26,7 +26,7 @@ Side machines open their connection to the central, and the central does not ope
 | 12 | File copy size | Right after File copy | The total size, in KiB, rounded up |
 | 13 | Open data | Control connection, from the central to a side machine | A new transfer number, and the way: bit 31 set means the side machine sends, clear means it receives |
 | 14 | Data stop | Control connection, either way | The transfer number to stop |
-| 15 | Data ack | Data connection, from the side that reads back to the side that writes | Bits 0 to 30: the number of blocks of 32 KiB read so far. Bit 31 set: every file has arrived whole, and no acknowledgement follows |
+| 15 | Data ack | Data connection, from the side that reads back to the side that writes | Bits 0 to 30: the number of blocks of 32 KiB read so far. Bit 31 set: every file has arrived whole, and no acknowledgement follows. Anything else on the way back ends the connection |
 
 **The answer to a leave stays light.** A side machine that holds a file copy answers with File copy and File copy size, worked out within the time an answer has (ADR 8). It reads no content and computes no digest at that moment. A list that cannot be counted in that time is not sent, and the log says that it was too slow to list, apart from a list over the limit.
 
