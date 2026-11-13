@@ -40,6 +40,7 @@ const (
 
 	usageWithTheEditor    = "lanhop layout --edit   arrange the machines on the desk by dragging them"
 	usageWithoutTheEditor = "lanhop layout          show where the layout file is"
+	usageWithTheStatus    = "lanhop status          say what lanhop is doing on this machine"
 
 	joinTheInputGroup   = "sudo usermod -aG input ana"
 	writeTheUdevRule    = `printf '%s\n' 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee {root}/etc/udev/rules.d/60-lanhop.rules`
@@ -53,6 +54,9 @@ const (
 	disableTheUnit      = "systemctl --user disable --now lanhop.service"
 	deleteTheUdevRule   = "sudo rm -f {root}/etc/udev/rules.d/60-lanhop.rules {root}/etc/modules-load.d/lanhop.conf"
 	openAccessibility   = "open x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+	openLocalNetwork    = "open x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
+	addToTheFirewall    = "sudo {root}/usr/libexec/ApplicationFirewall/socketfilterfw --add {root}/Applications/lanhop.app"
+	unblockInFirewall   = "sudo {root}/usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp {root}/Applications/lanhop.app"
 	stopTheAgent        = "launchctl bootout gui/501/com.github.rodrigogaraujo.lanhop"
 	startTheAgent       = "launchctl bootstrap gui/501 {home}/" + agentFile
 	notInTheInputGroup  = "ana staff"
@@ -69,6 +73,37 @@ pair)
   read -r typed
   printf 'typed %%s\n' "$typed" >>'%[1]s'
   ;;
+status)
+  if [ -s '%[4]s' ]; then
+    head -n 1 '%[4]s'
+    if [ "$(wc -l <'%[4]s')" -gt 1 ]; then
+      tail -n +2 '%[4]s' >'%[4]s.next'
+      mv '%[4]s.next' '%[4]s'
+    fi
+  else
+    echo 'stopped: lanhop is not running here.'
+  fi
+  ;;
+esac
+`
+
+const fakeSleep = `#!/bin/sh
+now=$(cat '%[1]s' 2>/dev/null || echo 1000)
+echo $((now + ${1:-1})) >'%[1]s'
+`
+
+const fakeDate = `#!/bin/sh
+if [ "$1" = +%%s ]; then
+  cat '%[1]s' 2>/dev/null || echo 1000
+else
+  exec /bin/date "$@"
+fi
+`
+
+const fakeFirewall = `#!/bin/sh
+case "$1" in
+--getglobalstate) echo 'Firewall is %[1]s. (State = %[2]d)' ;;
+--getblockall) echo 'Firewall has block all state set to %[3]s.' ;;
 esac
 `
 
@@ -157,6 +192,7 @@ type releases struct {
 	root          string
 	url           string
 	calls         string
+	statuses      string
 	usage         string
 	withoutTheApp bool
 }
@@ -167,11 +203,12 @@ func newReleases(t *testing.T) *releases {
 	served := httptest.NewServer(http.FileServer(http.Dir(root)))
 	t.Cleanup(served.Close)
 	published := &releases{
-		t:     t,
-		root:  root,
-		url:   served.URL,
-		calls: filepath.Join(t.TempDir(), "calls"),
-		usage: usageWithTheEditor,
+		t:        t,
+		root:     root,
+		url:      served.URL,
+		calls:    filepath.Join(t.TempDir(), "calls"),
+		statuses: filepath.Join(t.TempDir(), "statuses"),
+		usage:    usageWithTheEditor,
 	}
 	published.publish(latestRelease, "1.0.0")
 	return published
@@ -182,7 +219,7 @@ func (r *releases) publish(directory, version string) {
 	var sums strings.Builder
 	for _, build := range builds {
 		name := "lanhop-" + build
-		program := fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage)
+		program := fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage, r.statuses)
 		files := []archived{{name + "/lanhop", program, 0o700}}
 		if strings.HasPrefix(build, "darwin-") && !r.withoutTheApp {
 			files = []archived{
@@ -196,6 +233,18 @@ func (r *releases) publish(directory, version string) {
 		fmt.Fprintf(&sums, "%x  %s.tar.gz\n", sha256.Sum256(archive), name)
 	}
 	r.write(filepath.Join(directory, "SHA256SUMS"), []byte(sums.String()))
+}
+
+func (r *releases) withTheStatus() *releases {
+	r.t.Helper()
+	r.usage = usageWithTheEditor + "\n" + usageWithTheStatus
+	r.publish(latestRelease, "1.0.0")
+	return r
+}
+
+func (r *releases) statusSays(lines ...string) {
+	r.t.Helper()
+	writeFile(r.t, r.statuses, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 func (r *releases) write(name string, content []byte) {
@@ -295,6 +344,9 @@ func newMachine(t *testing.T, shell, system, architecture string, from *releases
 		"LANHOP_TERMINAL":       filepath.Join(m.aside, "no terminal"),
 	}
 	m.withGroups(notInTheInputGroup)
+	clock := filepath.Join(m.aside, "clock")
+	writeFile(t, filepath.Join(m.aside, "bin", "sleep"), []byte(fmt.Sprintf(fakeSleep, clock)), 0o755)
+	writeFile(t, filepath.Join(m.aside, "bin", "date"), []byte(fmt.Sprintf(fakeDate, clock)), 0o755)
 	if err := os.MkdirAll(m.inRoot("Applications"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +369,11 @@ func (m *machine) linkTarget(name string) string {
 func (m *machine) withGroups(groups string) {
 	m.t.Helper()
 	writeFile(m.t, filepath.Join(m.aside, "bin", "id"), []byte(fmt.Sprintf(fakeID, groups)), 0o755)
+}
+
+func (m *machine) withFirewall(state string, number int, blockAll string) {
+	m.t.Helper()
+	writeFile(m.t, m.inRoot("usr/libexec/ApplicationFirewall/socketfilterfw"), []byte(fmt.Sprintf(fakeFirewall, state, number, blockAll)), 0o755)
 }
 
 func (m *machine) withRealSystemCommands() {
@@ -1583,6 +1640,198 @@ func TestAnInstalledAppStaysWhereItIsSoThatItsServiceKeepsRunningIt(t *testing.T
 	})
 }
 
+const (
+	waitsForAccessibility = "accessibility: lanhop waits for the Accessibility permission."
+	triesTheCentral       = `connecting: lanhop is trying to reach "iMac" at 10.0.0.5:24745.`
+	keptOffTheNetwork     = `blocked: lanhop cannot reach "iMac" at 10.0.0.5:24745, but this terminal can.`
+	connectedToTheCentral = `connected: lanhop is connected to "iMac" at 10.0.0.5:24745.`
+	centralCannotBeFound  = `unreachable: neither lanhop nor this terminal can reach "iMac" at 10.0.0.5:24745.`
+	nobodyConnectedYet    = "waiting: lanhop shares the keyboard and mouse of this machine, and no machine is connected yet."
+	sharingWithTheSide    = `sharing: lanhop shares the keyboard and mouse of this machine with "pessoal".`
+	notRunningYet         = "stopped: lanhop is not running here."
+)
+
+func TestTheInstallerAsksForEachPermissionWhenTheServiceNeedsItAndEndsConnected(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		states := []string{notRunningYet, waitsForAccessibility, waitsForAccessibility, triesTheCentral}
+		for range 17 {
+			states = append(states, keptOffTheNetwork)
+		}
+		published.statusSays(append(states, connectedToTheCentral)...)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent, openAccessibility, openLocalNetwork))
+		expectMention(t, output,
+			"Choose lanhop in "+m.inRoot("Applications")+" and click Open",
+			"Waiting until lanhop has the permission.",
+			"macOS may now ask whether lanhop may find devices on your local network. Click Allow.",
+			"Privacy & Security > Local Network, switch on lanhop",
+			connectedToTheCentral+"\n",
+		)
+		if strings.Count(output, "Choose lanhop in") != 1 || strings.Count(output, "switch on lanhop") != 1 {
+			t.Errorf("a permission was explained more than once:\n%s", output)
+		}
+		if strings.Contains(output, "Press Enter here") {
+			t.Errorf("the installer asks to press Enter instead of checking:\n%s", output)
+		}
+		if strings.Contains(output, "lanhop installer:") {
+			t.Errorf("the installer reports a problem:\n%s", output)
+		}
+	})
+}
+
+func TestTheInstallerEndsAsSoonAsTheServiceIsConnected(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(connectedToTheCentral)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+		expectMention(t, output, connectedToTheCentral)
+		if strings.Contains(output, "Privacy & Security > Accessibility") {
+			t.Errorf("the installer explains a permission that the service has:\n%s", output)
+		}
+	})
+}
+
+func TestACentralThatCannotBeReachedYetIsSaidOnceAndTheWaitGoesOn(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(triesTheCentral, centralCannotBeFound, centralCannotBeFound, centralCannotBeFound, connectedToTheCentral)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectMention(t, output, centralCannotBeFound, connectedToTheCentral)
+		if strings.Count(output, centralCannotBeFound) != 1 {
+			t.Errorf("the central that cannot be reached is said more than once:\n%s", output)
+		}
+		expectLastLine(t, output, connectedToTheCentral)
+	})
+}
+
+func TestTheInstallerSaysWhatTheServiceStillWaitsForWhenTheLimitRunsOut(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(waitsForAccessibility)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectMention(t, output, "lanhop is not connected yet. It says: "+waitsForAccessibility, `"lanhop status" says it again at any time.`)
+	})
+}
+
+func TestTheInstallerOnACentralEndsWhenASideMachineConnects(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(nobodyConnectedYet, nobodyConnectedYet, sharingWithTheSide)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("y", "y", "n", "n")
+		output := m.mustRun()
+		expectMention(t, output, sharingWithTheSide)
+		if strings.Contains(output, "Click Allow") {
+			t.Errorf("a central is told about the alert of a side machine:\n%s", output)
+		}
+	})
+}
+
+func TestTheInstallerOnACentralSaysItIsReadyWhenNobodyConnectsInTime(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(nobodyConnectedYet)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("y", "y", "n", "n")
+		output := m.mustRun()
+		expectMention(t, output, "lanhop is ready on this machine, and no other machine is connected yet.")
+	})
+}
+
+func TestTheInstallerWithNobodyAtTheKeyboardPrintsTheStatusOnceAndOpensNothing(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(waitsForAccessibility, connectedToTheCentral)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+		expectMention(t, output, "lanhop says: "+waitsForAccessibility)
+		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "status"))
+		expectNoQuestion(t, output)
+	})
+}
+
+func TestTheInstallerChecksTheServiceOnLinuxToo(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(triesTheCentral, connectedToTheCentral)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.withGroups(alreadyInInputGroup)
+		m.typing("n", "y", "y", "")
+		output := m.mustRun()
+		expectMention(t, output, connectedToTheCentral)
+		if strings.Contains(output, "Click Allow") || strings.Contains(output, "Local Network") {
+			t.Errorf("a Linux machine is told about a setting of macOS:\n%s", output)
+		}
+	})
+}
+
+func TestTheInstallerDoesNotCheckAServiceThatDidNotStart(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(connectedToTheCentral)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.typing("n", "y", "y", "y", "")
+		output := m.mustRun()
+		if strings.Contains(output, "Checking lanhop") || slices.Contains(published.lanhopWasRunWith(), configured("status")[0]) {
+			t.Errorf("the installer checks a service that starts only at the next login:\n%s", output)
+		}
+	})
+}
+
+func TestTheFirewallOfAMacCentralIsOpenedForTheAppWhenTheUserAgrees(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(sharingWithTheSide)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.withFirewall("enabled", 1, "disabled")
+		m.settings["LANHOP_ROLE"] = "share"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent, addToTheFirewall, unblockInFirewall))
+		expectMention(t, output, "The firewall of this Mac is on.", shownToTheUser(m.named(addToTheFirewall, unblockInFirewall)...))
+	})
+}
+
+func TestTheFirewallIsLeftAloneWhenItIsOffOrTheMachineReceives(t *testing.T) {
+	cases := []struct {
+		name, role, state string
+		number            int
+	}{
+		{"a central with the firewall off", "share", "disabled", 0},
+		{"a side machine with the firewall on", "receive", "enabled", 1},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				published := newReleases(t).withTheStatus()
+				published.statusSays(connectedToTheCentral)
+				m := newMachine(t, shell, "Darwin", "arm64", published)
+				m.withFirewall(c.state, c.number, "disabled")
+				m.settings["LANHOP_ROLE"] = c.role
+				m.settings["LANHOP_YES"] = "1"
+				output := m.mustRun()
+				expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+				if strings.Contains(output, "The firewall of this Mac") {
+					t.Errorf("the installer talks about the firewall:\n%s", output)
+				}
+			})
+		}
+	})
+}
+
 func TestAProgramOfAnEarlierInstallIsNamedEvenWhenNoServiceIsSetUp(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
 		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
@@ -1624,5 +1873,190 @@ func TestTheAppGetsALaunchAgentWhateverTheDirectoryOfTheCommand(t *testing.T) {
 		if target := m.linkTarget("R&D/lanhop"); target != m.inRoot(appProgram) {
 			t.Errorf("R&D/lanhop links to %s, want %s", target, m.inRoot(appProgram))
 		}
+	})
+}
+
+func TestABlockedConnectionThatClearsUpQuicklyOpensNoPane(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(triesTheCentral, keptOffTheNetwork, keptOffTheNetwork, connectedToTheCentral)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+		expectMention(t, output, connectedToTheCentral)
+	})
+}
+
+func TestUninstallRemovesTheStatusOfTheServiceAndKeepsTheKey(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.mustRun()
+		for _, name := range []string{"status", "status.lock"} {
+			writeFile(t, m.path("Library/Application Support/lanhop/"+name), []byte("state=waiting\n"), 0o600)
+		}
+		writeFile(t, m.path(macPeersFile), []byte("{}\n"), 0o600)
+		m.mustRun("--uninstall")
+		expectSame(t, "files in the home directory", m.files(), []string{macPeersFile})
+	})
+}
+
+func TestUninstallAlsoRemovesCopiesThatAnInterruptedUpdateLeft(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.mustRun()
+		writeFile(t, m.inRoot(appDirectory+".old.4242/Contents/Info.plist"), []byte(infoOfTheApp), 0o644)
+		writeFile(t, m.inRoot(appDirectory+".new.4243/Contents/Info.plist"), []byte(infoOfTheApp), 0o644)
+		m.mustRun("--uninstall")
+		expectSame(t, "entries in Applications", entriesOf(t, m.inRoot("Applications")), []string{})
+	})
+}
+
+func expectLastLine(t *testing.T, output, want string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if last := lines[len(lines)-1]; last != want {
+		t.Errorf("the last line is %q, want %q:\n%s", last, want, output)
+	}
+}
+
+const notPaired = "stopped: lanhop is not running here. It ended with: this machine is not paired with a machine to receive from. First run: lanhop pair ADDRESS"
+
+func TestAServiceThatStaysStoppedEndsTheWaitWithItsReason(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(notPaired)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectLastLine(t, output, notPaired)
+		if runs := len(published.lanhopWasRunWith()); runs > 40 {
+			t.Errorf("lanhop ran %d times, want the wait for a stopped service to end within about 25 seconds", runs)
+		}
+	})
+}
+
+func TestAServiceThatRestartsIsWaitedFor(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		states := []string{}
+		for range 12 {
+			states = append(states, notRunningYet)
+		}
+		published.statusSays(append(states, triesTheCentral, connectedToTheCentral)...)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectLastLine(t, output, connectedToTheCentral)
+	})
+}
+
+func TestAFailureIsSaidOnceAndTheWaitGoesOn(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		failing := `failing: lanhop cannot connect to "iMac" at 10.0.0.5:24745, and keeps trying: the other machine is not paired with this one`
+		published := newReleases(t).withTheStatus()
+		published.statusSays(failing, failing, failing, connectedToTheCentral)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		if strings.Count(output, failing) != 1 {
+			t.Errorf("the failure is not said exactly once:\n%s", output)
+		}
+		expectLastLine(t, output, connectedToTheCentral)
+	})
+}
+
+func TestABlockedServiceOnLinuxIsSaidWithoutASettingOfMacOS(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		blocked := `blocked: lanhop cannot reach "iMac" at 10.0.0.5:24745, but this terminal can. lanhop failed with: no route to host`
+		published := newReleases(t).withTheStatus()
+		states := []string{triesTheCentral}
+		for range 20 {
+			states = append(states, blocked)
+		}
+		published.statusSays(append(states, connectedToTheCentral)...)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.withGroups(alreadyInInputGroup)
+		m.typing("n", "y", "y", "")
+		output := m.mustRun()
+		for _, command := range commandsIn(output) {
+			if strings.HasPrefix(command, "open ") {
+				t.Errorf("Linux ran %q", command)
+			}
+		}
+		if strings.Count(output, blocked) != 1 || strings.Contains(output, "System Settings") || strings.Contains(output, "Click Allow") {
+			t.Errorf("Linux got a setting of macOS, or the line not exactly once:\n%s", output)
+		}
+		expectLastLine(t, output, connectedToTheCentral)
+	})
+}
+
+func TestStatusThatSaysNothingEndsTheWaitWithAPointerToTheCommand(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays("")
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectLastLine(t, output, `silent: lanhop status said nothing. Run "lanhop status" to see why.`)
+	})
+}
+
+func TestStatesThatKeepChangingStillEndAtTheLimit(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		states := []string{}
+		for len(states) < 700 {
+			states = append(states, notRunningYet, notRunningYet, notRunningYet, triesTheCentral)
+		}
+		published.statusSays(states...)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectMention(t, output, "lanhop is not connected yet. It says: ")
+		if runs := len(published.lanhopWasRunWith()); runs > 620 {
+			t.Errorf("lanhop status ran %d times, want the check to end at its limit of 600 seconds", runs)
+		}
+	})
+}
+
+func TestNobodyAtTheKeyboardWaitsBrieflyForTheServiceToStartAndExplainsAMissingPermission(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(notRunningYet, notRunningYet, notRunningYet, waitsForAccessibility)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+		expectMention(t, output, "lanhop says: "+waitsForAccessibility, "the program to allow is the lanhop app")
+		expectNoQuestion(t, output)
+	})
+}
+
+func TestTheFirewallThatBlocksEverythingIsExplainedInsteadOfOpened(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(sharingWithTheSide)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.withFirewall("enabled", 2, "enabled")
+		m.settings["LANHOP_ROLE"] = "share"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+		expectMention(t, output, `switch off "Block all incoming connections"`)
+	})
+}
+
+func TestTheFirewallStepThatIsRefusedRunsNothing(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(sharingWithTheSide)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.withFirewall("enabled", 1, "disabled")
+		m.typing("y", "y", "n", "n", "n")
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
+		expectMention(t, output, shownToTheUser(m.named(addToTheFirewall, unblockInFirewall)...), "Not run. The other machines cannot connect until the firewall lets lanhop in")
 	})
 }

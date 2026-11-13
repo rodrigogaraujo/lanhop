@@ -13,6 +13,14 @@ udev_rule_path=$system_root/etc/udev/rules.d/60-lanhop.rules
 udev_rule='KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"'
 uinput_at_boot_path=$system_root/etc/modules-load.d/lanhop.conf
 accessibility_pane='x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
+local_network_pane='x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork'
+firewall_tool=$system_root/usr/libexec/ApplicationFirewall/socketfilterfw
+check_limit=600
+central_wait=60
+blocked_patience=15
+stopped_patience=25
+start_wait=10
+service_started=no
 showing=no
 someone_answers=no
 
@@ -450,6 +458,7 @@ EOF
   elif ! enable_unit; then
     problem "systemd did not take it. On a system without systemd, start \"lanhop $role\" with your session in another way."
   elif [ "$input_group_applies" = yes ]; then
+    service_started=yes
     say "lanhop is running. See what it does with: journalctl --user -u $unit_name -f"
   else
     say "lanhop starts the next time you log in, when the input group applies to your session."
@@ -601,17 +610,66 @@ EOF
   fi
   write_agent
   say "Wrote $agent_path"
-  explain_accessibility
-  system open "$accessibility_pane" || problem "System Settings did not open. Open that pane by hand."
-  if [ "$someone_answers" = yes ]; then
-    printf 'Press Enter here when the switch next to lanhop is on. '
-    ask
+  if ! knows_its_status; then
+    explain_accessibility
+    open_pane "$accessibility_pane"
+    if [ "$someone_answers" = yes ]; then
+      printf 'Press Enter here when the switch next to lanhop is on. '
+      ask
+    fi
   fi
   stop_agent 2>/dev/null || true
   if start_agent; then
+    service_started=yes
     say "lanhop is running, and it starts every time you log in. It writes what it does in $log_path"
   else
     problem "launchd did not start it now. It starts the next time you log in."
+  fi
+  offer_firewall
+}
+
+open_pane() {
+  system open "$1" || problem "System Settings did not open. Open that pane by hand."
+}
+
+firewall_is_on() {
+  [ -x "$firewall_tool" ] && "$firewall_tool" --getglobalstate 2>/dev/null | grep -q -e enabled -e 'State = [12]'
+}
+
+firewall_blocks_everything() {
+  "$firewall_tool" --getblockall 2>/dev/null | grep -q -i enabled
+}
+
+let_the_app_through() {
+  system sudo "$firewall_tool" --add "$app" &&
+    system sudo "$firewall_tool" --unblockapp "$app"
+}
+
+offer_firewall() {
+  if [ "$role" != share ] || [ -z "$app" ] || ! firewall_is_on; then
+    return 0
+  fi
+  if firewall_blocks_everything; then
+    cat <<EOF
+
+The firewall of this Mac blocks every incoming connection, so the other machines
+cannot connect to lanhop here. In System Settings > Network > Firewall > Options,
+switch off "Block all incoming connections".
+EOF
+    return 0
+  fi
+  cat <<EOF
+
+The firewall of this Mac is on. The other machines connect to lanhop here, so the
+firewall must let the lanhop app accept connections. These commands allow it:
+
+EOF
+  shown let_the_app_through
+  say ""
+  if ! agrees "Run them now?"; then
+    say "Not run. The other machines cannot connect until the firewall lets lanhop in: System Settings > Network > Firewall > Options."
+  elif ! let_the_app_through; then
+    problem "that did not work. Allow lanhop in System Settings > Network > Firewall > Options."
   fi
 }
 
@@ -656,6 +714,144 @@ EOF
   fi
 }
 
+knows_its_status() {
+  grep -q 'lanhop status' "$binary" 2>/dev/null
+}
+
+current_status() {
+  line=$(lanhop_as_the_service_runs_it status 2>/dev/null || true)
+  if [ -z "$line" ]; then
+    line='silent: lanhop status said nothing. Run "lanhop status" to see why.'
+  fi
+  printf '%s\n' "$line"
+}
+
+seconds_now() {
+  date +%s
+}
+
+tell_once() {
+  case " $told " in
+    *" $1 "*) return 0 ;;
+  esac
+  told="$told $1"
+  say ""
+  say "$2"
+}
+
+ask_for_accessibility() {
+  case " $told " in
+    *" accessibility "*) return 0 ;;
+  esac
+  told="$told accessibility"
+  explain_accessibility
+  open_pane "$accessibility_pane"
+  say "Waiting until lanhop has the permission."
+}
+
+warn_about_the_local_network_alert() {
+  if [ "$os" != darwin ] || [ "$role" != receive ]; then
+    return 0
+  fi
+  tell_once alert "macOS may now ask whether lanhop may find devices on your local network. Click Allow."
+}
+
+ask_for_local_network() {
+  case " $told " in
+    *" local-network "*) return 0 ;;
+  esac
+  told="$told local-network"
+  cat <<EOF
+
+macOS keeps lanhop off the local network, so lanhop cannot reach the other machine.
+In System Settings > Privacy & Security > Local Network, switch on lanhop.
+An "a.out" in that list is the lanhop of an earlier install, and switching it does
+nothing for the app.
+
+EOF
+  open_pane "$local_network_pane"
+  say "Waiting until lanhop connects."
+}
+
+report_status_once() {
+  begun=$(seconds_now)
+  line=$(current_status)
+  while [ "${line%%:*}" = stopped ] && [ $(($(seconds_now) - begun)) -lt "$start_wait" ]; do
+    sleep 1
+    line=$(current_status)
+  done
+  if [ "${line%%:*}" = accessibility ]; then
+    explain_accessibility
+  fi
+  say "lanhop says: $line"
+  say "\"lanhop status\" says it again at any time."
+}
+
+check_service() {
+  if [ "$service_started" != yes ] || ! knows_its_status; then
+    return 0
+  fi
+  say ""
+  if [ "$someone_answers" != yes ]; then
+    report_status_once
+    return 0
+  fi
+  say "Checking lanhop as it runs at login."
+  told=
+  previous=
+  begun=$(seconds_now)
+  since=$begun
+  while :; do
+    line=$(current_status)
+    state=${line%%:*}
+    now=$(seconds_now)
+    if [ "$state" != "$previous" ]; then
+      previous=$state
+      since=$now
+    fi
+    in_state=$((now - since))
+    case $state in
+      connected | sharing)
+        say ""
+        say "$line"
+        return 0
+        ;;
+      accessibility) ask_for_accessibility ;;
+      connecting) warn_about_the_local_network_alert ;;
+      blocked)
+        warn_about_the_local_network_alert
+        if [ "$os" != darwin ]; then
+          tell_once blocked "$line"
+        elif [ "$in_state" -ge "$blocked_patience" ]; then
+          ask_for_local_network
+        fi
+        ;;
+      unreachable | failing) tell_once "$state" "$line" ;;
+      stopped | silent)
+        if [ "$in_state" -ge "$stopped_patience" ]; then
+          say ""
+          say "$line"
+          return 0
+        fi
+        ;;
+      waiting)
+        if [ "$in_state" -ge "$central_wait" ]; then
+          say ""
+          say "lanhop is ready on this machine, and no other machine is connected yet. The installer on each of them says so when it connects."
+          return 0
+        fi
+        ;;
+    esac
+    if [ $((now - begun)) -ge "$check_limit" ]; then
+      say ""
+      say "lanhop is not connected yet. It says: $line"
+      say "\"lanhop status\" says it again at any time."
+      return 0
+    fi
+    sleep 1
+  done
+}
+
 explain_layout() {
   say ""
   if ! "$binary" help 2>/dev/null | grep -q -e 'layout --edit'; then
@@ -691,6 +887,7 @@ install_lanhop() {
   fi
   say ""
   say "To remove lanhop: $install_command -s -- --uninstall"
+  check_service
 }
 
 disable_unit() {
@@ -748,6 +945,7 @@ is_the_app() {
 
 remove_apps() {
   for candidate in "$system_root/Applications/lanhop.app" "$HOME/Applications/lanhop.app"; do
+    rm -rf "$candidate".new.* "$candidate".old.* 2>/dev/null || true
     if ! is_the_app "$candidate"; then
       continue
     fi
@@ -769,7 +967,7 @@ uninstall_lanhop() {
     remove_unit
     remove_udev_rule
   fi
-  rm -f "$config_directory/status"
+  rm -f "$config_directory/status" "$config_directory/status.lock"
   if [ -e "$binary" ] || [ -L "$binary" ]; then
     rm -f "$binary"
     say "Removed $binary"
