@@ -121,7 +121,7 @@ func TestAnEmptiedPasteboardIsEmptyRatherThanNotText(t *testing.T) {
 	}
 }
 
-func TestFormattedTextIsReadAsItsPlainText(t *testing.T) {
+func TestACopyWithFormattingAndPlainTextReadsAsThePlainText(t *testing.T) {
 	p := pasteboardOfThisTest(t)
 	const rtf = `{\rtf1\ansi{\fonttbl\f0 Helvetica;}\f0\b bold\b0  and plain}`
 	plain := "bold and plain"

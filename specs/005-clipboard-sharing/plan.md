@@ -63,7 +63,7 @@ Each system provides three operations: a mark that changes with every copy and c
 `NSPasteboard`, the general pasteboard, through cgo:
 
 - **Mark**: `changeCount`.
-- **Read**: the string of type `NSPasteboardTypeString`. Formatted text also offers that type, with the plain text. A copy that also offers the type `org.nspasteboard.ConcealedType` is private (FR-014): that is the convention of [nspasteboard.org](http://nspasteboard.org) that password managers follow, and lanhop then reads nothing more.
+- **Read**: the string of type `NSPasteboardTypeString`. Applications that copy formatted text usually offer that type too, with the plain text. A copy that offers only formatting, with no plain text, reads as not text. A copy that also offers the type `org.nspasteboard.ConcealedType` is private (FR-014): that is the convention of [nspasteboard.org](http://nspasteboard.org) that password managers follow, and lanhop then reads nothing more.
 - **Write**: `clearContents`, then `setString:forType:`.
 
 Newer versions of macOS may show an alert when a program reads what another program copied without a paste from the person. `changeCount` does not read the content. Whether macOS 15 or 26 show such an alert to lanhop running as a launch agent is not measured yet. Task 7 measures it at the desk. If macOS asks, the installer of [spec 008](../008-permissions-checked/spec.md) has to ask for it too.
