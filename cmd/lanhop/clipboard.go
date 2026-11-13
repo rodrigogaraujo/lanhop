@@ -76,9 +76,7 @@ func clipboardSwitchedOn(path string) bool {
 	return !strings.EqualFold(strings.TrimSpace(string(contents)), switchedOff)
 }
 
-var featuresOfThisProcess = new(features.Set)
-
-func clipboardConfigIn(directory string, stdout io.Writer) (clipshare.Config, bool) {
+func clipboardConfigIn(directory string, announced *features.Set, stdout io.Writer) (clipshare.Config, bool) {
 	if openClipboard == nil {
 		return clipshare.Config{}, false
 	}
@@ -87,12 +85,12 @@ func clipboardConfigIn(directory string, stdout io.Writer) (clipshare.Config, bo
 		Open:       openClipboard,
 		SwitchedOn: func() bool { return clipboardSwitchedOn(path) },
 		Log:        stdout,
-		Features:   featuresOfThisProcess,
+		Features:   announced,
 	}, true
 }
 
-func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory string, stdout io.Writer) (stop func()) {
-	config, supported := clipboardConfigIn(directory, stdout)
+func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory string, announced *features.Set, stdout io.Writer) (stop func()) {
+	config, supported := clipboardConfigIn(directory, announced, stdout)
 	if !supported {
 		return func() {}
 	}
@@ -101,8 +99,8 @@ func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory s
 	return runUntilStopped(done, central.Run)
 }
 
-func clipboardOfThisSide(done context.Context, directory string, stdout io.Writer) (receiver.Clipboard, func()) {
-	config, supported := clipboardConfigIn(directory, stdout)
+func clipboardOfThisSide(done context.Context, directory string, announced *features.Set, stdout io.Writer) (receiver.Clipboard, func()) {
+	config, supported := clipboardConfigIn(directory, announced, stdout)
 	if !supported {
 		return nil, func() {}
 	}

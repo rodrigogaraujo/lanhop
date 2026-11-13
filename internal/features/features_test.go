@@ -22,6 +22,19 @@ func TestTurningOneBitLeavesTheOthersAsTheyWere(t *testing.T) {
 	}
 }
 
+func TestTheHighestBitCanBeTurnedOnAndOff(t *testing.T) {
+	var set Set
+
+	set.Turn(31, true)
+	if !set.Has(31) || set.Value() >= 0 {
+		t.Errorf("after turning bit 31 on, Has(31) = %v and the value is %#x", set.Has(31), set.Value())
+	}
+	set.Turn(31, false)
+	if set.Value() != 0 {
+		t.Errorf("after turning bit 31 off, the value is %#x, want 0", set.Value())
+	}
+}
+
 func TestTheClipboardBitIsTheOneOnTheWire(t *testing.T) {
 	var set Set
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
@@ -142,7 +143,7 @@ func receive(args []string, stdout io.Writer) (err error) {
 
 	fmt.Fprintf(stdout, "Receiving from %q at %s. Press Ctrl+C to stop.\n", sharer.Name, sharer.Address)
 	report.connecting()
-	clipboard, stopSharingTheClipboard := clipboardOfThisSide(interrupted, directory, stdout)
+	clipboard, stopSharingTheClipboard := clipboardOfThisSide(interrupted, directory, new(features.Set), stdout)
 	defer stopSharingTheClipboard()
 	return receiver.Run(interrupted, receiver.Config{
 		Transport: transport.Config{Identity: local},

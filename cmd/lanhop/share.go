@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
@@ -143,7 +144,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
 	machine.OnReceivers(reportReceivers(openStatus()))
-	defer shareTheClipboard(done, machine, directory, stdout)()
+	defer shareTheClipboard(done, machine, directory, new(features.Set), stdout)()
 	go func() {
 		for {
 			receiver, err := listener.Accept()
