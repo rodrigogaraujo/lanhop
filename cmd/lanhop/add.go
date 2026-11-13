@@ -97,7 +97,7 @@ func add(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "The line uses %s. This machine also has %s: if %s cannot reach the first one, run lanhop add again with --address.\n\n", hosts[0], strings.Join(hosts[1:], ", "), name)
 	}
 
-	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	joined, err := pairing.WaitForJoin(interrupted, listener, pairing.WaitConfig{
 		Identity: local,
@@ -119,7 +119,15 @@ func add(args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "%s joined from %s. %s\n", joined.Peer.Name, joined.From, hotkeyOf(trusted, joined.Peer.Name))
-	fmt.Fprintln(stdout, "Place it on the desk with: lanhop layout --edit")
+	placeLater := fmt.Sprintf("Place %s on the desk later with: lanhop layout --edit\n", joined.Peer.Name)
+	if interrupted.Err() != nil {
+		fmt.Fprint(stdout, placeLater)
+		return nil
+	}
+	fmt.Fprintf(stdout, "Opening the layout editor, where %s waits in the tray: drag it to its place on the desk, save, and press Done.\n\n", joined.Peer.Name)
+	if err := editLayoutUntil(interrupted, stdout); err != nil {
+		fmt.Fprintf(stdout, "The layout editor did not open: %v\n%s", err, placeLater)
+	}
 	return nil
 }
 
