@@ -221,6 +221,9 @@ join_central() {
   fi
   central_address=${LANHOP_JOIN%% *}
   join_code=${LANHOP_JOIN#* }
+  if ! "$binary" help 2>/dev/null | grep -q -e 'lanhop join'; then
+    fail "$installed cannot join a machine yet, so nothing that starts lanhop at login was written. Type the line that lanhop add printed on the machine with the keyboard: it names the release to install."
+  fi
   say ""
   say "Joining the machine with the keyboard at $central_address."
   lanhop_as_the_service_runs_it join "$central_address" "$join_code" ||
