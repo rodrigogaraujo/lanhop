@@ -217,23 +217,50 @@ func TestLosingTheXServerClosesDone(t *testing.T) {
 	}
 }
 
+func offering(writer *Clipboard, format func(b *Clipboard) uint32, data string) {
+	writer.state.Lock()
+	writer.extraOffers = map[uint32][]byte{format(writer): []byte(data)}
+	writer.state.Unlock()
+}
+
 func TestACopyOfFilesIsNotTextEvenWithTheirPathsAsText(t *testing.T) {
-	formats := map[string]func(b *Clipboard) uint32{
-		"x-special/gnome-copied-files": func(b *Clipboard) uint32 { return b.atoms.gnomeFiles },
-		"text/uri-list":                func(b *Clipboard) uint32 { return b.atoms.uriList },
+	formats := map[string]struct {
+		format func(b *Clipboard) uint32
+		data   string
+	}{
+		"x-special/gnome-copied-files": {func(b *Clipboard) uint32 { return b.atoms.gnomeFiles }, "copy\nfile:///home/someone/report.pdf"},
+		"text/uri-list of files":       {func(b *Clipboard) uint32 { return b.atoms.uriList }, "# copied\r\nfile:///home/someone/report.pdf\r\nFILE:///home/someone/notes.txt\r\n"},
+		"application/vnd.portal.files": {func(b *Clipboard) uint32 { return b.atoms.portalFiles }, "token"},
 	}
-	for name, format := range formats {
+	for name, offer := range formats {
 		t.Run(name, func(t *testing.T) {
 			writer, reader := twoPrograms(t)
-			writer.state.Lock()
-			writer.extraOffers = []uint32{format(writer)}
-			writer.state.Unlock()
+			offering(writer, offer.format, offer.data)
 			writer.Write("/home/someone/report.pdf")
 
 			if got, err := reader.Read(); !errors.Is(err, clipboard.ErrNotText) || got != "" {
 				t.Errorf("Read = %q, %v, want nothing and %v", got, err, clipboard.ErrNotText)
 			}
 		})
+	}
+}
+
+func TestALinkOfferedAsAnAddressListIsStillText(t *testing.T) {
+	writer, reader := twoPrograms(t)
+	offering(writer, func(b *Clipboard) uint32 { return b.atoms.uriList }, "https://example.org/page\r\n")
+	writer.Write("https://example.org/page")
+
+	if got, err := reader.Read(); err != nil || got != "https://example.org/page" {
+		t.Errorf("Read = %q, %v, want the link", got, err)
+	}
+}
+
+func TestAListWithAFileAndALinkIsStillText(t *testing.T) {
+	if everyAddressIsAFile("file:///a\nhttps://example.org\n") {
+		t.Error("a list with a web address counted as files")
+	}
+	if everyAddressIsAFile("# only a comment\n") {
+		t.Error("a list with no address counted as files")
 	}
 }
 

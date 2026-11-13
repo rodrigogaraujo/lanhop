@@ -29,8 +29,10 @@ int lanhop_pasteboard_read(const char *name, int64_t limit, char **text, int64_t
 		if ([types containsObject:lanhopConcealedType]) {
 			return LANHOP_PASTEBOARD_PRIVATE;
 		}
-		if ([types containsObject:NSPasteboardTypeFileURL]) {
-			return LANHOP_PASTEBOARD_NOT_TEXT;
+		for (NSString *files in @[ NSPasteboardTypeFileURL, @"NSFilenamesPboardType", @"com.apple.pasteboard.promised-file-url" ]) {
+			if ([types containsObject:files]) {
+				return LANHOP_PASTEBOARD_NOT_TEXT;
+			}
 		}
 		NSString *string = [board stringForType:NSPasteboardTypeString];
 		if (string == nil) {
