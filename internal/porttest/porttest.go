@@ -1,30 +1,24 @@
-//go:build unix
-
 package porttest
 
 import (
+	"errors"
 	"net"
-	"strconv"
 	"syscall"
 	"testing"
+	"time"
 )
 
-var loopback = [4]byte{127, 0, 0, 1}
+const belowEveryEphemeralPort = "127.0.0.1:1"
 
 func RefusingAddress(t testing.TB) string {
 	t.Helper()
-	held, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		t.Fatalf("socket: %v", err)
+	conn, err := net.DialTimeout("tcp", belowEveryEphemeralPort, time.Second)
+	if err == nil {
+		conn.Close()
+		t.Fatalf("something listens at %s, where these tests need a port that refuses connections", belowEveryEphemeralPort)
 	}
-	syscall.CloseOnExec(held)
-	t.Cleanup(func() { syscall.Close(held) })
-	if err := syscall.Bind(held, &syscall.SockaddrInet4{Addr: loopback}); err != nil {
-		t.Fatalf("bind: %v", err)
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("dialing %s = %v, want the connection refused", belowEveryEphemeralPort, err)
 	}
-	bound, err := syscall.Getsockname(held)
-	if err != nil {
-		t.Fatalf("getsockname: %v", err)
-	}
-	return net.JoinHostPort(net.IP(loopback[:]).String(), strconv.Itoa(bound.(*syscall.SockaddrInet4).Port))
+	return belowEveryEphemeralPort
 }

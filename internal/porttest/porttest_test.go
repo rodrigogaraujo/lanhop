@@ -1,10 +1,9 @@
-//go:build unix
-
 package porttest
 
 import (
 	"errors"
 	"net"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -25,12 +24,30 @@ func TestARefusingAddressRefusesEveryConnection(t *testing.T) {
 	}
 }
 
-func TestNoListenerCanTakeARefusingAddress(t *testing.T) {
-	address := RefusingAddress(t)
-
-	listener, err := net.Listen("tcp", address)
-	if err == nil {
+func TestARefusingAddressIsBelowEveryPortAListenerThatAsksForAnyPortIsGiven(t *testing.T) {
+	refusing := portOf(t, RefusingAddress(t))
+	for range 50 {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+		given := portOf(t, listener.Addr().String())
 		listener.Close()
-		t.Fatalf("a listener took %s while it was held", address)
+		if given <= refusing {
+			t.Fatalf("a listener that asked for any port was given %d, not above the refusing port %d", given, refusing)
+		}
 	}
+}
+
+func portOf(t *testing.T, address string) int {
+	t.Helper()
+	_, text, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
