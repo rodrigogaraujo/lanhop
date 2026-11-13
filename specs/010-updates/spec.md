@@ -36,7 +36,7 @@ I run `lanhop update` on the central. It updates the central, and each side mach
 2. **Given** `lanhop update` is running, **When** the side machines update, **Then** it prints each machine with its old and new version as each one comes back, and ends with a line that says which machines did not come back, if any.
 3. **Given** a side machine is off during the update, **When** it starts later and connects, **Then** it updates to the version of the central then.
 4. **Given** a side machine has focus when its update arrives, **When** the update is ready, **Then** it waits until focus leaves it, and until what it was handing over (a copy, a file) is done, before it restarts, so the keyboard and mouse never freeze on the machine I am using. A file copy that waits on that machine for a later paste is lost at the restart, as at any restart of lanhop.
-5. **Given** I run `lanhop update` on a side machine, **When** it ends, **Then** that machine is on the latest release, and the others are not touched.
+5. **Given** I run `lanhop update` on a side machine, **When** it ends, **Then** that machine is on the latest release and restarts at once, and the others are not touched.
 6. **Given** every machine is already on the latest release, **When** I run `lanhop update`, **Then** it says so and changes nothing.
 
 ### Story 2 - A Mac keeps its permissions after an update (Priority: P1)
@@ -89,11 +89,11 @@ After an update, a Mac goes on controlling and sharing without a new click in Sy
 - **FR-004**: lanhop MUST download only from the releases of the project on GitHub, following the redirects of GitHub, and MUST replace nothing unless the download matches the checksums of that release, the checksums carry a valid signature of the project, and the signed files name the version that was asked for.
 - **FR-005**: On macOS, the new app MUST meet the code requirement built from the identifier and the certificate hashes compiled into lanhop, or nothing is replaced.
 - **FR-006**: Replacing MUST be whole or nothing: a failure before the program is replaced leaves the old version untouched, and a crash at any moment leaves either the old program or the new one, whole.
-- **FR-007**: A side machine MUST NOT restart for an update while it has focus, before it has answered the last leave, or while a file transfer is open.
+- **FR-007**: A side machine that updates for the central MUST NOT restart while it has focus, before it has answered the last leave, or while a file transfer is open. `lanhop update` typed on a machine restarts it at once.
 - **FR-008**: Only a lanhop that its service started MUST follow the central. A lanhop run by hand, or a build that is not a release, MUST NOT take updates from the central.
 - **FR-009**: Machines on 0.1.0 and 0.1.1 MUST keep working with keyboard and mouse, and MUST NOT be sent Update.
 - **FR-010**: `lanhop status` on the central MUST show the version of each side machine, and say which ones cannot update by themselves: on 0.1.1 or older, below the oldest version the release can update from, or with updates off. The central MUST NOT send Update to a machine that needs the installer.
-- **FR-011**: From the first release with the stable signature on, an update MUST NOT need a new Accessibility, Local Network or firewall approval on macOS.
+- **FR-011**: From the first release with the stable signature on, an update MUST NOT need a new Accessibility, Local Network, App Management or firewall approval on macOS.
 - **FR-012**: A release that needs the installer MUST be refused by `lanhop update`, which MUST print the installer line instead.
 
 ### Out of scope for this feature

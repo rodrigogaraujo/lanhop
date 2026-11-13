@@ -19,11 +19,12 @@ What exists today:
 **Who can sign.**
 
 - The signing secrets live in a GitHub environment named `release`. Its deployment policy allows only tags that match `v*`, and each run needs the approval of the owner.
-- A tag ruleset on `v*` lets only the owner create, move or delete such a tag.
+- A tag ruleset on `v*` lets only the owner create, move or delete such a tag. A ruleset on `main` asks for a pull request and forbids force pushes.
 - Pull requests and manual runs on a branch sign with a certificate and a key made inside the job and thrown away after it.
-- The release job fails when the program was built with build tags, or when the public keys in it differ from the ones in the repository.
+- The release job fails when the program was built with build tags, which `go version -m` shows.
+- The jobs that hold signing secrets use actions pinned to a commit.
 
-**Signed checksums.** The release workflow signs `SHA256SUMS` with an Ed25519 key of the project and publishes the signature as `SHA256SUMS.sig`, 64 bytes. lanhop carries two public keys in its code: the current one, and the next one, kept offline for a change of key. A signature by either is valid. The owner keeps a copy of both private keys outside GitHub. Go's standard library verifies Ed25519, so lanhop keeps no dependencies ([ADR 3](0003-go-with-no-dependencies.md)).
+**Signed checksums.** The release workflow signs `SHA256SUMS` with an Ed25519 key of the project and publishes the signature as `SHA256SUMS.sig`, 64 bytes. lanhop carries two public keys in its code: the current one, and the next one, kept offline for a change of key. A signature by either is valid. The release that moves to the next key drops the old one and adds a new next one. The owner keeps a copy of both private keys outside GitHub. Go's standard library verifies Ed25519, so lanhop keeps no dependencies ([ADR 3](0003-go-with-no-dependencies.md)).
 
 **What the signature covers.** `SHA256SUMS` lists the four archives and a file named `UPDATE`, with two lines:
 
@@ -59,16 +60,16 @@ A side machine that has to wait before replacing keeps the downloaded files, and
 
 **Finding the program.** lanhop takes the path from the definition of its service, `ProgramArguments` of the launch agent or `ExecStart` of the systemd unit, and resolves links. Without a service, from `os.Executable`, with links resolved. On macOS the program must sit inside a lanhop.app.
 
-**Restarting.** A side machine ends with exit status 3 after replacing, and its service, taking it as an error, starts the new program at the same path. On the central, `lanhop update` runs apart from the service, so it restarts the service with `launchctl kickstart -k` or `systemctl --user restart`. The launch agent, the systemd unit and the link in `~/.local/bin` stay as they are.
+**Restarting.** A side machine that updates for the central ends with exit status 3 after replacing, and its service, taking it as an error, starts the new program at the same path. Status 3 is its own, apart from the status 1 of a failure or of the restart for Accessibility (spec 008), so a log or a test can tell an update from those. `lanhop update`, typed on any machine, runs apart from the service, so it restarts the service at once with `launchctl kickstart -k` or `systemctl --user restart`: the person chose the moment. The launch agent, the systemd unit and the link in `~/.local/bin` stay as they are.
 
 **Side machines follow the central.**
 
 - Features bits 0 to 7 belong to the clipboard and to files (specs 005 and 011). Bits 8 to 15 belong to this ADR. Every Features frame carries the whole set of bits of the machine that sends it, so that one feature never clears the bit of another.
 - Bit 8 says that a machine follows the central. A side machine sets it only when its service started it (`LANHOP_SERVICE=1`, set by the installer in the launch agent and in the systemd unit), its version is a release, and following is switched on. A Features frame sent again because bit 8 changed does not count as announcing bit 0 again for the clipboard (ADR 8): only a change of bit 0 does.
-- Control code 17, Version, goes both ways right after Features, with the version in its value: major × 65536 + minor × 256 + patch. A build that is not a release sends 0.
+- Control code 17, Version, goes from a side machine to the central right after Features, with the version in its value: major × 65536 + minor × 256 + patch. A build that is not a release sends 0.
 - Control code 16, Update, goes from the central to a side machine that has bit 8 set, a version lower than the central's, and a version not below the central's `from`: once after the Version of the side machine arrives, and again if bit 8 turns on later in the connection. Its value is the version of the central.
 - The side machine downloads and checks that version at once. It replaces and restarts only when it does not have focus, has answered the last leave (ADR 8), and has no file transfer open (ADR 13). A file copy that waits on it for a later paste is lost at the restart, as at any restart of lanhop.
-- A side machine never moves to a version below its own because of the central.
+- A side machine never moves to a version below its own because of the central, and ignores an Update while bit 8 is off. `lanhop update --older` switches following off on that machine, and says so, so that the central does not move it back up.
 - The central writes the version of each side machine in its status file, where `lanhop status` and `lanhop update` read it.
 
 **The central goes first.** `lanhop update` on the central replaces it and restarts it. The side machines connect again, the central sees their lower version and sends Update. A side machine that was off gets it when it connects later.
@@ -80,10 +81,11 @@ A side machine that has to wait before replacing keeps the downloaded files, and
 - The central can only ask for a version number, never for an address or a program. A central can already type anything on a side machine, so this adds little to what a central can do.
 - The hello stays at version 1 for good. A later change to the protocol has to come through Features bits, or keep accepting version 1 long enough to send Update.
 - Machines on 0.1.0 and 0.1.1 ignore codes 16 and 17 and never set bit 8. They need the installer line once to reach v0.1.2, the first release that updates, which also sets `LANHOP_SERVICE=1`.
+- The installer line that lanhop prints names `install.sh` at the tag of the release, not at `main`. The installer itself still trusts HTTPS and checks the archive against the unsigned `SHA256SUMS`, as today, so everything that falls back to it, 0.1.x, a release that needs the installer, lost keys, is protected by HTTPS and the rulesets only. Checking the signature in the installer is later work.
 - Side machines need to reach github.com and the host it redirects to when they update.
 - A release that does not start leaves the side machines that took it without lanhop until the installer line runs on each. Before publishing, the release workflow installs the arm64 macOS archive and runs it, and checks the signature of the amd64 one. Going back to the previous version by itself is out of scope.
 - A change of key uses the next key, already in every machine, and needs no installer. If both keys are lost or leak, a release with new keys goes out, and each machine takes it with the installer line once.
-- `packaging/update-from` is kept by hand. The release workflow fails when the functions of `install.sh` that write the launch agent, the systemd unit or the udev rule changed since the tag it names.
+- `packaging/update-from` is kept by hand. The release workflow runs the `install.sh` of that tag and of the release into temporary roots, with the same inputs, and fails when the launch agent, the systemd unit or the udev rule they write differ.
 
 ## Alternatives
 
