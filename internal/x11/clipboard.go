@@ -3,6 +3,7 @@
 package x11
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -68,6 +69,14 @@ type atoms struct {
 	ownProperty, timeProperty                                                             uint32
 }
 
+type hint int
+
+const (
+	noHint hint = iota
+	secretHint
+	refusedHint
+)
+
 type selectionNotify struct {
 	target   uint32
 	property uint32
@@ -95,7 +104,7 @@ type Clipboard struct {
 	owned        bool
 	ownedSince   uint32
 	text         []byte
-	privateHint  bool
+	hint         hint
 	transfers    []*transfer
 	readTimeout  time.Duration
 	handleEvents func(event []byte)
@@ -105,7 +114,9 @@ func Open() (*Clipboard, error) {
 	if value := os.Getenv("DISPLAY"); value != "" {
 		return openNamed(value, authorityFile())
 	}
-	if output, err := exec.Command("systemctl", "--user", "show-environment").Output(); err == nil {
+	asking, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+	if output, err := exec.CommandContext(asking, "systemctl", "--user", "show-environment").Output(); err == nil {
 		if value, authority := sessionEnvironment(output); value != "" {
 			if board, err := openNamed(value, authority); err == nil {
 				return board, nil
@@ -206,6 +217,10 @@ func (b *Clipboard) Close() error {
 	return b.c.close()
 }
 
+func (b *Clipboard) Done() <-chan struct{} {
+	return b.c.closed
+}
+
 func (b *Clipboard) Mark() int64 {
 	b.owner()
 	b.state.Lock()
@@ -214,16 +229,16 @@ func (b *Clipboard) Mark() int64 {
 }
 
 func (b *Clipboard) Write(text string) (mark int64, err error) {
-	return b.write(text, false)
+	return b.write(text, noHint)
 }
 
-func (b *Clipboard) write(text string, markPrivate bool) (int64, error) {
+func (b *Clipboard) write(text string, offered hint) (int64, error) {
 	now, err := b.serverTime()
 	if err != nil {
 		return 0, err
 	}
 	b.state.Lock()
-	b.owned, b.ownedSince, b.text, b.privateHint = true, now, []byte(text), markPrivate
+	b.owned, b.ownedSince, b.text, b.hint = true, now, []byte(text), offered
 	b.state.Unlock()
 	if err := b.c.send(newRequest(opSetSelectionOwner, 0).u32(b.window).u32(b.atoms.clipboard).u32(now).done()); err != nil {
 		return 0, err
@@ -242,17 +257,6 @@ func (b *Clipboard) write(text string, markPrivate bool) (int64, error) {
 }
 
 func (b *Clipboard) Read() (string, error) {
-	b.state.Lock()
-	if b.owned {
-		private, text := b.privateHint, string(b.text)
-		b.state.Unlock()
-		if private {
-			return "", clipboard.ErrPrivate
-		}
-		return text, nil
-	}
-	b.state.Unlock()
-
 	owner, err := b.owner()
 	if err != nil {
 		return "", err
@@ -260,13 +264,23 @@ func (b *Clipboard) Read() (string, error) {
 	if owner == atomNone {
 		return "", clipboard.ErrEmpty
 	}
+	b.state.Lock()
+	if owner == b.window && b.owned {
+		private, text := b.hint != noHint, string(b.text)
+		b.state.Unlock()
+		if private {
+			return "", clipboard.ErrPrivate
+		}
+		return text, nil
+	}
+	b.state.Unlock()
 	offered, err := b.targetsOffered()
 	if err != nil {
 		return "", err
 	}
 	if slices.Contains(offered, b.atoms.passwordHint) {
-		hint, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16)
-		if err == nil && string(hint) == privateHintValue {
+		marker, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16)
+		if err != nil || string(marker) == privateHintValue {
 			return "", clipboard.ErrPrivate
 		}
 	}
@@ -333,7 +347,7 @@ func (b *Clipboard) convert(target uint32, limit int) ([]byte, error) {
 				return nil, errTargetRefused
 			}
 			drain(b.newValues)
-			return b.receive(limit, deadline)
+			return b.receive(limit)
 		case <-deadline:
 			return nil, ErrNoAnswer
 		case <-b.c.closed:
@@ -342,7 +356,7 @@ func (b *Clipboard) convert(target uint32, limit int) ([]byte, error) {
 	}
 }
 
-func (b *Clipboard) receive(limit int, deadline <-chan time.Time) ([]byte, error) {
+func (b *Clipboard) receive(limit int) ([]byte, error) {
 	kind, data, tooLarge, err := b.takeProperty(limit)
 	if err != nil {
 		return nil, err
@@ -355,7 +369,7 @@ func (b *Clipboard) receive(limit int, deadline <-chan time.Time) ([]byte, error
 	}
 	var whole []byte
 	for {
-		if err := b.waitForNewValue(deadline); err != nil {
+		if err := b.waitForNewValue(time.After(b.readTimeout)); err != nil {
 			return nil, err
 		}
 		_, part, tooLarge, err := b.takeProperty(limit - len(whole))
@@ -445,7 +459,7 @@ func (b *Clipboard) handle(event []byte) {
 	case code == eventSelectionClear:
 		if binary.LittleEndian.Uint32(event[12:16]) == b.atoms.clipboard {
 			b.state.Lock()
-			b.owned, b.text, b.privateHint, b.transfers = false, nil, false, nil
+			b.owned, b.text, b.hint = false, nil, noHint
 			b.state.Unlock()
 		}
 	case code == eventPropertyNotify:
@@ -484,12 +498,12 @@ func (b *Clipboard) answer(event []byte) {
 	}
 
 	b.state.Lock()
-	owned, since, text, private := b.owned, b.ownedSince, b.text, b.privateHint
+	owned, since, text, offered := b.owned, b.ownedSince, b.text, b.hint
 	b.state.Unlock()
 
 	answered := uint32(atomNone)
 	if owned && selection == b.atoms.clipboard {
-		if b.provide(requestor, property, target, since, text, private) {
+		if b.provide(requestor, property, target, since, text, offered) {
 			answered = property
 		}
 	}
@@ -503,19 +517,19 @@ func (b *Clipboard) answer(event []byte) {
 	b.c.send(newRequest(opSendEvent, 0).u32(requestor).u32(0).raw(notify).done())
 }
 
-func (b *Clipboard) provide(requestor, property, target, since uint32, text []byte, private bool) bool {
+func (b *Clipboard) provide(requestor, property, target, since uint32, text []byte, offered hint) bool {
 	latin1, fitsLatin1 := utf8ToLatin1(text)
 	switch target {
 	case b.atoms.targets:
-		offered := []uint32{b.atoms.targets, b.atoms.timestamp, b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain}
+		targets := []uint32{b.atoms.targets, b.atoms.timestamp, b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain}
 		if fitsLatin1 {
-			offered = append(offered, atomString)
+			targets = append(targets, atomString)
 		}
-		if private {
-			offered = append(offered, b.atoms.passwordHint)
+		if offered != noHint {
+			targets = append(targets, b.atoms.passwordHint)
 		}
-		data := make([]byte, 0, len(offered)*4)
-		for _, atom := range offered {
+		data := make([]byte, 0, len(targets)*4)
+		for _, atom := range targets {
 			data = binary.LittleEndian.AppendUint32(data, atom)
 		}
 		b.changeProperty(requestor, property, atomAtom, 32, data)
@@ -529,7 +543,7 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, text []by
 		}
 		return b.give(requestor, property, atomString, latin1)
 	case b.atoms.passwordHint:
-		if !private {
+		if offered != secretHint {
 			return false
 		}
 		b.changeProperty(requestor, property, b.atoms.utf8String, 8, []byte(privateHintValue))
@@ -577,11 +591,16 @@ func (b *Clipboard) continueTransfer(requestor, property uint32) {
 	current := b.transfers[index]
 	part := current.data[:min(b.chunk, len(current.data))]
 	current.data = current.data[len(part):]
+	lastToThisWindow := false
 	if len(part) == 0 {
 		b.transfers = slices.Delete(b.transfers, index, index+1)
+		lastToThisWindow = !slices.ContainsFunc(b.transfers, func(t *transfer) bool { return t.requestor == requestor })
 	}
 	b.state.Unlock()
 	b.changeProperty(requestor, property, current.kind, 8, part)
+	if lastToThisWindow {
+		b.c.send(newRequest(opChangeWindowAttributes, 0).u32(requestor).u32(attributeEventMask).u32(0).done())
+	}
 }
 
 func (b *Clipboard) changeProperty(window, property, kind uint32, format byte, data []byte) {

@@ -94,7 +94,7 @@ func readField(r io.Reader) ([]byte, error) {
 	return field, err
 }
 
-func cookieFor(number string, authority []byte) ([]byte, error) {
+func cookieFor(number, host string, authority []byte) ([]byte, error) {
 	r := bytes.NewReader(authority)
 	for {
 		var family uint16
@@ -109,8 +109,9 @@ func cookieFor(number string, authority []byte) ([]byte, error) {
 			}
 			fields[i] = field
 		}
-		entryNumber, name, secret := string(fields[1]), string(fields[2]), fields[3]
-		if (family == familyLocal || family == familyWild) && entryNumber == number && name == cookieName {
+		address, entryNumber, name, secret := string(fields[0]), string(fields[1]), string(fields[2]), fields[3]
+		forThisMachine := family == familyWild || (family == familyLocal && address == host)
+		if forThisMachine && entryNumber == number && name == cookieName {
 			return secret, nil
 		}
 	}
@@ -147,7 +148,8 @@ func cookieFromFile(number, path string) []byte {
 	if err != nil {
 		return nil
 	}
-	secret, err := cookieFor(number, authority)
+	host, _ := os.Hostname()
+	secret, err := cookieFor(number, host, authority)
 	if err != nil {
 		return nil
 	}
