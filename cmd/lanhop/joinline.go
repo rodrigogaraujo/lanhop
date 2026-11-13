@@ -5,6 +5,7 @@ import (
 	"net"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
@@ -18,7 +19,7 @@ const (
 
 var (
 	releaseVersion  = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
-	reachableByName = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
+	reachableByName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*(:([0-9]{1,5}))?$`)
 )
 
 var notForJoining = []string{"utun", "tun", "tap", "ppp", "ipsec", "wg", "zt", "bridge", "virbr", "docker", "podman", "cni", "lxdbr", "lxcbr", "br-", "veth", "vmnet", "vboxnet", "vnic"}
@@ -99,6 +100,18 @@ func addressOfTheDefaultRoute() net.IP {
 		return local.IP
 	}
 	return nil
+}
+
+func usableJoinAddress(address string) bool {
+	parts := reachableByName.FindStringSubmatch(address)
+	if parts == nil {
+		return false
+	}
+	if parts[2] == "" {
+		return true
+	}
+	port, err := strconv.Atoi(parts[2])
+	return err == nil && port >= 1 && port <= 65535
 }
 
 func joinAddress(host, port string) string {

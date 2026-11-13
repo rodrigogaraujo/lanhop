@@ -44,6 +44,8 @@ func add(args []string, stdout io.Writer) error {
 		return usageError(fmt.Sprintf("%q must have 1 to %d letters, digits, hyphens or underscores", name, trust.MaxNameLength))
 	case name == ownName:
 		return usageError(fmt.Sprintf("%q is the name of this machine. Give the new machine another name", name))
+	case *address != "" && !usableJoinAddress(*address):
+		return usageError(fmt.Sprintf("--address %q must be an IPv4 address or a host name, with a port from 1 to 65535 or without", *address))
 	}
 
 	directory, err := configDirectory()
@@ -73,10 +75,6 @@ func add(args []string, stdout io.Writer) error {
 	}
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 
-	if *address != "" && !reachableByName.MatchString(*address) {
-		listener.Close()
-		return usageError(fmt.Sprintf("--address %q must be an IP address or a host name, with a port or without", *address))
-	}
 	hosts := []string{*address}
 	if *address == "" {
 		hosts = joinAddresses(interfacesOfThisMachine(), addressOfTheDefaultRoute())

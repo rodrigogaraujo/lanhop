@@ -188,7 +188,7 @@ func TestAddRefusesANameItCannotUse(t *testing.T) {
 	if err := add([]string{"--listen", "127.0.0.1:0", "server"}, &screen{}); err == nil || !strings.Contains(err.Error(), "lanhop forget server") {
 		t.Errorf("add with a taken name = %v, want the advice to forget it first", err)
 	}
-	for _, address := range []string{"x$(reboot)", "a b", "10.0.0.1;ls", `"`} {
+	for _, address := range []string{"x$(reboot)", "a b", "10.0.0.1;ls", `"`, "-h", "10.0.0.1:0", "10.0.0.1:99999"} {
 		var usage usageError
 		if err := add([]string{"--listen", "127.0.0.1:0", "--address", address, "office-mac"}, &screen{}); !errors.As(err, &usage) {
 			t.Errorf("add --address %q = %v, want a usage error", address, err)
