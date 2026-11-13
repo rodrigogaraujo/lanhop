@@ -25,8 +25,12 @@ int lanhop_pasteboard_read(const char *name, int64_t limit, char **text, int64_t
 		if ([[board pasteboardItems] count] == 0) {
 			return LANHOP_PASTEBOARD_EMPTY;
 		}
-		if ([[board types] containsObject:lanhopConcealedType]) {
+		NSArray<NSPasteboardType> *types = [board types];
+		if ([types containsObject:lanhopConcealedType]) {
 			return LANHOP_PASTEBOARD_PRIVATE;
+		}
+		if ([types containsObject:NSPasteboardTypeFileURL]) {
+			return LANHOP_PASTEBOARD_NOT_TEXT;
 		}
 		NSString *string = [board stringForType:NSPasteboardTypeString];
 		if (string == nil) {

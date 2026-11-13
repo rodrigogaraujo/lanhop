@@ -136,6 +136,18 @@ func TestACopyWithFormattingAndPlainTextReadsAsThePlainText(t *testing.T) {
 	}
 }
 
+func TestACopyOfFilesIsNotTextEvenWithTheirNamesAsText(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	name := "report.pdf"
+	if err := p.writeTyped("public.file-url", "file:///tmp/report.pdf", &name); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	if got, err := p.Read(); !errors.Is(err, clipboard.ErrNotText) || got != "" {
+		t.Errorf("Read = %q, %v, want nothing and %v", got, err, clipboard.ErrNotText)
+	}
+}
+
 func TestATextOverTheLimitIsNotRead(t *testing.T) {
 	p := pasteboardOfThisTest(t)
 	if _, err := p.Write(strings.Repeat("z", clipboard.Limit+1)); err != nil {

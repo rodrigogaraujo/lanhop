@@ -217,6 +217,26 @@ func TestLosingTheXServerClosesDone(t *testing.T) {
 	}
 }
 
+func TestACopyOfFilesIsNotTextEvenWithTheirPathsAsText(t *testing.T) {
+	formats := map[string]func(b *Clipboard) uint32{
+		"x-special/gnome-copied-files": func(b *Clipboard) uint32 { return b.atoms.gnomeFiles },
+		"text/uri-list":                func(b *Clipboard) uint32 { return b.atoms.uriList },
+	}
+	for name, format := range formats {
+		t.Run(name, func(t *testing.T) {
+			writer, reader := twoPrograms(t)
+			writer.state.Lock()
+			writer.extraOffers = []uint32{format(writer)}
+			writer.state.Unlock()
+			writer.Write("/home/someone/report.pdf")
+
+			if got, err := reader.Read(); !errors.Is(err, clipboard.ErrNotText) || got != "" {
+				t.Errorf("Read = %q, %v, want nothing and %v", got, err, clipboard.ErrNotText)
+			}
+		})
+	}
+}
+
 func TestATextOverTheLimitIsNotRead(t *testing.T) {
 	writer, reader := twoPrograms(t)
 	writer.Write(strings.Repeat("z", clipboard.Limit+1))

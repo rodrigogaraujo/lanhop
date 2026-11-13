@@ -66,6 +66,7 @@ var (
 
 type atoms struct {
 	clipboard, targets, timestamp, utf8String, text, plain, plainUTF8, incr, passwordHint uint32
+	gnomeFiles, uriList                                                                   uint32
 	ownProperty, timeProperty                                                             uint32
 }
 
@@ -105,6 +106,7 @@ type Clipboard struct {
 	ownedSince   uint32
 	text         []byte
 	hint         hint
+	extraOffers  []uint32
 	transfers    []*transfer
 	readTimeout  time.Duration
 	handleEvents func(event []byte)
@@ -174,6 +176,8 @@ func (b *Clipboard) prepare() error {
 		&b.atoms.plainUTF8:    "text/plain;charset=utf-8",
 		&b.atoms.incr:         "INCR",
 		&b.atoms.passwordHint: "x-kde-passwordManagerHint",
+		&b.atoms.gnomeFiles:   "x-special/gnome-copied-files",
+		&b.atoms.uriList:      "text/uri-list",
 		&b.atoms.ownProperty:  "LANHOP_CLIPBOARD",
 	}
 	for atom, name := range names {
@@ -277,6 +281,9 @@ func (b *Clipboard) Read() (string, error) {
 	offered, err := b.targetsOffered()
 	if err != nil {
 		return "", err
+	}
+	if slices.Contains(offered, b.atoms.gnomeFiles) || slices.Contains(offered, b.atoms.uriList) {
+		return "", clipboard.ErrNotText
 	}
 	if slices.Contains(offered, b.atoms.passwordHint) {
 		marker, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16)
@@ -522,6 +529,9 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, text []by
 	switch target {
 	case b.atoms.targets:
 		targets := []uint32{b.atoms.targets, b.atoms.timestamp, b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain}
+		b.state.Lock()
+		targets = append(targets, b.extraOffers...)
+		b.state.Unlock()
 		if fitsLatin1 {
 			targets = append(targets, atomString)
 		}
