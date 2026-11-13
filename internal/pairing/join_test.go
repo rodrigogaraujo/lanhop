@@ -2,6 +2,7 @@ package pairing
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"slices"
@@ -306,6 +307,19 @@ func TestStrayConnectionsCostNoAttemptAndDoNotDelayAJoin(t *testing.T) {
 	defer silent.Close()
 	stranger(t, wait.address, framed("not a join"))
 	stranger(t, wait.address, []byte{2, tagJoin})
+	halfHello, err := net.Dial("tcp", wait.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	halfHello.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x80, 0x01})
+	halfHello.Close()
+	withoutCertificate, err := net.Dial("tcp", wait.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	unsigned := tls.Client(withoutCertificate, &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true})
+	unsigned.Handshake()
+	unsigned.Close()
 
 	started := time.Now()
 	if got := joinsWith(t, newcomer, wait.address, wait.code); got.err != nil {
@@ -319,6 +333,11 @@ func TestStrayConnectionsCostNoAttemptAndDoNotDelayAJoin(t *testing.T) {
 	}
 	if wrong := wait.rejected.because(ErrWrongToken); len(wrong) != 0 {
 		t.Errorf("stray connections counted %d wrong tokens, want none", len(wrong))
+	}
+	reportedAtTheEnd := wait.rejected.count()
+	time.Sleep(shortTimeout)
+	if later := wait.rejected.count(); later != reportedAtTheEnd {
+		t.Errorf("%d connections were reported after the wait ended, want none", later-reportedAtTheEnd)
 	}
 }
 
@@ -398,8 +417,12 @@ func TestTwoRightTokensAtOnceJoinExactlyOne(t *testing.T) {
 	}
 	joined := 0
 	for range 2 {
-		if got := result(t, outcomes); got.err == nil {
+		got := result(t, outcomes)
+		if got.err == nil {
 			joined++
+		}
+		if errors.Is(got.err, ErrNameTaken) {
+			t.Errorf("the second machine was refused for its name, want the spent token to stop it first")
 		}
 	}
 	if joined != 1 {
@@ -414,7 +437,7 @@ func TestTwoRightTokensAtOnceJoinExactlyOne(t *testing.T) {
 }
 
 func TestAPairAgainstAJoinWaitFailsAtTheFirstMessageAndTheWaitGoesOn(t *testing.T) {
-	central, pairing, newcomer := newMachine(t, "Cimac"), newMachine(t, "laptop"), newMachine(t, "office")
+	central, pairing, newcomer := newMachine(t, "imac"), newMachine(t, "laptop"), newMachine(t, "office")
 	wait := waitingForJoin(t, central, "office-mac")
 
 	if _, err := Dial(wait.address, pairing.config(says(true))); !errors.Is(err, ErrMalformed) {
@@ -428,7 +451,7 @@ func TestAPairAgainstAJoinWaitFailsAtTheFirstMessageAndTheWaitGoesOn(t *testing.
 }
 
 func TestAJoinAgainstAPairWaitFailsAtTheFirstMessage(t *testing.T) {
-	sharer, newcomer := newMachine(t, "Csharer"), newMachine(t, "office")
+	sharer, newcomer := newMachine(t, "sharer"), newMachine(t, "office")
 	address, waited := waiting(t, sharer.config(says(true)))
 	code, err := NewJoinCode(sharer.identity.Fingerprint)
 	if err != nil {
@@ -467,6 +490,16 @@ func TestThePortTakesNoConnectionWhenTheWaitEnds(t *testing.T) {
 	if got := joinsWith(t, newcomer, wait.address, wait.code); !errors.Is(got.err, ErrNotWaiting) {
 		t.Errorf("join after the wait = %v, want ErrNotWaiting", got.err)
 	}
+}
+
+func TestTheWaitEndsByItselfAtItsLimit(t *testing.T) {
+	central := newMachine(t, "imac")
+	wait := waitingForJoin(t, central, "office-mac", func(config *WaitConfig) { config.WaitLimit = shortTimeout })
+
+	if got := result(t, wait.finished); !errors.Is(got.err, ErrWaitOver) {
+		t.Fatalf("the wait ended with %v, want ErrWaitOver", got.err)
+	}
+	expectRefusedConnection(t, wait.address)
 }
 
 func TestJoinLooksInItsOwnStoreBeforeConnecting(t *testing.T) {

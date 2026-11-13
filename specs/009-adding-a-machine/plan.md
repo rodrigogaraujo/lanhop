@@ -78,7 +78,7 @@ The join uses the pairing port, 24746. Each message is a length byte, as in `int
 | Central | 0x01 | Central, right after TLS | Its name |
 | Join | 0x02 | New machine | The 5 bytes of the token |
 | Welcome | 0x03 | Central | Nothing |
-| Refused | 0x04 | Central | One byte: the token is wrong, the key is the central's own, the key is already trusted, or the name is taken |
+| Refused | 0x04 | Central | One byte: 1 the token is wrong, 2 the key is the central's own, 3 the key is already trusted, 4 the name is taken, 5 the central could not store the machine |
 
 The messages of `lanhop pair` stay as they are.
 

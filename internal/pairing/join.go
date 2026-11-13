@@ -20,6 +20,7 @@ import (
 
 const (
 	JoinAttempts             = 3
+	defaultWaitLimit         = 10 * time.Minute
 	defaultFirstMessageLimit = 10 * time.Second
 	defaultJoinsAtOnce       = 8
 )
@@ -58,6 +59,7 @@ type WaitConfig struct {
 	Name              string
 	Code              JoinCode
 	Rejected          func(address string, reason error)
+	WaitLimit         time.Duration
 	FirstMessageLimit time.Duration
 	AtOnce            int
 }
@@ -81,6 +83,7 @@ type joinWait struct {
 	open     map[net.Conn]struct{}
 	done     chan joinResult
 	slots    chan struct{}
+	serving  sync.WaitGroup
 }
 
 func WaitForJoin(ctx context.Context, listener net.Listener, config WaitConfig) (trust.Peer, error) {
@@ -90,25 +93,32 @@ func WaitForJoin(ctx context.Context, listener net.Listener, config WaitConfig) 
 		done:   make(chan joinResult, 1),
 		slots:  make(chan struct{}, config.atOnce()),
 	}
+	limited, stop := context.WithTimeout(ctx, config.waitLimit())
+	defer stop()
 	accepting := make(chan error, 1)
-	go func() { accepting <- wait.accept(listener) }()
+	wait.serving.Add(1)
+	go func() {
+		defer wait.serving.Done()
+		accepting <- wait.accept(listener)
+	}()
 
 	var result joinResult
 	select {
 	case result = <-wait.done:
-	case <-ctx.Done():
+	case <-limited.Done():
 		result = joinResult{err: ErrWaitOver}
 	case err := <-accepting:
 		result = joinResult{err: err}
 	}
 	wait.closeEverything(listener)
-	if late, ended := wait.firstResult(); ended {
+	wait.serving.Wait()
+	if late, ended := wait.lateResult(); ended {
 		result = late
 	}
 	return result.peer, result.err
 }
 
-func (w *joinWait) firstResult() (joinResult, bool) {
+func (w *joinWait) lateResult() (joinResult, bool) {
 	select {
 	case result := <-w.done:
 		return result, true
@@ -145,7 +155,9 @@ func (w *joinWait) accept(listener net.Listener) error {
 			<-w.slots
 			continue
 		}
+		w.serving.Add(1)
 		go func() {
+			defer w.serving.Done()
 			defer func() { <-w.slots }()
 			defer w.untrack(raw)
 			w.serve(raw)
@@ -197,41 +209,43 @@ func (w *joinWait) serve(raw net.Conn) {
 		w.reject(raw, ErrMalformed)
 		return
 	}
-	w.decide(secured, raw, identity.FingerprintOf(presented[0]), message[1:])
+	if wrong := w.decide(secured, identity.FingerprintOf(presented[0]), message[1:]); wrong != nil {
+		w.report(raw, wrong)
+	}
 }
 
-func (w *joinWait) decide(secured *tls.Conn, raw net.Conn, fingerprint identity.Fingerprint, token []byte) {
+func (w *joinWait) decide(secured *tls.Conn, fingerprint identity.Fingerprint, token []byte) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 	if w.finished {
-		return
+		return nil
 	}
 	if subtle.ConstantTimeCompare(token, w.config.Code.token[:]) != 1 {
 		w.attempts++
 		writeMessage(secured, []byte{tagRefused, refusedToken})
-		w.reject(raw, ErrWrongToken)
 		if w.attempts >= JoinAttempts {
 			w.end(joinResult{err: ErrTooManyAttempts})
 		}
-		return
+		return ErrWrongToken
 	}
 	candidate := trust.Peer{Name: w.config.Name, Fingerprint: fingerprint}
 	if candidate.Fingerprint == w.config.Identity.Fingerprint {
 		writeMessage(secured, []byte{tagRefused, refusedOwnKey})
 		w.end(joinResult{err: ErrSelf})
-		return
+		return nil
 	}
 	if err := w.config.Store.Add(candidate); err != nil {
 		reason, refusal := refusalFor(err, candidate.Name)
 		writeMessage(secured, []byte{tagRefused, reason})
 		w.end(joinResult{err: refusal})
-		return
+		return nil
 	}
 	if err := writeMessage(secured, []byte{tagWelcome}); err != nil {
 		w.end(joinResult{peer: candidate, err: fmt.Errorf("pairing: %q is stored here, but the welcome did not reach it. To start over, run: lanhop forget %s: %w", candidate.Name, candidate.Name, err)})
-		return
+		return nil
 	}
 	w.end(joinResult{peer: candidate})
+	return nil
 }
 
 func refusalFor(err error, name string) (byte, error) {
@@ -253,6 +267,15 @@ func (w *joinWait) end(result joinResult) {
 }
 
 func (w *joinWait) reject(conn net.Conn, reason error) {
+	w.mutex.Lock()
+	finished := w.finished
+	w.mutex.Unlock()
+	if !finished {
+		w.report(conn, reason)
+	}
+}
+
+func (w *joinWait) report(conn net.Conn, reason error) {
 	if w.config.Rejected == nil {
 		return
 	}
@@ -261,6 +284,13 @@ func (w *joinWait) reject(conn net.Conn, reason error) {
 		host = conn.RemoteAddr().String()
 	}
 	w.config.Rejected(host, reason)
+}
+
+func (c WaitConfig) waitLimit() time.Duration {
+	if c.WaitLimit == 0 {
+		return defaultWaitLimit
+	}
+	return c.WaitLimit
 }
 
 func (c WaitConfig) firstMessageLimit() time.Duration {
@@ -339,7 +369,7 @@ func exchange(address string, code JoinCode, config JoinConfig) (trust.Peer, err
 	}
 	central.Address = net.JoinHostPort(host, strconv.Itoa(transport.DefaultPort))
 	if err := config.Store.Add(central); err != nil {
-		return trust.Peer{}, err
+		return trust.Peer{}, fmt.Errorf("pairing: %s stored this machine, but this machine could not store it. To start over, run lanhop forget with the name of this machine on %s, then lanhop add again: %w", central.Name, central.Name, err)
 	}
 	return central, nil
 }
