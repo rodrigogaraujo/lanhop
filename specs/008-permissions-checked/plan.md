@@ -64,7 +64,7 @@ pairing ─► layout (share only)
 check, polling "lanhop status" every second:
   accessibility ─► say what to allow, open the Accessibility pane, wait
   connecting    ─► say that macOS asks about the local network, and that the answer is Allow
-  blocked       ─► say that macOS blocks lanhop, open the Local Network pane, wait
+  blocked       ─► after 5 seconds of it: say that macOS blocks lanhop, open the Local Network pane, wait
   unreachable   ─► say the address cannot be reached and what to check on the central, end
   failing       ─► print the line, keep waiting, end with it when the limit runs out
   connected     ─► "Connected to NAME", end
@@ -79,6 +79,7 @@ check, polling "lanhop status" every second:
 - **Pane addresses**: `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` and `...?Privacy_LocalNetwork`.
 - **Time limits**: 5 minutes for each permission, which a person has to give; 60 seconds for a side machine to reach the central. When a limit runs out, the installer prints the last status line and says that `lanhop status` shows it later.
 - **Nobody at the keyboard**: no pane is opened and nothing waits. The installer runs `lanhop status` once, prints it, and ends.
+- **An installed lanhop without `lanhop status`** (an older release through `LANHOP_VERSION`): the installer keeps the steps of 0.1.0, with the Accessibility pane and Enter. It finds out by looking for `lanhop status` in the program, without running it.
 - **Older releases**: when the archive has no `lanhop.app` (0.1.0), the installer installs the bare program as before.
 
 ## The installer on Linux
@@ -108,7 +109,7 @@ It also removes the app (from `/Applications` or `~/Applications`, only the one 
 - [x] **1. The app in the release.** `packaging/macos/Info.plist`, the bundle and its signature in `release.yml`, and the ADR. → Verify: on a pull request, both macOS jobs pass the `codesign` checks and the archives hold `lanhop.app`.
 - [x] **2. Status.** The `status` file, `lanhop status`, and the wait for Accessibility. → Verify: unit tests for each state, for a dead process and for the `blocked` and `unreachable` cases against a local listener; the macOS job runs the tests that do not need a permission.
 - [x] **3. Installer: the app.** The app in Applications, the link, the agent with `AssociatedBundleIdentifiers`, the move from 0.1.0, uninstall. The install step of `release.yml` on a Mac stops being only for tags and runs on every pull request, with `LANHOP_SYSTEM_ROOT` set to a temporary directory. → Verify: `install_test.go` with a fake app archive, with `/Applications` writable and not, with a 0.1.0 install in place, and with an archive without the app; on a pull request, the Mac install step puts the app where the installer says.
-- [ ] **4. Installer: the check.** The loop over `lanhop status`, the panes, the firewall of a central, Linux, and nobody at the keyboard. → Verify: `install_test.go` with a fake `lanhop` whose `status` walks through each sequence of states, and a fake `sleep`.
+- [x] **4. Installer: the check.** The loop over `lanhop status`, the panes, the firewall of a central, Linux, and nobody at the keyboard. → Verify: `install_test.go` with a fake `lanhop` whose `status` walks through each sequence of states, and a fake `sleep`.
 - [ ] **5. Documentation.** `docs/setup-macos.md` gets Local Network and the app, and its steps for a browser download become `xattr -dr com.apple.quarantine lanhop.app`; the README gets `lanhop status`; the plan of spec 006 points here for the macOS archives. → Verify: the guide still describes every step by hand.
 - [ ] **6. Real machines.** The installer on two Macs and on the Linux machine, as central and as side machines, then a restart, then an update to a newer build of the app. → Verify: SC-001 to SC-003 of the spec, after the restart and after the update.
 
