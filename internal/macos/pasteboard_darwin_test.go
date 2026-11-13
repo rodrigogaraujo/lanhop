@@ -299,6 +299,9 @@ func TestACopyThatIsNotAListOfLocalFilesIsNotFiles(t *testing.T) {
 		"a NUL byte in the path": func(p Pasteboard) error {
 			return p.writeTyped("public.file-url", "file:///tmp/nul%00byte.pdf", nil)
 		},
+		"an encoded slash inside a name": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/a%2fb.pdf", nil)
+		},
 	}
 	for name, copyOnto := range copies {
 		t.Run(name, func(t *testing.T) {

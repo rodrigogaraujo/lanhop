@@ -100,8 +100,15 @@ static char *lanhopCopy(NSData *data, int64_t *length) {
 	return copy;
 }
 
+static BOOL lanhopHoldsEscape(NSURL *url, NSString *escape) {
+	return [[url absoluteString] rangeOfString:escape options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
 static BOOL lanhopIsLocalFileURL(NSURL *url) {
 	if (![url isFileURL] || [url user] != nil || [url query] != nil || [url fragment] != nil) {
+		return NO;
+	}
+	if (lanhopHoldsEscape(url, @"%00") || lanhopHoldsEscape(url, @"%2F")) {
 		return NO;
 	}
 	NSString *host = [url host];
