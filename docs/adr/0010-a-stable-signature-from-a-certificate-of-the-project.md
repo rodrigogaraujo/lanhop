@@ -18,7 +18,14 @@ A signature made with a certificate gives a requirement that names the identifie
 designated => identifier "com.github.rodrigogaraujo.lanhop-signtest" and certificate leaf = H"d128a4df96312c2b76715bfb36725773783089e9"
 ```
 
-Both builds had this same requirement and different code hashes, and `codesign --verify --strict` accepted both. Whether macOS keeps Accessibility for the second build is not measured yet: task 0 of the plan measures it, and this ADR is accepted only if it does.
+Both builds had this same requirement and different code hashes, and `codesign --verify --strict` accepted both.
+
+First run of task 0, on 2026-11-13, on a MacBook with macOS 26.5.2 (arm64). The test app has its own identifier, sits in a temporary folder and runs from a launch agent:
+
+- After the owner gave Accessibility to the first build, the first build swapped the second one in at the same path with `RENAME_SWAP`. The second build, with another code hash and another `LC_UUID`, answered twice that it had Accessibility, with no new click.
+- A build of the same app signed ad hoc, swapped in after that, did not have it. This control is not clean: the owner had switched the line off in the meantime. After the line was switched on again, the second build did not have Accessibility either.
+
+A clean repetition, with nobody touching the line, is still to do. This ADR is accepted only if it confirms the first result.
 
 A Developer ID certificate from Apple costs a yearly fee. The owner of the project chose the free way.
 
