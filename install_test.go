@@ -2370,15 +2370,18 @@ func TestThePathLineWaitsForAYesAndOtherShellsGetTheAdvice(t *testing.T) {
 
 func TestAJoinLineWithAReleaseThatCannotJoinStopsAndSaysWhy(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
-		published := newReleases(t)
-		m := newMachine(t, shell, "Linux", "x86_64", published)
-		m.settings["LANHOP_JOIN"] = joinLine
-		output, code := m.run()
-		if code == 0 {
-			t.Fatalf("exit code 0 with a release that cannot join:\n%s", output)
+		for _, system := range []string{"Linux", "Darwin"} {
+			published := newReleases(t)
+			m := newMachine(t, shell, system, "arm64", published)
+			m.settings["LANHOP_JOIN"] = joinLine
+			output, code := m.run()
+			if code == 0 {
+				t.Fatalf("%s: exit code 0 with a release that cannot join:\n%s", system, output)
+			}
+			expectMention(t, output, "cannot join a machine yet", "LANHOP_VERSION", "lanhop version")
+			expectSame(t, system+": runs of lanhop", published.lanhopWasRunWith(), configured("version", "help"))
+			expectSame(t, system+": system commands", commandsIn(output), []string{})
+			expectSame(t, system+": files in the home directory", m.files(), []string{binaryFile})
 		}
-		expectMention(t, output, "lanhop 1.0.0 linux-amd64 cannot join a machine yet", "names the release to install")
-		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "help"))
-		expectSame(t, "files in the home directory", m.files(), []string{binaryFile})
 	})
 }

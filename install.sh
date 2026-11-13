@@ -222,7 +222,7 @@ join_central() {
   central_address=${LANHOP_JOIN%% *}
   join_code=${LANHOP_JOIN#* }
   if ! "$binary" help 2>/dev/null | grep -q -e 'lanhop join'; then
-    fail "$installed cannot join a machine yet, so nothing that starts lanhop at login was written. Type the line that lanhop add printed on the machine with the keyboard: it names the release to install."
+    fail "$installed cannot join a machine yet, so nothing that starts lanhop at login was written. Install the release that the machine with the keyboard runs: type the line that lanhop add printed there, or set LANHOP_VERSION to the release that \"lanhop version\" shows there."
   fi
   say ""
   say "Joining the machine with the keyboard at $central_address."
