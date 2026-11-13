@@ -6,6 +6,7 @@ const (
 	Clipboard = 0
 	Files     = 1
 	Drag      = 2
+	Follows   = 8
 )
 
 type Set struct {

@@ -35,6 +35,48 @@ func (noClipboard) FocusArrives()                          {}
 func (noClipboard) FocusLeaves()                           {}
 func (noClipboard) Lost()                                  {}
 
+type together []Clipboard
+
+func Together(listeners ...Clipboard) Clipboard {
+	var present together
+	for _, listener := range listeners {
+		if listener != nil {
+			present = append(present, listener)
+		}
+	}
+	return present
+}
+
+func (t together) Connected(conn Connection) func(event.Event) {
+	received := make([]func(event.Event), len(t))
+	for i, listener := range t {
+		received[i] = listener.Connected(conn)
+	}
+	return func(frame event.Event) {
+		for _, each := range received {
+			each(frame)
+		}
+	}
+}
+
+func (t together) FocusArrives() {
+	for _, listener := range t {
+		listener.FocusArrives()
+	}
+}
+
+func (t together) FocusLeaves() {
+	for _, listener := range t {
+		listener.FocusLeaves()
+	}
+}
+
+func (t together) Lost() {
+	for _, listener := range t {
+		listener.Lost()
+	}
+}
+
 type Config struct {
 	Transport transport.Config
 	Sharer    trust.Peer

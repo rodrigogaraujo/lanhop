@@ -54,6 +54,48 @@ type Clipboard interface {
 	FocusArrives(conn Conn)
 }
 
+type together []Clipboard
+
+func Together(listeners ...Clipboard) Clipboard {
+	var present together
+	for _, listener := range listeners {
+		if listener != nil {
+			present = append(present, listener)
+		}
+	}
+	return present
+}
+
+func (t together) Connected(conn Conn) func(event.Event) {
+	received := make([]func(event.Event), len(t))
+	for i, listener := range t {
+		received[i] = listener.Connected(conn)
+	}
+	return func(frame event.Event) {
+		for _, each := range received {
+			each(frame)
+		}
+	}
+}
+
+func (t together) Lost(conn Conn) {
+	for _, listener := range t {
+		listener.Lost(conn)
+	}
+}
+
+func (t together) FocusLeaves(conn Conn) {
+	for _, listener := range t {
+		listener.FocusLeaves(conn)
+	}
+}
+
+func (t together) FocusArrives(conn Conn) {
+	for _, listener := range t {
+		listener.FocusArrives(conn)
+	}
+}
+
 type noClipboard struct{}
 
 func (noClipboard) Connected(Conn) func(event.Event) { return func(event.Event) {} }

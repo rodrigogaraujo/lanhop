@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/rodrigogaraujo/lanhop/internal/features"
@@ -143,14 +144,26 @@ func receive(args []string, stdout io.Writer) (err error) {
 
 	fmt.Fprintf(stdout, "Receiving from %q at %s. Press Ctrl+C to stop.\n", sharer.Name, sharer.Address)
 	report.connecting()
-	clipboard, stopSharingTheClipboard := clipboardOfThisSide(interrupted, directory, new(features.Set), stdout)
+	announced := new(features.Set)
+	receiving, stopReceiving := context.WithCancel(interrupted)
+	defer stopReceiving()
+	var restarting atomic.Bool
+	follower := followerOfThisSide(receiving, directory, announced, func() {
+		restarting.Store(true)
+		stopReceiving()
+	}, stdout)
+	clipboard, stopSharingTheClipboard := clipboardOfThisSide(receiving, directory, announced, stdout)
 	defer stopSharingTheClipboard()
-	return receiver.Run(interrupted, receiver.Config{
+	err = receiver.Run(receiving, receiver.Config{
 		Transport: transport.Config{Identity: local},
 		Sharer:    sharer,
 		Replay:    replay,
-		Clipboard: clipboard,
+		Clipboard: receiver.Together(clipboard, follower),
 		OnConnect: report.connected,
 		OnFailure: report.failed,
 	})
+	if err == nil && restarting.Load() {
+		return errRestartForTheUpdate
+	}
+	return err
 }

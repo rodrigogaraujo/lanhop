@@ -50,7 +50,7 @@ from v0.1.2
 7. On macOS, the new lanhop.app meets the requirement built from the identifier and the certificate hashes compiled into lanhop ([ADR 10](0010-a-stable-signature-from-a-certificate-of-the-project.md)), checked with the Security framework.
 8. The new program, run with `version`, prints the version asked for.
 
-A side machine that has to wait before replacing keeps the downloaded files, and runs every check again from step 1, into a new folder, just before it replaces.
+A side machine that has to wait before replacing downloads the release again and runs every check again from step 1, into a new folder, just before it replaces.
 
 **Replacing** happens in one step on the same disk, so a crash leaves either the old program or the new one, whole:
 
@@ -68,7 +68,7 @@ A side machine that has to wait before replacing keeps the downloaded files, and
 - Bit 8 says that a machine follows the central. A side machine sets it only when its service started it (`LANHOP_SERVICE=1`, set by the installer in the launch agent and in the systemd unit), its version is a release, and following is switched on. A Features frame sent again because bit 8 changed does not count as announcing bit 0 again for the clipboard (ADR 8): only a change of bit 0 does.
 - Control code 17, Version, goes from a side machine to the central right after Features, with the version in its value: major × 65536 + minor × 256 + patch. A build that is not a release sends 0.
 - Control code 16, Update, goes from the central to a side machine that has bit 8 set, a version lower than the central's, and a version not below the central's `from`: once after the Version of the side machine arrives, and again if bit 8 turns on later in the connection. Its value is the version of the central.
-- The side machine downloads and checks that version at once. It replaces and restarts only when it does not have focus, has answered the last leave (ADR 8), and has no file transfer open (ADR 13). A file copy that waits on it for a later paste is lost at the restart, as at any restart of lanhop.
+- The side machine downloads and checks that version at once. It replaces and restarts only when it has had no focus for 6 seconds since the last leave, twice the silence limit after which the central counts a missing answer as a withdrawal (ADR 8), and has no file transfer open (ADR 13). A file copy that waits on it for a later paste is lost at the restart, as at any restart of lanhop.
 - A side machine never moves to a version below its own because of the central, and ignores an Update while bit 8 is off. `lanhop update --older` switches following off on that machine, and says so, so that the central does not move it back up.
 - The central writes the version of each side machine in its status file, where `lanhop status` and `lanhop update` read it.
 
