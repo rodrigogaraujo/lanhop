@@ -172,7 +172,7 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			s.send(features(action.On))
+			s.send(s.config.announcement(action.On))
 		case clipboard.Unchanged:
 			s.send(event.ClipboardUnchanged())
 		case clipboard.Withdraw:

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 )
 
@@ -23,6 +24,7 @@ type Config struct {
 	SwitchedOn   func() bool
 	SilenceLimit time.Duration
 	Log          io.Writer
+	Features     *features.Set
 }
 
 func (c Config) withDefaults() Config {
@@ -38,14 +40,14 @@ func (c Config) withDefaults() Config {
 	if c.Log == nil {
 		c.Log = io.Discard
 	}
+	if c.Features == nil {
+		c.Features = new(features.Set)
+	}
 	return c
 }
 
-func features(on bool) event.Event {
-	if on {
-		return event.Features(event.FeatureClipboard)
-	}
-	return event.Features(0)
+func (c Config) announcement(on bool) event.Event {
+	return event.Features(c.Features.Turn(features.Clipboard, on))
 }
 
 func takesCopies(features event.Event) bool {

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 )
@@ -75,6 +76,8 @@ func clipboardSwitchedOn(path string) bool {
 	return !strings.EqualFold(strings.TrimSpace(string(contents)), switchedOff)
 }
 
+var featuresOfThisProcess = new(features.Set)
+
 func clipboardConfigIn(directory string, stdout io.Writer) (clipshare.Config, bool) {
 	if openClipboard == nil {
 		return clipshare.Config{}, false
@@ -84,6 +87,7 @@ func clipboardConfigIn(directory string, stdout io.Writer) (clipshare.Config, bo
 		Open:       openClipboard,
 		SwitchedOn: func() bool { return clipboardSwitchedOn(path) },
 		Log:        stdout,
+		Features:   featuresOfThisProcess,
 	}, true
 }
 

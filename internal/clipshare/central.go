@@ -362,7 +362,7 @@ func (c *Central) do(actions []clipboard.Action[*link]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			action.To.sendFrame(features(action.On))
+			action.To.sendFrame(c.config.announcement(action.On))
 		case clipboard.Send:
 			if !action.To.sendNewestCopy(action.Text) {
 				c.desk.SendStopped(action.To)
