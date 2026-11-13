@@ -123,7 +123,7 @@ func TestShareKeepsOneStatusFromThePermissionToItsEnd(t *testing.T) {
 	useConfigDirectory(t)
 	record := openStatus()
 	record.set(status.Report{State: status.Accessibility})
-	changed := reportReceivers(openStatus())
+	changed := reportReceivers(openStatus(), time.Now, nil)
 	changed(nil)
 	expectState(t, lanhopStatus(t), "waiting")
 	changed([]string{"desk"})
@@ -278,7 +278,7 @@ func TestReceiverWritesEachChangeOfItsConnection(t *testing.T) {
 
 func TestSharerWritesWhichMachinesAreConnected(t *testing.T) {
 	useConfigDirectory(t)
-	changed := reportReceivers(openStatus())
+	changed := reportReceivers(openStatus(), time.Now, nil)
 	changed(nil)
 	expectState(t, lanhopStatus(t), "waiting")
 	changed([]string{"desk", "laptop"})

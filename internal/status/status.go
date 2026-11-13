@@ -37,6 +37,12 @@ type Report struct {
 	Machines []string
 	Address  string
 	Error    string
+	Left     []Departure
+}
+
+type Departure struct {
+	Name string
+	At   time.Time
 }
 
 var errTakenByAnother = errors.New("status: another lanhop on this machine keeps the status")
@@ -111,6 +117,9 @@ func write(path string, report Report) error {
 	if report.Error != "" {
 		fmt.Fprintf(&text, "error=%s\n", oneLine(report.Error))
 	}
+	for _, departure := range report.Left {
+		fmt.Fprintf(&text, "left=%s %s\n", oneLine(departure.Name), departure.At.UTC().Format(time.RFC3339))
+	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("status: %w", err)
@@ -150,9 +159,26 @@ func Read(directory string) (Report, error) {
 			report.Address = value
 		case "error":
 			report.Error = value
+		case "left":
+			if departure, ok := departureFrom(value); ok {
+				report.Left = append(report.Left, departure)
+			}
 		}
 	}
 	return report, lines.Err()
+}
+
+func departureFrom(value string) (Departure, bool) {
+	fields := strings.Fields(value)
+	if len(fields) < 2 {
+		return Departure{}, false
+	}
+	name, at := fields[0], fields[1]
+	when, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return Departure{}, false
+	}
+	return Departure{Name: name, At: when}, true
 }
 
 func oneLine(text string) string {

@@ -183,3 +183,26 @@ func TestHelperWritesAStatus(t *testing.T) {
 		io.ReadAll(os.Stdin)
 	}
 }
+
+func TestDeparturesReadBackWithTheirTimes(t *testing.T) {
+	directory := t.TempDir()
+	left := []Departure{
+		{Name: "laptop", At: time.Date(2026, 11, 13, 14, 2, 0, 0, time.UTC)},
+		{Name: "tablet", At: time.Date(2026, 11, 12, 9, 30, 0, 0, time.FixedZone("BRT", -3*60*60))},
+	}
+	if err := OwnerOf(directory).Write(Report{State: Waiting, Left: left}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	read, err := Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.Left) != len(left) {
+		t.Fatalf("read %+v, want %+v", read.Left, left)
+	}
+	for i := range left {
+		if read.Left[i].Name != left[i].Name || !read.Left[i].At.Equal(left[i].At) {
+			t.Errorf("departure %d read as %+v, want %+v", i, read.Left[i], left[i])
+		}
+	}
+}

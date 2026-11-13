@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
@@ -94,13 +97,44 @@ func share(args []string, stdout io.Writer) (err error) {
 	return shareUntil(interrupted, capture, *listen, stdout)
 }
 
-func reportReceivers(record statusFile) func(names []string) {
+type peerList interface {
+	Peers() []trust.Peer
+}
+
+func reportReceivers(record statusFile, now func() time.Time, trusted peerList) func(names []string) {
+	var connected []string
+	departed := map[string]time.Time{}
 	return func(names []string) {
+		for _, name := range connected {
+			if !slices.Contains(names, name) {
+				departed[name] = now()
+			}
+		}
+		for _, name := range names {
+			delete(departed, name)
+		}
+		if trusted != nil {
+			stillTrusted := map[string]bool{}
+			for _, peer := range trusted.Peers() {
+				stillTrusted[peer.Name] = true
+			}
+			for name := range departed {
+				if !stillTrusted[name] {
+					delete(departed, name)
+				}
+			}
+		}
+		connected = slices.Clone(names)
+		left := make([]status.Departure, 0, len(departed))
+		for name, at := range departed {
+			left = append(left, status.Departure{Name: name, At: at})
+		}
+		slices.SortFunc(left, func(a, b status.Departure) int { return strings.Compare(a.Name, b.Name) })
 		if len(names) == 0 {
-			record.set(status.Report{State: status.Waiting})
+			record.set(status.Report{State: status.Waiting, Left: left})
 			return
 		}
-		record.set(status.Report{State: status.Sharing, Machines: names})
+		record.set(status.Report{State: status.Sharing, Machines: names, Left: left})
 	}
 }
 
@@ -143,7 +177,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		Watch:  edge.DefaultSettings(),
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
-	machine.OnReceivers(reportReceivers(openStatus()))
+	machine.OnReceivers(reportReceivers(openStatus(), time.Now, trusted))
 	defer shareTheClipboard(done, machine, directory, new(features.Set), stdout)()
 	go func() {
 		for {
