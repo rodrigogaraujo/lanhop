@@ -109,7 +109,7 @@ When the setup is incomplete, lanhop tells me what to fix.
 - **FR-002**: While a receiver has focus, input MUST NOT act on the sharer.
 - **FR-003**: Focus MUST change with a hotkey that selects a machine by number, where number 1 is always the sharer. The hotkey MUST be configurable.
 - **FR-004**: Every connection MUST be encrypted and both sides MUST be authenticated. There MUST NOT be an option to turn this off.
-- **FR-005**: Two machines MUST be paired before any input travels between them. Pairing MUST require a person to accept on both machines after comparing the codes shown.
+- **FR-005**: Two machines MUST be paired before any input travels between them. Pairing MUST require a person to accept on both machines after comparing the codes shown, or a join line made on the central and typed on the other machine ([spec 009](../009-adding-a-machine/spec.md), ADR 12).
 - **FR-006**: A machine MUST refuse connections from any machine it is not paired with.
 - **FR-007**: A user MUST be able to list the trusted machines and remove one.
 - **FR-008**: When the connection to the machine with focus is lost, focus MUST return to the sharer.

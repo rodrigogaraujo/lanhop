@@ -1,6 +1,6 @@
 # 4. Pinned TLS 1.3, and pairing by comparing codes
 
-Date: 2026-11-11 · Status: accepted
+Date: 2026-11-11 · Status: accepted · Amended by: [ADR 12](0012-joining-with-a-line-that-carries-the-key-of-the-central.md) (proposed)
 
 ## Context
 
