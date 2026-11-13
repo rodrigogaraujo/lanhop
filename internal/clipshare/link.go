@@ -9,6 +9,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 )
 
 type Conn interface {
@@ -16,7 +17,12 @@ type Conn interface {
 	Close() error
 }
 
+type featuresSender interface {
+	SendFeatures(announced *features.Set) error
+}
+
 type delivery struct {
+	announced   *features.Set
 	slices      [][]event.Event
 	inTheWindow bool
 	isACopy     bool
@@ -60,6 +66,12 @@ func (l *link) sendFrame(frame event.Event) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	l.queue(&delivery{slices: [][]event.Event{{frame}}, inTheWindow: clipboard.IsCopyFrame(frame)})
+}
+
+func (l *link) announce(announced *features.Set) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.queue(&delivery{announced: announced})
 }
 
 func (l *link) sendCopy(text string) (queued bool) {
@@ -202,6 +214,10 @@ func (l *link) next() *delivery {
 }
 
 func (l *link) carryOut(d *delivery) {
+	if d.announced != nil {
+		l.sendAnnouncement(d)
+		return
+	}
 	for i, part := range d.slices {
 		if !l.claimRoomFor(d, len(part)) {
 			return
@@ -253,4 +269,20 @@ func (l *link) claimRoomFor(d *delivery, frames int) bool {
 			return false
 		}
 	}
+}
+
+func (l *link) sendAnnouncement(d *delivery) {
+	var err error
+	if sender, sendsTheLatest := l.conn.(featuresSender); sendsTheLatest {
+		err = sender.SendFeatures(d.announced)
+	} else {
+		err = l.conn.Send(event.Features(d.announced.Value()))
+	}
+	if err != nil {
+		l.breakOff()
+		return
+	}
+	l.mutex.Lock()
+	d.done = true
+	l.mutex.Unlock()
 }

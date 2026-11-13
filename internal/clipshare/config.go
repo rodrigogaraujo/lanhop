@@ -47,8 +47,9 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-func (c Config) announcement(on bool) event.Event {
-	return event.Features(c.Features.Turn(features.Clipboard, on))
+func (c Config) turnTheClipboard(on bool) *features.Set {
+	c.Features.Turn(features.Clipboard, on)
+	return c.Features
 }
 
 func takesCopies(features event.Event) bool {
