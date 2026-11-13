@@ -71,7 +71,7 @@ func (c *Central) Run(ctx context.Context) {
 	defer func() { <-keeperStopped }()
 	c.reachable = <-reachedAtStart
 	c.on = c.reachable && c.config.SwitchedOn()
-	c.desk = clipboard.NewDesk[*link](c.on)
+	c.desk = clipboard.NewDesk[*link](onlyText(c.on))
 	defer c.closeLinks()
 	for {
 		select {
@@ -292,7 +292,7 @@ func (c *Central) says(l *link, takes bool) {
 		c.forgetAnswersOf(l)
 		l.stopCopies()
 	}
-	c.do(c.desk.Says(l, takes))
+	c.do(c.desk.Says(l, onlyText(takes)))
 }
 
 func (c *Central) unchangedOn(l *link) {
@@ -331,7 +331,7 @@ func (c *Central) switchTo(on bool) {
 		return
 	}
 	c.on = on
-	actions := c.desk.Switch(on)
+	actions := c.desk.Switch(onlyText(on))
 	if !on {
 		for l, machine := range c.sides {
 			for _, due := range machine.answers {
@@ -362,7 +362,7 @@ func (c *Central) do(actions []clipboard.Action[*link]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			action.To.sendFrame(c.config.announcement(action.On))
+			action.To.sendFrame(c.config.announcement(action.Takes.Has(clipboard.Text)))
 		case clipboard.Send:
 			if !action.To.sendNewestCopy(action.Text) {
 				c.desk.SendStopped(action.To)
