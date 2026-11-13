@@ -739,6 +739,14 @@ tell_once() {
   say "$2"
 }
 
+tell_once_and_wait() {
+  case " $told " in
+    *" $1 "*) return 0 ;;
+  esac
+  tell_once "$1" "$2"
+  say "Waiting until lanhop connects."
+}
+
 ask_for_accessibility() {
   case " $told " in
     *" accessibility "*) return 0 ;;
@@ -783,8 +791,8 @@ report_status_once() {
   if [ "${line%%:*}" = accessibility ]; then
     explain_accessibility
   fi
-  say "lanhop says: $line"
-  say "\"lanhop status\" says it again at any time."
+  say "\"lanhop status\" says at any time what lanhop is doing. Now:"
+  say "$line"
 }
 
 check_service() {
@@ -821,12 +829,12 @@ check_service() {
       blocked)
         warn_about_the_local_network_alert
         if [ "$os" != darwin ]; then
-          tell_once blocked "$line"
+          tell_once_and_wait blocked "$line"
         elif [ "$in_state" -ge "$blocked_patience" ]; then
           ask_for_local_network
         fi
         ;;
-      unreachable | failing) tell_once "$state" "$line" ;;
+      unreachable | failing) tell_once_and_wait "$state" "$line" ;;
       stopped | silent)
         if [ "$in_state" -ge "$stopped_patience" ]; then
           say ""
@@ -844,8 +852,8 @@ check_service() {
     esac
     if [ $((now - begun)) -ge "$check_limit" ]; then
       say ""
-      say "lanhop is not connected yet. It says: $line"
-      say "\"lanhop status\" says it again at any time."
+      say "lanhop is not connected yet. \"lanhop status\" says at any time what lanhop is doing. Now:"
+      say "$line"
       return 0
     fi
     sleep 1
@@ -978,7 +986,7 @@ uninstall_lanhop() {
   say "The key of this machine and its trusted machines are kept in $config_directory"
   say "Remove that directory to forget them."
   if [ "$os" = darwin ]; then
-    say "To take the permission back, remove lanhop from System Settings > Privacy & Security > Accessibility."
+    say "To take the permissions back, remove lanhop from System Settings > Privacy & Security > Accessibility, and switch it off under Local Network."
   else
     say "If the installer added you to the input group, leave it with: sudo gpasswd -d $(id -un) input"
   fi

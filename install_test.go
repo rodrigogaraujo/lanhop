@@ -1447,7 +1447,7 @@ func TestUninstallRemovesWhatWasInstalledAndKeepsTheConfiguration(t *testing.T) 
 			kept:     macPeersFile,
 			commands: []string{stopTheAgent},
 			files:    []string{macPeersFile},
-			says:     []string{"Removed {root}/Applications/lanhop.app\n", "are kept in {home}/Library/Application Support/lanhop\n", "remove lanhop from System Settings > Privacy & Security > Accessibility"},
+			says:     []string{"Removed {root}/Applications/lanhop.app\n", "are kept in {home}/Library/Application Support/lanhop\n", "remove lanhop from System Settings > Privacy & Security > Accessibility, and switch it off under Local Network"},
 		},
 	}
 	inEveryShell(t, func(t *testing.T, shell string) {
@@ -1704,8 +1704,8 @@ func TestACentralThatCannotBeReachedYetIsSaidOnceAndTheWaitGoesOn(t *testing.T) 
 		m := newMachine(t, shell, "Darwin", "arm64", published)
 		m.typing("n", "y", "")
 		output := m.mustRun()
-		expectMention(t, output, centralCannotBeFound, connectedToTheCentral)
-		if strings.Count(output, centralCannotBeFound) != 1 {
+		expectMention(t, output, centralCannotBeFound+"\nWaiting until lanhop connects.\n", connectedToTheCentral)
+		if strings.Count(output, centralCannotBeFound) != 1 || strings.Count(output, "Waiting until lanhop connects.") != 1 {
 			t.Errorf("the central that cannot be reached is said more than once:\n%s", output)
 		}
 		expectLastLine(t, output, connectedToTheCentral)
@@ -1719,7 +1719,8 @@ func TestTheInstallerSaysWhatTheServiceStillWaitsForWhenTheLimitRunsOut(t *testi
 		m := newMachine(t, shell, "Darwin", "arm64", published)
 		m.typing("n", "y", "")
 		output := m.mustRun()
-		expectMention(t, output, "lanhop is not connected yet. It says: "+waitsForAccessibility, `"lanhop status" says it again at any time.`)
+		expectMention(t, output, `lanhop is not connected yet. "lanhop status" says at any time what lanhop is doing. Now:`)
+		expectLastLine(t, output, waitsForAccessibility)
 	})
 }
 
@@ -1757,7 +1758,8 @@ func TestTheInstallerWithNobodyAtTheKeyboardPrintsTheStatusOnceAndOpensNothing(t
 		m.settings["LANHOP_YES"] = "1"
 		output := m.mustRun()
 		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
-		expectMention(t, output, "lanhop says: "+waitsForAccessibility)
+		expectMention(t, output, `"lanhop status" says at any time what lanhop is doing. Now:`)
+		expectLastLine(t, output, waitsForAccessibility)
 		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "status"))
 		expectNoQuestion(t, output)
 	})
@@ -2013,7 +2015,8 @@ func TestStatesThatKeepChangingStillEndAtTheLimit(t *testing.T) {
 		m := newMachine(t, shell, "Darwin", "arm64", published)
 		m.typing("n", "y", "")
 		output := m.mustRun()
-		expectMention(t, output, "lanhop is not connected yet. It says: ")
+		expectMention(t, output, `lanhop is not connected yet. "lanhop status" says at any time what lanhop is doing. Now:`)
+		expectLastLine(t, output, triesTheCentral)
 		if runs := len(published.lanhopWasRunWith()); runs > 620 {
 			t.Errorf("lanhop status ran %d times, want the check to end at its limit of 600 seconds", runs)
 		}
@@ -2029,7 +2032,8 @@ func TestNobodyAtTheKeyboardWaitsBrieflyForTheServiceToStartAndExplainsAMissingP
 		m.settings["LANHOP_YES"] = "1"
 		output := m.mustRun()
 		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
-		expectMention(t, output, "lanhop says: "+waitsForAccessibility, "the program to allow is the lanhop app")
+		expectMention(t, output, "the program to allow is the lanhop app")
+		expectLastLine(t, output, waitsForAccessibility)
 		expectNoQuestion(t, output)
 	})
 }
