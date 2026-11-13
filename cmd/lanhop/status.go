@@ -8,10 +8,14 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
+	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
+	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
 const reachTimeout = 3 * time.Second
@@ -83,8 +87,60 @@ func showStatus(args []string, stdout io.Writer) error {
 	} else if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, describeStatus(report, status.Running(directory), reach, runtime.GOOS))
+	running := status.Running(directory)
+	fmt.Fprintln(stdout, describeStatus(report, running, reach, runtime.GOOS))
+	if running && (report.State == status.Sharing || report.State == status.Waiting) {
+		if trusted, err := openTrusted(); err == nil {
+			fmt.Fprint(stdout, describeDesk(trusted.Peers(), report, time.Now()))
+		}
+	}
 	return nil
+}
+
+func describeDesk(peers []trust.Peer, report status.Report, now time.Time) string {
+	type seat struct{ name, hotkey, state string }
+	var seats []seat
+	width := 0
+	for position, peer := range peers {
+		if peer.Address != "" {
+			continue
+		}
+		hotkeyOfPeer := "no hotkey"
+		if number, reachable := sharer.HotkeyNumber(position); reachable {
+			hotkeyOfPeer = fmt.Sprintf("%s+%d", hotkey.DefaultModifiers, number)
+		}
+		seats = append(seats, seat{peer.Name, hotkeyOfPeer, stateOfSeat(peer.Name, report, now)})
+		width = max(width, len(peer.Name))
+	}
+	if len(seats) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	text.WriteString("\nThe machines this one shares with:\n")
+	for _, each := range seats {
+		fmt.Fprintf(&text, "  %-*s  %-11s  %s\n", width, each.name, each.hotkey, each.state)
+	}
+	return text.String()
+}
+
+func stateOfSeat(name string, report status.Report, now time.Time) string {
+	if slices.Contains(report.Machines, name) {
+		return "connected"
+	}
+	for _, departure := range report.Left {
+		if departure.Name == name {
+			return "not connected since " + whenSeen(departure.At, now)
+		}
+	}
+	return "not connected since lanhop started"
+}
+
+func whenSeen(at, now time.Time) string {
+	local, today := at.In(now.Location()), now
+	if local.Year() == today.Year() && local.YearDay() == today.YearDay() {
+		return local.Format("15:04")
+	}
+	return local.Format("2 Jan 15:04")
 }
 
 func reach(address string) error {
