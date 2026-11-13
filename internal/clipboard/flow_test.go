@@ -599,3 +599,44 @@ func TestASideMachineDropsACopyThatArrivesAfterTheCentralStopped(t *testing.T) {
 
 	expect(t, "a copy still on its way", s.CopyFromCentral("x"))
 }
+
+func TestALateAnswerDoesNotStandForTheAnswerToALaterLeave(t *testing.T) {
+	d := waitingForA(t)
+	expect(t, "the central gives up on A", d.GaveUpOn("A"))
+	d.FocusOn("A")
+	d.UnchangedOn("B")
+	d.FocusOn("B")
+
+	expect(t, "the late answer to the first leave", d.CopyFrom("A", "late copy"))
+	expect(t, "the answer to the second leave", d.WithdrawalFrom("A"))
+	expect(t, "focus to the central", d.FocusOnCentral())
+	expect(t, "B had nothing new", d.UnchangedOn("B"))
+}
+
+func TestGivingUpWritesOffOnlyOneAnswer(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	copyOnTheCentralGoesTo(t, d, "A", "x")
+	d.FocusOn("B")
+	d.FocusOn("A")
+	d.FocusOn("B")
+	d.UnchangedOn("B")
+
+	expect(t, "the timer of the first leave of A runs out", d.GaveUpOn("A"))
+	expect(t, "the late answer to the first leave", d.UnchangedOn("A"))
+	expect(t, "the answer to the second leave", d.CopyFrom("A", "y"), send("B", "y"))
+}
+
+func TestResultsOnTheirWayWhenTheCentralSwitchedOffAreDropped(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	expect(t, "focus to A", d.FocusOn("A"), read())
+	d.FocusOnCentral()
+	d.Switch(false)
+	d.Switch(true)
+	expect(t, "focus to B", d.FocusOn("B"), read())
+
+	expect(t, "the read from before the switch", readGave(t, d, "secret"))
+	expect(t, "the answer of A from before the switch", d.CopyFrom("A", "old copy"))
+	expect(t, "the read after the switch", d.ReadUnchanged())
+	expect(t, "focus to the central", d.FocusOnCentral())
+	expect(t, "B had nothing new", d.UnchangedOn("B"))
+}

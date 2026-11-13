@@ -48,6 +48,12 @@ type sideMachine struct {
 	holds int
 }
 
+type owed struct {
+	due   int
+	late  int
+	stale int
+}
+
 type Desk[M comparable] struct {
 	on           bool
 	sides        map[M]*sideMachine
@@ -58,12 +64,13 @@ type Desk[M comparable] struct {
 	number       int
 	hasCopy      bool
 	centralHolds int
-	answersDue   map[M]int
+	answers      map[M]*owed
 	readsDue     int
+	staleReads   int
 }
 
 func NewDesk[M comparable](on bool) *Desk[M] {
-	return &Desk[M]{on: on, sides: make(map[M]*sideMachine), answersDue: make(map[M]int)}
+	return &Desk[M]{on: on, sides: make(map[M]*sideMachine), answers: make(map[M]*owed)}
 }
 
 func (d *Desk[M]) Connected(side M) []Action[M] {
@@ -84,7 +91,11 @@ func (d *Desk[M]) Lost(side M) []Action[M] {
 }
 
 func (d *Desk[M]) GaveUpOn(side M) []Action[M] {
-	d.writeOffAnswersOf(side)
+	if owing := d.answers[side]; owing != nil && owing.due > 0 {
+		owing.due--
+		owing.late++
+		d.withdraw()
+	}
 	return d.deliverToFocused()
 }
 
@@ -97,7 +108,7 @@ func (d *Desk[M]) Says(side M, takes bool) []Action[M] {
 	machine.takes = takes
 	if !takes {
 		machine.holds = 0
-		delete(d.answersDue, side)
+		delete(d.answers, side)
 	}
 	var actions []Action[M]
 	if !tookPart && d.takingPart() {
@@ -113,8 +124,12 @@ func (d *Desk[M]) Switch(on bool) []Action[M] {
 	d.on = on
 	if !on {
 		d.withdraw()
+		d.staleReads += d.readsDue
 		d.readsDue = 0
-		clear(d.answersDue)
+		for _, owing := range d.answers {
+			owing.stale += owing.due + owing.late
+			owing.due, owing.late = 0, 0
+		}
 	}
 	actions := make([]Action[M], 0, len(d.connected)+1)
 	for _, side := range d.connected {
@@ -156,8 +171,7 @@ func (d *Desk[M]) ReadUnchanged() []Action[M] {
 }
 
 func (d *Desk[M]) ReadGave(text string, readErr error) ([]Action[M], error) {
-	d.readArrived()
-	if !d.on {
+	if current := d.readArrived(); !current || !d.on {
 		return nil, nil
 	}
 	if readErr == nil {
@@ -190,11 +204,11 @@ func (d *Desk[M]) WithdrawalFrom(side M) []Action[M] {
 }
 
 func (d *Desk[M]) CopyFrom(side M, text string) []Action[M] {
+	current := d.answerArrived(side)
 	machine, connected := d.sides[side]
-	if !d.on || !connected || !machine.takes {
-		return d.UnchangedOn(side)
+	if !current || !d.on || !connected || !machine.takes {
+		return d.deliverToFocused()
 	}
-	d.answerArrived(side)
 	switch {
 	case text == "":
 		d.withdraw()
@@ -224,27 +238,54 @@ func (d *Desk[M]) awaitTheSideThatLostFocus() {
 		return
 	}
 	if machine, connected := d.sides[d.focused]; connected && machine.takes {
-		d.answersDue[d.focused]++
+		owing := d.answers[d.focused]
+		if owing == nil {
+			owing = &owed{}
+			d.answers[d.focused] = owing
+		}
+		owing.due++
 	}
 }
 
-func (d *Desk[M]) answerArrived(side M) {
-	if d.answersDue[side] > 1 {
-		d.answersDue[side]--
-		return
+func (d *Desk[M]) answerArrived(side M) (current bool) {
+	owing := d.answers[side]
+	switch {
+	case owing == nil:
+		return true
+	case owing.stale > 0:
+		owing.stale--
+		return false
+	case owing.late > 0:
+		owing.late--
+	case owing.due > 0:
+		owing.due--
 	}
-	delete(d.answersDue, side)
+	return true
 }
 
 func (d *Desk[M]) writeOffAnswersOf(side M) {
-	if d.answersDue[side] > 0 {
+	if owing := d.answers[side]; owing != nil && owing.due > 0 {
 		d.withdraw()
 	}
-	delete(d.answersDue, side)
+	delete(d.answers, side)
 }
 
-func (d *Desk[M]) readArrived() {
+func (d *Desk[M]) readArrived() (current bool) {
+	if d.staleReads > 0 {
+		d.staleReads--
+		return false
+	}
 	d.readsDue = max(d.readsDue-1, 0)
+	return true
+}
+
+func (d *Desk[M]) answersStillDue() bool {
+	for _, owing := range d.answers {
+		if owing.due > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Desk[M]) newCopy(text string) {
@@ -259,7 +300,7 @@ func (d *Desk[M]) withdraw() {
 }
 
 func (d *Desk[M]) deliverToFocused() []Action[M] {
-	if !d.on || !d.hasCopy || d.readsDue > 0 || len(d.answersDue) > 0 {
+	if !d.on || !d.hasCopy || d.readsDue > 0 || d.answersStillDue() {
 		return nil
 	}
 	if !d.focusOnSide {
