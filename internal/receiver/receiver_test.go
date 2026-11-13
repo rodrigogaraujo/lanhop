@@ -275,10 +275,12 @@ func (h *heldAddress) String() string {
 	return h.listener.Addr().String()
 }
 
-func (h *heldAddress) passTo(sharer *transport.Listener) {
+func (h *heldAddress) passTo(t *testing.T, sharer *transport.Listener) {
+	t.Helper()
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.sharer = sharer.Addr().String()
+	t.Cleanup(h.refuse)
 }
 
 func (h *heldAddress) refuse() {
@@ -536,7 +538,7 @@ func TestTheReceiverReconnectsWhenTheSharerComesBackAndKeepsItsReplay(t *testing
 	d := newDesk(t)
 	address := holdAddress(t)
 	listener := d.sharerListens(t, loopback)
-	address.passTo(listener)
+	address.passTo(t, listener)
 	d.receiverRuns(t, address.String())
 	sharerSide := accept(t, listener)
 	send(t, sharerSide, event.Enter(), event.Key(event.KeyA, pressed), event.Sync())
@@ -547,7 +549,7 @@ func TestTheReceiverReconnectsWhenTheSharerComesBackAndKeepsItsReplay(t *testing
 	sharerSide.Close()
 	lost := d.failuresAfter(t, 2)
 	listener = d.sharerListens(t, loopback)
-	address.passTo(listener)
+	address.passTo(t, listener)
 	sharerSide = accept(t, listener)
 	send(t, sharerSide,
 		event.Key(keyB, pressed), event.Sync(),
@@ -639,7 +641,7 @@ func TestTheRetryDelayStartsOverAfterAConnection(t *testing.T) {
 	d.receiverRunsRetrying(t, address.String(), growing)
 	d.failuresAfter(t, 6)
 	listener := d.sharerListens(t, loopback)
-	address.passTo(listener)
+	address.passTo(t, listener)
 
 	accept(t, listener).Close()
 	lost := time.Now()
