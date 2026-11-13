@@ -14,7 +14,7 @@ const (
 
 var (
 	ErrNotARelease = errors.New("update: not a release version, which looks like v1.2.3")
-	releaseForm    = regexp.MustCompile(`^v([0-9]{1,5})\.([0-9]{1,3})\.([0-9]{1,3})$`)
+	releaseForm    = regexp.MustCompile(`^v(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$`)
 )
 
 type Version struct {

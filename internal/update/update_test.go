@@ -60,6 +60,8 @@ type publication struct {
 	archiveChanged   bool
 	checksumsChanged bool
 	checksumsPadding int
+	updatePadding    int
+	signatureExtra   []byte
 }
 
 type fakeGitHub struct {
@@ -89,7 +91,11 @@ func serving(t *testing.T) (*fakeGitHub, Source) {
 	github := &fakeGitHub{files: map[string][]byte{}}
 	server := httptest.NewServer(github)
 	t.Cleanup(server.Close)
-	return github, Source{Releases: server.URL + "/releases", Client: server.Client(), Keys: []ed25519.PublicKey{testKeys.public, nextKeys.public}}
+	source := Source{Releases: server.URL + "/releases", Client: server.Client(), Keys: []ed25519.PublicKey{testKeys.public, nextKeys.public}}
+	if runtime.GOOS == "darwin" {
+		source.CheckApp = func(string) error { return nil }
+	}
+	return github, source
 }
 
 func root() string {
@@ -165,10 +171,10 @@ func (g *fakeGitHub) publish(t *testing.T, release publication) {
 	}
 	archiveName := root() + ".tar.gz"
 	archive := packed(t, release.entries)
-	update := []byte(fmt.Sprintf("version %s\nfrom %s\n", release.says, release.from))
+	update := []byte(fmt.Sprintf("version %s\nfrom %s\n", release.says, release.from) + strings.Repeat("# padding\n", release.updatePadding))
 	sums := fmt.Sprintf("%x  %s\n%x  %s\n", sha256.Sum256(archive), archiveName, sha256.Sum256(update), updateName)
 	sums += strings.Repeat("0000000000000000000000000000000000000000000000000000000000000000  padding\n", release.checksumsPadding)
-	signature := ed25519.Sign(release.signer, []byte(sums))
+	signature := append(ed25519.Sign(release.signer, []byte(sums)), release.signatureExtra...)
 	if release.archiveChanged {
 		archive = append(archive, 0)
 	}
@@ -234,8 +240,13 @@ func expectNoStagingLeft(t *testing.T, target Target) {
 
 func expectUntouched(t *testing.T, target Target) {
 	t.Helper()
-	if said := versionOf(t, target); said != "lanhop "+running.String() {
-		t.Errorf("the installed program says %q, want it untouched", said)
+	program := target.Program
+	if target.isApp() {
+		program = filepath.Join(program, "Contents", "MacOS", "lanhop")
+	}
+	content, err := os.ReadFile(program)
+	if err != nil || string(content) != script("lanhop "+running.String()) {
+		t.Errorf("the installed program holds %q, %v, want it byte for byte as it was", content, err)
 	}
 	expectNoStagingLeft(t, target)
 }
@@ -288,6 +299,9 @@ func TestEveryRefusalLeavesTheOldProgramAndNoFolder(t *testing.T) {
 		{"the same release as this lanhop", publication{version: running}, running, ErrNotNewer},
 		{"a release that needs the installer", publication{version: newer, from: newer}, newer, ErrNeedsInstaller},
 		{"checksums over their size limit", publication{version: newer, checksumsPadding: 80}, newer, ErrTooLarge},
+		{"an UPDATE over its size limit", publication{version: newer, updatePadding: 500}, newer, ErrTooLarge},
+		{"a signature over its size", publication{version: newer, signatureExtra: []byte{0}}, newer, ErrTooLarge},
+		{"a setgid bit", publication{version: newer, entries: append(programEntries("lanhop v0.1.3"), entry{name: root() + "/tool", content: "x", mode: 0o2755})}, newer, ErrUnsafeArchive},
 		{"a path with ..", publication{version: newer, entries: escaping(root() + "/../evil")}, newer, ErrUnsafeArchive},
 		{"an absolute path", publication{version: newer, entries: escaping("/tmp/evil")}, newer, ErrUnsafeArchive},
 		{"a path outside the root", publication{version: newer, entries: escaping("elsewhere/evil")}, newer, ErrUnsafeArchive},
@@ -383,6 +397,49 @@ func TestAStopRightAfterTheSwapLeavesTheNewProgramAndTheNextStartCleansUp(t *tes
 	expectNoStagingLeft(t, target)
 }
 
+func TestALatestReleaseOlderThanThisOneIsRefused(t *testing.T) {
+	github, source := serving(t)
+	older := Version{0, 1, 1}
+	github.latest = older.String()
+	github.publish(t, publication{version: older, from: older})
+	target := installedProgram(t)
+	latest, err := source.Latest(context.Background())
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if _, err := source.Prepare(context.Background(), target, latest, false); !errors.Is(err, ErrNotNewer) {
+		t.Fatalf("Prepare of an older latest = %v, want ErrNotNewer", err)
+	}
+	expectUntouched(t, target)
+}
+
+func TestARedirectFromHTTPSToHTTPIsRefused(t *testing.T) {
+	plain := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(plain.Close)
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		http.Redirect(response, request, plain.URL+request.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(secure.Close)
+	source := Source{Releases: secure.URL + "/releases", Client: secure.Client(), Keys: []ed25519.PublicKey{testKeys.public}}
+	if _, err := source.fetch(context.Background(), newer, checksumsName, smallFileLimit); !errors.Is(err, ErrNotHTTPS) {
+		t.Errorf("a download redirected to HTTP = %v, want ErrNotHTTPS", err)
+	}
+}
+
+func TestAnAppIsRefusedWhenItsSignatureCannotBeChecked(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("lanhop.app is replaced only on macOS")
+	}
+	github, source := serving(t)
+	source.CheckApp = nil
+	github.publish(t, publication{version: newer})
+	target := installedProgram(t)
+	if _, err := source.Prepare(context.Background(), target, newer, false); !errors.Is(err, ErrNoAppCheck) {
+		t.Fatalf("Prepare without a check of the app = %v, want ErrNoAppCheck", err)
+	}
+	expectUntouched(t, target)
+}
+
 func TestLatestIsTheReleaseThatGitHubSendsTo(t *testing.T) {
 	github, source := serving(t)
 	github.latest = "v0.1.3"
@@ -405,7 +462,7 @@ func TestOnlyReleaseVersionsAreRead(t *testing.T) {
 			t.Errorf("ParseVersion(%q) = %v, want a version", text, err)
 		}
 	}
-	for _, text := range []string{"0.1.2", "v1.2", "v1.2.256", "v1.256.0", "v32768.0.0", "dev", "dev-1234abc", "v1.2.3-rc1", ""} {
+	for _, text := range []string{"0.1.2", "v1.2", "v1.2.256", "v1.256.0", "v32768.0.0", "dev", "dev-1234abc", "v1.2.3-rc1", "v0.01.3", "v00.1.2", ""} {
 		if _, err := ParseVersion(text); !errors.Is(err, ErrNotARelease) {
 			t.Errorf("ParseVersion(%q) = %v, want ErrNotARelease", text, err)
 		}

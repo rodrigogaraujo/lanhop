@@ -34,7 +34,10 @@ var (
 	ErrTooLarge        = errors.New("update: a file of the release is larger than lanhop accepts")
 	ErrNoLatest        = errors.New("update: GitHub did not say which release is the latest")
 	ErrUnexpectedReply = errors.New("update: GitHub answered with something lanhop does not expect")
+	ErrNotHTTPS        = errors.New("update: GitHub redirected to an address that is not HTTPS")
 )
+
+const redirectLimit = 10
 
 type Source struct {
 	Releases string
@@ -61,11 +64,15 @@ func (s Source) Latest(ctx context.Context) (Version, error) {
 		return Version{}, err
 	}
 	response.Body.Close()
-	location := response.Header.Get("Location")
-	if response.StatusCode/100 != 3 || location == "" {
+	location, err := response.Location()
+	if response.StatusCode/100 != 3 || err != nil {
 		return Version{}, fmt.Errorf("%w: status %d", ErrNoLatest, response.StatusCode)
 	}
-	version, err := ParseVersion(path.Base(location))
+	tag := path.Base(location.Path)
+	if path.Dir(location.Path) != path.Join(request.URL.Path, "..", "tag") {
+		return Version{}, fmt.Errorf("%w: it sent to %s", ErrNoLatest, location)
+	}
+	version, err := ParseVersion(tag)
 	if err != nil {
 		return Version{}, fmt.Errorf("%w: %w", ErrNoLatest, err)
 	}
@@ -73,10 +80,21 @@ func (s Source) Latest(ctx context.Context) (Version, error) {
 }
 
 func (s Source) client() *http.Client {
-	if s.Client == nil {
-		return http.DefaultClient
+	base := http.DefaultClient
+	if s.Client != nil {
+		base = s.Client
 	}
-	return s.Client
+	client := *base
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= redirectLimit {
+			return fmt.Errorf("%w: more than %d redirects", ErrUnexpectedReply, redirectLimit)
+		}
+		if via[0].URL.Scheme == "https" && next.URL.Scheme != "https" {
+			return fmt.Errorf("%w: %s", ErrNotHTTPS, next.URL)
+		}
+		return nil
+	}
+	return &client
 }
 
 func (s Source) fetch(ctx context.Context, version Version, name string, limit int64) ([]byte, error) {

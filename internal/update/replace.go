@@ -12,13 +12,18 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 )
 
 const (
-	stagingPattern = "lanhop-update-*"
-	unpackedLimit  = 200 << 20
-	setIDBits      = 0o6000
+	stagingPattern  = "lanhop-update-*"
+	unpackedLimit   = 200 << 20
+	entryLimit      = 10000
+	setIDBits       = 0o6000
+	versionPatience = 10 * time.Second
+	versionLimit    = 256
 )
 
 var (
@@ -27,6 +32,7 @@ var (
 	ErrUnsafeArchive  = errors.New("update: the archive holds something lanhop does not unpack")
 	ErrWrongProgram   = errors.New("update: the new program does not say the version of the release")
 	ErrSwapUnknown    = errors.New("update: this system cannot swap the app in one step")
+	ErrNoAppCheck     = errors.New("update: lanhop cannot check the signature of a new app yet")
 )
 
 var (
@@ -55,6 +61,13 @@ func (t Target) isApp() bool {
 	return t.System == "darwin"
 }
 
+func (t Target) replacedName() string {
+	if t.isApp() {
+		return "lanhop.app"
+	}
+	return "lanhop"
+}
+
 func (s Source) Prepare(ctx context.Context, target Target, want Version, older bool) (Staged, error) {
 	if !older && want.Compare(target.Running) <= 0 {
 		return Staged{}, fmt.Errorf("%w: %s, and this one is %s", ErrNotNewer, want, target.Running)
@@ -78,7 +91,7 @@ func (s Source) Prepare(ctx context.Context, target Target, want Version, older 
 	if err != nil {
 		return Staged{}, err
 	}
-	staged := Staged{folder: folder, replacement: filepath.Join(folder, target.archiveRoot(), filepath.Base(target.Program)), Version: want}
+	staged := Staged{folder: folder, replacement: filepath.Join(folder, target.archiveRoot(), target.replacedName()), Version: want}
 	if err := staged.check(ctx, s, archive, target); err != nil {
 		staged.Discard()
 		return Staged{}, err
@@ -91,25 +104,53 @@ func (st Staged) check(ctx context.Context, s Source, archive []byte, target Tar
 		return err
 	}
 	if _, err := os.Lstat(st.replacement); err != nil {
-		return fmt.Errorf("%w: it has no %s", ErrUnsafeArchive, filepath.Base(target.Program))
+		return fmt.Errorf("%w: it has no %s", ErrUnsafeArchive, target.replacedName())
 	}
 	program := st.replacement
 	if target.isApp() {
-		if s.CheckApp != nil {
-			if err := s.CheckApp(st.replacement); err != nil {
-				return err
-			}
+		if s.CheckApp == nil {
+			return ErrNoAppCheck
+		}
+		if err := s.CheckApp(st.replacement); err != nil {
+			return err
 		}
 		program = filepath.Join(st.replacement, "Contents", "MacOS", "lanhop")
 	}
-	said, err := exec.CommandContext(ctx, program, "version").Output()
+	said, err := versionSaidBy(ctx, program, st.folder)
 	if err != nil {
 		return fmt.Errorf("%w: it did not run: %w", ErrWrongProgram, err)
 	}
-	if strings.TrimSpace(string(said)) != "lanhop "+st.Version.String() {
-		return fmt.Errorf("%w: it says %q", ErrWrongProgram, strings.TrimSpace(string(said)))
+	if said != "lanhop "+st.Version.String() {
+		return fmt.Errorf("%w: it says %q", ErrWrongProgram, said)
 	}
 	return nil
+}
+
+func versionSaidBy(ctx context.Context, program, folder string) (string, error) {
+	patient, stop := context.WithTimeout(ctx, versionPatience)
+	defer stop()
+	command := exec.CommandContext(patient, program, "version")
+	command.Dir = folder
+	command.Env = slices.DeleteFunc(os.Environ(), func(variable string) bool { return strings.HasPrefix(variable, "LANHOP_") })
+	output := &cappedBuffer{limit: versionLimit}
+	command.Stdout = output
+	if err := command.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output.String()), nil
+}
+
+type cappedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(written []byte) (int, error) {
+	room := b.limit - b.Len()
+	if room > 0 {
+		b.Buffer.Write(written[:min(room, len(written))])
+	}
+	return len(written), nil
 }
 
 func (st Staged) Discard() error {
@@ -121,7 +162,8 @@ func Install(staged Staged, target Target) error {
 		staged.Discard()
 		return err
 	}
-	return staged.Discard()
+	staged.Discard()
+	return nil
 }
 
 func putInPlace(replacement string, target Target) error {
@@ -148,9 +190,12 @@ func unpack(archive []byte, into, root string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnsafeArchive, err)
 	}
-	entries := tar.NewReader(unzipped)
+	entries := tar.NewReader(io.LimitReader(unzipped, unpackedLimit+archiveLimit))
 	var written int64
-	for {
+	for count := 0; ; count++ {
+		if count > entryLimit {
+			return fmt.Errorf("%w: more than %d entries", ErrTooLarge, entryLimit)
+		}
 		header, err := entries.Next()
 		if errors.Is(err, io.EOF) {
 			return nil
