@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rodrigogaraujo/lanhop/internal/update"
 )
 
 type releaseServer struct {
@@ -101,6 +103,13 @@ type installedMachine struct {
 	program  string
 	commands string
 	config   string
+}
+
+func requireTheSwapOfApps(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" && !update.SwapsApps {
+		t.Skip("this build of lanhop cannot swap lanhop.app, which needs cgo")
+	}
 }
 
 func servingReleases(t *testing.T) *releaseServer {
@@ -182,6 +191,7 @@ func restartCommand() string {
 }
 
 func TestUpdateMovesThisMachineToTheLatestReleaseAndRestartsItsService(t *testing.T) {
+	requireTheSwapOfApps(t)
 	releases := servingReleases(t)
 	releases.latest = "v0.1.3"
 	releases.publish(t, "v0.1.3", "v0.1.2")
@@ -260,6 +270,7 @@ func TestUpdateRefusesWhatItCannotOrMustNotReplace(t *testing.T) {
 }
 
 func TestOlderMovesBackAndStopsFollowingTheCentral(t *testing.T) {
+	requireTheSwapOfApps(t)
 	releases := servingReleases(t)
 	releases.publish(t, "v0.1.1", "v0.1.1")
 	machine := machineWithLanhop(t, "v0.1.2")
@@ -280,6 +291,7 @@ func TestOlderMovesBackAndStopsFollowingTheCentral(t *testing.T) {
 }
 
 func TestTwoUpdatesAtTheSameTimeUpdateOnce(t *testing.T) {
+	requireTheSwapOfApps(t)
 	releases := servingReleases(t)
 	releases.latest = "v0.1.3"
 	releases.publish(t, "v0.1.3", "v0.1.2")
@@ -314,6 +326,7 @@ func TestTwoUpdatesAtTheSameTimeUpdateOnce(t *testing.T) {
 }
 
 func TestUpdateFindsTheProgramThroughTheServiceWhenItIsReachedByALink(t *testing.T) {
+	requireTheSwapOfApps(t)
 	if runtime.GOOS == "darwin" {
 		t.Skip("on macOS the launch agent names the program inside lanhop.app")
 	}
@@ -382,6 +395,7 @@ func TestUpdateRefusesAProgramOutsideALanhopApp(t *testing.T) {
 }
 
 func TestUpdateLeavesAServiceThatIsNotRunningAlone(t *testing.T) {
+	requireTheSwapOfApps(t)
 	if runtime.GOOS == "darwin" {
 		t.Skip("launchctl kickstart fails by itself on an agent that is not loaded")
 	}

@@ -19,6 +19,8 @@ import (
 	"unsafe"
 )
 
+const SwapsApps = true
+
 func swapInPlace(replacement, current string) error {
 	from, to := C.CString(replacement), C.CString(current)
 	defer C.free(unsafe.Pointer(from))
