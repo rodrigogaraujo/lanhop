@@ -40,6 +40,20 @@ type Trusted interface {
 	Peers() []trust.Peer
 }
 
+type Clipboard interface {
+	Connected(conn Conn) (received func(frame event.Event))
+	Lost(conn Conn)
+	FocusLeaves(conn Conn)
+	FocusArrives(conn Conn)
+}
+
+type noClipboard struct{}
+
+func (noClipboard) Connected(Conn) func(event.Event) { return func(event.Event) {} }
+func (noClipboard) Lost(Conn)                        {}
+func (noClipboard) FocusLeaves(Conn)                 {}
+func (noClipboard) FocusArrives(Conn)                {}
+
 type Sharer struct {
 	capture            Capture
 	trusted            Trusted
@@ -52,6 +66,7 @@ type Sharer struct {
 	receiverChanges    int
 	reportedChanges    int
 	onReceivers        func(names []string)
+	clipboard          Clipboard
 	focused            Conn
 	heldOnFocused      keystate.Tracker
 	unsent             []event.Event
@@ -75,6 +90,7 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges Edge
 		stopped:            make(chan struct{}),
 		receivers:          make(map[identity.Fingerprint]Conn),
 		reportedChanges:    -1,
+		clipboard:          noClipboard{},
 		edges:              edges,
 		now:                time.Now,
 		ownEdges:           edge.New(edges.Watch),
@@ -84,6 +100,10 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges Edge
 
 func (s *Sharer) OnReceivers(report func(names []string)) {
 	s.onReceivers = report
+}
+
+func (s *Sharer) ShareClipboard(clipboard Clipboard) {
+	s.clipboard = clipboard
 }
 
 func (s *Sharer) Connect(conn Conn) {
@@ -105,7 +125,7 @@ func (s *Sharer) Run(ctx context.Context) (err error) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.leaveFocused()
+			s.bringFocusBack()
 			return nil
 		case captured, capturing := <-s.capture.Events():
 			if !capturing {
@@ -209,7 +229,9 @@ func (s *Sharer) enter(receiver Conn, arrival arrival) error {
 		greeting = append(greeting, s.remoteCursor.position()...)
 		greeting = append(greeting, event.Sync())
 	}
-	if receiver.Send(greeting...) != nil {
+	sent := receiver.Send(greeting...)
+	s.clipboard.FocusArrives(receiver)
+	if sent != nil {
 		return s.drop(receiver)
 	}
 	return nil
@@ -229,8 +251,16 @@ func (s *Sharer) focusOnSharer() error {
 	if s.focused == nil {
 		return nil
 	}
-	s.leaveFocused()
+	s.bringFocusBack()
 	return s.giveBack()
+}
+
+func (s *Sharer) bringFocusBack() {
+	if s.focused == nil {
+		return
+	}
+	s.leaveFocused()
+	s.clipboard.FocusArrives(nil)
 }
 
 func (s *Sharer) leaveFocused() {
@@ -245,6 +275,7 @@ func (s *Sharer) leaveFocused() {
 		farewell = append(farewell, event.Sync())
 	}
 	s.focused, s.unsent, s.remoteCursor, s.moved = nil, nil, nil, movement{}
+	s.clipboard.FocusLeaves(left)
 	if left.Send(append(farewell, event.Leave())...) != nil {
 		s.forget(left)
 	}
@@ -262,16 +293,17 @@ func (s *Sharer) admit(conn Conn) error {
 	previous, reconnecting := s.receivers[fingerprint]
 	s.receivers[fingerprint] = conn
 	s.receiverChanges++
-	go s.watch(conn)
+	go s.watch(conn, s.clipboard.Connected(conn))
 	if !reconnecting {
 		return nil
 	}
 	return s.giveInputBackThenClose(previous)
 }
 
-func (s *Sharer) watch(conn Conn) {
+func (s *Sharer) watch(conn Conn, toClipboard func(frame event.Event)) {
 	for {
-		if _, err := conn.Receive(); err != nil {
+		received, err := conn.Receive()
+		if err != nil {
 			conn.Close()
 			select {
 			case s.losses <- conn:
@@ -279,6 +311,7 @@ func (s *Sharer) watch(conn Conn) {
 			}
 			return
 		}
+		toClipboard(received)
 	}
 }
 
@@ -293,12 +326,14 @@ func (s *Sharer) drop(conn Conn) error {
 }
 
 func (s *Sharer) giveInputBackThenClose(conn Conn) error {
+	s.clipboard.Lost(conn)
 	err := s.takeFocusFrom(conn)
 	conn.Close()
 	return err
 }
 
 func (s *Sharer) forget(conn Conn) {
+	s.clipboard.Lost(conn)
 	delete(s.receivers, conn.Peer().Fingerprint)
 	s.receiverChanges++
 	conn.Close()
@@ -310,6 +345,7 @@ func (s *Sharer) takeFocusFrom(conn Conn) error {
 	}
 	s.focused, s.unsent, s.heldOnFocused = nil, nil, keystate.Tracker{}
 	s.remoteCursor, s.moved = nil, movement{}
+	s.clipboard.FocusArrives(nil)
 	return s.giveBack()
 }
 

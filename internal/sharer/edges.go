@@ -251,7 +251,7 @@ func (s *Sharer) comeBack(arrival arrival) error {
 	if s.focused == nil {
 		return nil
 	}
-	s.leaveFocused()
+	s.bringFocusBack()
 	if err := s.giveBack(); err != nil {
 		return err
 	}
