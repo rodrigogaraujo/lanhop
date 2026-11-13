@@ -189,13 +189,14 @@ jobs:
           done
           test "$(lanhop-darwin-arm64/lanhop.app/Contents/MacOS/lanhop version)" = "lanhop $VERSION"
       - name: Install from these archives with install.sh on a Mac
-        if: github.ref_type == 'tag'
         run: |
-          mkdir -p served/latest/download
+          mkdir -p served/latest/download root/Applications
           cp release/* served/latest/download/
           home=$(mktemp -d)
-          HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" sh install.sh </dev/null
+          HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" LANHOP_SYSTEM_ROOT="$PWD/root" sh install.sh </dev/null
           test "$("$home/.local/bin/lanhop" version)" = "lanhop $VERSION"
+          test "$(readlink "$home/.local/bin/lanhop")" = "$PWD/root/Applications/lanhop.app/Contents/MacOS/lanhop"
+          codesign --verify --strict --verbose=2 root/Applications/lanhop.app
 
   publish:
     name: Publish the release
