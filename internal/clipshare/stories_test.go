@@ -341,7 +341,9 @@ func TestASideMachineWhoseClipboardGoesAwayStopsSharingAndTakesAFreshMarkWhenItC
 	plugged := &pluggedClipboard{current: first}
 	d.startSide(right, d.address, plugged.open)
 	d.waitUntilTakingPart(right)
+	marksBefore := right.clipboard.timesMarked()
 	d.focusOn(right.number)
+	eventually(t, "right taking its arrival mark", func() bool { return right.clipboard.timesMarked() > marksBefore })
 
 	plugged.plug(nil)
 	close(first.gone)

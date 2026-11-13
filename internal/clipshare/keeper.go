@@ -4,7 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
+	"sync/atomic"
+	"time"
 )
+
+const retryReachingEvery = 30 * time.Second
 
 type readResult struct {
 	text      string
@@ -22,10 +27,24 @@ type keeper struct {
 	readMark        int64
 	untouchedMark   int64
 	saidUnreachable bool
+	retryEvery      time.Duration
+	nextAttempt     time.Time
+	readMarkWaiting atomic.Bool
 }
 
 func newKeeper(config Config, reachable func(bool)) *keeper {
-	return &keeper{open: config.Open, log: config.Log, reachable: reachable, jobs: newMailbox[func()]()}
+	return &keeper{
+		open:       config.Open,
+		log:        config.Log,
+		reachable:  reachable,
+		jobs:       newMailbox[func()](),
+		retryEvery: retryReachingEvery,
+	}
+}
+
+func (k *keeper) queue(job func()) {
+	k.readMarkWaiting.Store(false)
+	k.jobs.put(job)
 }
 
 func (k *keeper) run(ctx context.Context, reachedAtStart chan<- bool) {
@@ -47,15 +66,19 @@ func (k *keeper) run(ctx context.Context, reachedAtStart chan<- bool) {
 }
 
 func (k *keeper) tryToReach() {
-	k.jobs.put(func() {
-		if k.board == nil && k.connect() {
+	k.queue(func() {
+		if k.board == nil && !time.Now().Before(k.nextAttempt) && k.connect() {
 			k.reachable(true)
 		}
 	})
 }
 
 func (k *keeper) takeReadMark() {
+	if k.readMarkWaiting.Swap(true) {
+		return
+	}
 	k.jobs.put(func() {
+		k.readMarkWaiting.Store(false)
 		if k.board != nil {
 			k.readMark = k.board.Mark()
 		}
@@ -63,7 +86,7 @@ func (k *keeper) takeReadMark() {
 }
 
 func (k *keeper) takeArrivalMark() {
-	k.jobs.put(func() {
+	k.queue(func() {
 		if k.board != nil {
 			k.untouchedMark = k.board.Mark()
 		}
@@ -71,18 +94,19 @@ func (k *keeper) takeArrivalMark() {
 }
 
 func (k *keeper) read(done func(readResult)) {
-	k.jobs.put(func() { done(k.readNow()) })
+	k.queue(func() { done(k.readNow()) })
 }
 
 func (k *keeper) write(text string) {
-	k.jobs.put(func() { k.writeNow(text) })
+	k.queue(func() { k.writeNow(text) })
 }
 
 func (k *keeper) connect() bool {
 	board, err := k.open()
 	if err != nil {
+		k.nextAttempt = time.Now().Add(k.retryEvery)
 		if !k.saidUnreachable {
-			fmt.Fprintf(k.log, "Clipboard sharing is off on this machine, because lanhop cannot reach its clipboard: %v\n", err)
+			fmt.Fprintf(k.log, "Clipboard sharing is off on this machine, because lanhop cannot reach its clipboard: %s\n", onOneLine(err))
 			k.saidUnreachable = true
 		}
 		return false
@@ -100,8 +124,13 @@ func (k *keeper) connect() bool {
 	return true
 }
 
+func onOneLine(err error) string {
+	return strings.ReplaceAll(err.Error(), "\n", "; ")
+}
+
 func (k *keeper) lose() {
 	k.disconnect()
+	k.nextAttempt = time.Time{}
 	fmt.Fprintln(k.log, "lanhop lost the clipboard of this machine, so clipboard sharing is off on it until lanhop reaches it again.")
 	k.saidUnreachable = true
 	k.reachable(false)

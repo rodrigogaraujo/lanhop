@@ -167,11 +167,58 @@ func TestALeaveAfterACopyFinishedDoesNotCutItShort(t *testing.T) {
 	small := framesOf(t, "small")
 
 	l.sendCopy("small")
-	eventually(t, "the small copy", func() bool { return len(conn.frames()) == len(small) })
-	time.Sleep(time.Millisecond)
+	eventually(t, "the small copy sent whole", func() bool { return len(conn.frames()) == len(small) && l.sentWhole() })
 
 	if l.leave() {
 		t.Error("a copy that was sent whole was taken as cut short")
+	}
+}
+
+func (l *link) sentWhole() bool {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	return l.current == nil || l.current.done
+}
+
+func (l *link) copiesStillToSend() int {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	copies := 0
+	if l.current != nil && l.current.isACopy && !l.current.stopped && !l.current.done {
+		copies++
+	}
+	for _, d := range l.waiting {
+		if d.isACopy {
+			copies++
+		}
+	}
+	return copies
+}
+
+func TestALinkKeepsOnlyTheNewestCopyAndStopsTheOneOnItsWay(t *testing.T) {
+	conn := &recordingConn{}
+	l, _ := linkOver(t, conn, testPatience)
+	first := strings.Repeat("1", 2*clipboard.WindowFrames*4)
+	l.sendNewestCopy(first)
+	eventually(t, "the window filling", func() bool { return len(conn.frames()) == clipboard.WindowFrames })
+
+	for i := range 28 {
+		l.sendNewestCopy(strings.Repeat(string(rune('a'+i%26)), 2*clipboard.WindowFrames*4))
+	}
+	newest := "the newest copy"
+	l.sendNewestCopy(newest)
+
+	if waiting := l.copiesStillToSend(); waiting != 1 {
+		t.Errorf("%d copies are still to send on the link, want only the newest", waiting)
+	}
+	l.acknowledged(clipboard.WindowFrames)
+	after := framesOf(t, newest)
+	eventually(t, "the newest copy", func() bool {
+		frames := conn.frames()
+		return len(frames) >= len(after) && slices.Equal(frames[len(frames)-len(after):], after)
+	})
+	if sent := len(conn.frames()); sent != clipboard.WindowFrames+len(after) {
+		t.Errorf("%d frames were sent, want the start of the first copy and the newest copy, nothing in between", sent)
 	}
 }
 

@@ -206,10 +206,20 @@ func (c *Central) left(l *link, copyCutShort bool) {
 }
 
 func (c *Central) arrived(toASide bool, l *link) {
-	c.followTheSwitch()
+	on := c.switchedOn()
+	if !on {
+		c.switchTo(false)
+	}
 	if !c.reachable {
 		c.keeper.tryToReach()
 	}
+	c.moveFocus(toASide, l)
+	if on {
+		c.switchTo(true)
+	}
+}
+
+func (c *Central) moveFocus(toASide bool, l *link) {
 	if !toASide {
 		if c.focusHere {
 			return
@@ -251,13 +261,14 @@ func (c *Central) noAnswerIn(l *link, due *answerDue) {
 	c.do(c.desk.GaveUpOn(l))
 }
 
-func (c *Central) answered(l *link) {
+func (c *Central) answerWasOwed(l *link) bool {
 	machine := c.sides[l]
 	if machine == nil || len(machine.answers) == 0 {
-		return
+		return false
 	}
 	machine.answers[0].timer.Stop()
 	machine.answers = machine.answers[1:]
+	return true
 }
 
 func (c *Central) forgetAnswersOf(l *link) {
@@ -285,18 +296,21 @@ func (c *Central) says(l *link, takes bool) {
 }
 
 func (c *Central) unchangedOn(l *link) {
-	c.answered(l)
-	c.do(c.desk.UnchangedOn(l))
+	if c.answerWasOwed(l) {
+		c.do(c.desk.UnchangedOn(l))
+	}
 }
 
 func (c *Central) copyFrom(l *link, text string) {
-	c.answered(l)
-	c.do(c.desk.CopyFrom(l, text))
+	if c.answerWasOwed(l) {
+		c.do(c.desk.CopyFrom(l, text))
+	}
 }
 
 func (c *Central) withdrawalFrom(l *link) {
-	c.answered(l)
-	c.do(c.desk.WithdrawalFrom(l))
+	if c.answerWasOwed(l) {
+		c.do(c.desk.WithdrawalFrom(l))
+	}
 }
 
 func (c *Central) clipboardReachable(reachable bool) {
@@ -304,8 +318,15 @@ func (c *Central) clipboardReachable(reachable bool) {
 	c.followTheSwitch()
 }
 
+func (c *Central) switchedOn() bool {
+	return c.reachable && c.config.SwitchedOn()
+}
+
 func (c *Central) followTheSwitch() {
-	on := c.reachable && c.config.SwitchedOn()
+	c.switchTo(c.switchedOn())
+}
+
+func (c *Central) switchTo(on bool) {
 	if on == c.on {
 		return
 	}
@@ -343,7 +364,7 @@ func (c *Central) do(actions []clipboard.Action[*link]) {
 		case clipboard.Announce:
 			action.To.sendFrame(features(action.On))
 		case clipboard.Send:
-			if !action.To.sendCopy(action.Text) {
+			if !action.To.sendNewestCopy(action.Text) {
 				c.desk.SendStopped(action.To)
 			}
 		case clipboard.Write:

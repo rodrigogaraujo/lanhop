@@ -53,6 +53,7 @@ type fakeClipboard struct {
 	reads      int
 	writes     []timedWrite
 	readGate   chan struct{}
+	markGate   chan struct{}
 }
 
 func holding(text string) *fakeClipboard {
@@ -61,9 +62,28 @@ func holding(text string) *fakeClipboard {
 
 func (f *fakeClipboard) Mark() int64 {
 	f.mutex.Lock()
+	gate := f.markGate
+	f.mutex.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.mutex.Lock()
 	defer f.mutex.Unlock()
 	f.marksTaken++
 	return f.mark
+}
+
+func (f *fakeClipboard) holdMarksUntilReleased() (release func()) {
+	gate := make(chan struct{})
+	f.mutex.Lock()
+	f.markGate = gate
+	f.mutex.Unlock()
+	return func() {
+		f.mutex.Lock()
+		f.markGate = nil
+		f.mutex.Unlock()
+		close(gate)
+	}
 }
 
 func (f *fakeClipboard) Read() (string, error) {
@@ -294,11 +314,17 @@ type deskUnderTest struct {
 
 func newDesk(t *testing.T, sideNames ...string) *deskUnderTest {
 	t.Helper()
+	board := holding("what the central held before")
+	return newDeskWithAClipboard(t, board, opening(board), sideNames...)
+}
+
+func newDeskWithAClipboard(t *testing.T, board *fakeClipboard, open func() (Clipboard, error), sideNames ...string) *deskUnderTest {
+	t.Helper()
 	d := &deskUnderTest{
 		t:         t,
 		identity:  newIdentity(t),
 		sides:     make(map[string]*sideUnderTest),
-		clipboard: holding("what the central held before"),
+		clipboard: board,
 		log:       &logBook{},
 		capture:   &fakeCapture{events: make(chan event.Event)},
 	}
@@ -331,7 +357,7 @@ func newDesk(t *testing.T, sideNames ...string) *deskUnderTest {
 		Watch: edge.DefaultSettings(),
 	})
 	machine.OnReceivers(d.noteConnected)
-	d.runtime = NewCentral(Config{Open: opening(d.clipboard), SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: d.log})
+	d.runtime = NewCentral(Config{Open: open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: d.log})
 	machine.ShareClipboard(d.runtime)
 
 	ctx, stop := context.WithCancel(context.Background())
@@ -434,6 +460,20 @@ func (d *deskUnderTest) waitUntilTheCentralSeesTakingPart(names ...string) {
 	slices.Sort(names)
 	eventually(d.t, "the central seeing "+strings.Join(names, ", ")+" take part", func() bool {
 		return slices.Equal(namesTakingPart(d.t, d.runtime), names)
+	})
+}
+
+func (d *deskUnderTest) waitUntilTheCentralIs(on bool) {
+	d.t.Helper()
+	eventually(d.t, "the central following its switch", func() bool {
+		answer := make(chan bool, 1)
+		d.runtime.tell(func() { answer <- d.runtime.on })
+		select {
+		case got := <-answer:
+			return got == on
+		case <-time.After(testPatience):
+			return false
+		}
 	})
 }
 
@@ -542,6 +582,62 @@ func (d *deskUnderTest) dialAs(name string) *transport.Conn {
 	}
 	d.t.Cleanup(func() { conn.Close() })
 	return conn
+}
+
+type rawSide struct {
+	conn         *transport.Conn
+	acknowledges bool
+	mutex        sync.Mutex
+	copies       []string
+	closed       atomic.Bool
+}
+
+func (d *deskUnderTest) rawSideTakesCopies(name string, acknowledges bool) *rawSide {
+	d.t.Helper()
+	raw := &rawSide{conn: d.dialAs(name), acknowledges: acknowledges}
+	if err := raw.conn.Send(event.Features(event.FeatureClipboard)); err != nil {
+		d.t.Fatalf("Send: %v", err)
+	}
+	go raw.read()
+	d.waitUntilConnected(name)
+	return raw
+}
+
+func (r *rawSide) read() {
+	defer r.closed.Store(true)
+	var assembler clipboard.Assembler
+	for {
+		frame, err := r.conn.Receive()
+		if err != nil {
+			return
+		}
+		text, progress, _ := assembler.Take(frame)
+		if ack, due := assembler.Ack(); due && r.acknowledges && r.conn.Send(ack) != nil {
+			return
+		}
+		if progress == clipboard.Arrived {
+			r.mutex.Lock()
+			r.copies = append(r.copies, text)
+			r.mutex.Unlock()
+		}
+	}
+}
+
+func (r *rawSide) ended() bool {
+	return r.closed.Load()
+}
+
+func (r *rawSide) received() []string {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return slices.Clone(r.copies)
+}
+
+func (r *rawSide) answers(t *testing.T, frames ...event.Event) {
+	t.Helper()
+	if err := r.conn.Send(frames...); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
 }
 
 func (o *oldSide) frames() []event.Event {

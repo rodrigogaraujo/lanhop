@@ -63,6 +63,14 @@ func (l *link) sendFrame(frame event.Event) {
 }
 
 func (l *link) sendCopy(text string) (queued bool) {
+	return l.queueCopy(text, false)
+}
+
+func (l *link) sendNewestCopy(text string) (queued bool) {
+	return l.queueCopy(text, true)
+}
+
+func (l *link) queueCopy(text string, replacingOlderCopies bool) bool {
 	parts, err := clipboard.Slices(text)
 	if err != nil {
 		return false
@@ -71,6 +79,9 @@ func (l *link) sendCopy(text string) (queued bool) {
 	defer l.mutex.Unlock()
 	if l.leavesAnnounced != l.leavesHandled {
 		return false
+	}
+	if replacingOlderCopies {
+		l.stopCopiesLocked()
 	}
 	return l.queue(&delivery{slices: parts, inTheWindow: true, isACopy: true})
 }
