@@ -6,7 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
+	"github.com/rodrigogaraujo/lanhop/internal/wire"
 )
 
 type Listener struct {
@@ -18,6 +20,9 @@ type Listener struct {
 	pending   chan struct{}
 	closing   sync.Once
 	closed    chan struct{}
+
+	awaitingMutex sync.Mutex
+	awaiting      map[int32]*awaitedData
 }
 
 func Listen(address string, config Config, trusted Trusted) (*Listener, error) {
@@ -34,6 +39,7 @@ func Listen(address string, config Config, trusted Trusted) (*Listener, error) {
 		ready:     make(chan *Conn),
 		pending:   make(chan struct{}, pendingHandshakes),
 		closed:    make(chan struct{}),
+		awaiting:  map[int32]*awaitedData{},
 	}
 	go l.acceptLoop()
 	return l, nil
@@ -81,40 +87,62 @@ func (l *Listener) welcome(raw net.Conn) {
 	defer func() { <-l.pending }()
 
 	secured := tls.Server(raw, l.tlsConfig)
-	peer, err := l.authenticate(secured)
-	if err != nil {
+	if err := l.open(secured); err != nil {
 		secured.Close()
 		if l.config.OnReject != nil {
 			l.config.OnReject(raw.RemoteAddr(), err)
 		}
-		return
 	}
+}
 
+func (l *Listener) open(secured *tls.Conn) error {
+	peer, first, err := l.authenticate(secured)
+	if err != nil {
+		return err
+	}
+	if first.IsControl() && first.Code == event.ControlDataHello {
+		return l.openData(secured, peer, first.Value)
+	}
+	return l.openControl(secured, peer, first)
+}
+
+func (l *Listener) authenticate(secured *tls.Conn) (trust.Peer, event.Event, error) {
+	if err := secured.SetDeadline(time.Now().Add(l.config.HandshakeTimeout)); err != nil {
+		return trust.Peer{}, event.Event{}, err
+	}
+	if err := secured.Handshake(); err != nil {
+		return trust.Peer{}, event.Event{}, err
+	}
+	first, err := wire.Read(secured)
+	if err != nil {
+		return trust.Peer{}, event.Event{}, err
+	}
+	fingerprint, presented := fingerprintOfPeer(secured.ConnectionState())
+	if !presented {
+		return trust.Peer{}, event.Event{}, ErrUntrusted
+	}
+	peer, paired := l.trusted.Find(fingerprint)
+	if !paired {
+		return trust.Peer{}, event.Event{}, ErrUntrusted
+	}
+	return peer, first, nil
+}
+
+func (l *Listener) openControl(secured *tls.Conn, peer trust.Peer, greeting event.Event) error {
+	if err := wire.Write(secured, event.Hello()); err != nil {
+		return err
+	}
+	if err := checkHello(greeting); err != nil {
+		return err
+	}
+	if err := secured.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
 	conn := newConn(secured, peer, l.config)
 	select {
 	case l.ready <- conn:
 	case <-l.closed:
 		conn.Close()
 	}
-}
-
-func (l *Listener) authenticate(secured *tls.Conn) (trust.Peer, error) {
-	if err := secured.SetDeadline(time.Now().Add(l.config.HandshakeTimeout)); err != nil {
-		return trust.Peer{}, err
-	}
-	if err := secured.Handshake(); err != nil {
-		return trust.Peer{}, err
-	}
-	if err := exchangeHello(secured); err != nil {
-		return trust.Peer{}, err
-	}
-	fingerprint, presented := fingerprintOfPeer(secured.ConnectionState())
-	if !presented {
-		return trust.Peer{}, ErrUntrusted
-	}
-	peer, paired := l.trusted.Find(fingerprint)
-	if !paired {
-		return trust.Peer{}, ErrUntrusted
-	}
-	return peer, secured.SetDeadline(time.Time{})
+	return nil
 }

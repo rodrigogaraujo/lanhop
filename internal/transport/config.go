@@ -11,11 +11,13 @@ import (
 )
 
 const (
-	DefaultPort             = 24745
-	defaultPingInterval     = time.Second
-	DefaultSilenceLimit     = 3 * time.Second
-	defaultHandshakeTimeout = 5 * time.Second
-	pendingHandshakes       = 16
+	DefaultPort               = 24745
+	defaultPingInterval       = time.Second
+	DefaultSilenceLimit       = 3 * time.Second
+	defaultHandshakeTimeout   = 5 * time.Second
+	pendingHandshakes         = 16
+	defaultDataWindow         = 10 * time.Second
+	defaultDataBytesPerSecond = 10_000_000
 )
 
 var (
@@ -29,11 +31,13 @@ type Trusted interface {
 }
 
 type Config struct {
-	Identity         *identity.Identity
-	PingInterval     time.Duration
-	SilenceLimit     time.Duration
-	HandshakeTimeout time.Duration
-	OnReject         func(remote net.Addr, reason error)
+	Identity           *identity.Identity
+	PingInterval       time.Duration
+	SilenceLimit       time.Duration
+	HandshakeTimeout   time.Duration
+	DataWindow         time.Duration
+	DataBytesPerSecond int
+	OnReject           func(remote net.Addr, reason error)
 }
 
 func (c Config) withDefaults() Config {
@@ -45,6 +49,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.HandshakeTimeout == 0 {
 		c.HandshakeTimeout = defaultHandshakeTimeout
+	}
+	if c.DataWindow == 0 {
+		c.DataWindow = defaultDataWindow
+	}
+	if c.DataBytesPerSecond == 0 {
+		c.DataBytesPerSecond = defaultDataBytesPerSecond
 	}
 	return c
 }
