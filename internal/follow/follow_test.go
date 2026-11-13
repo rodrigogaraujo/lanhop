@@ -372,3 +372,35 @@ func TestALostConnectionCountsAsALeave(t *testing.T) {
 	never(t, "a restart right after the connection was lost while focused", under.restarted.Load)
 	eventually(t, "the restart after the quiet time", under.restarted.Load)
 }
+
+type connThatSendsTheLatest struct {
+	wire
+	announced []int32
+}
+
+func (c *connThatSendsTheLatest) SendFeatures(announced *features.Set) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.announced = append(c.announced, announced.Value())
+	return nil
+}
+
+func TestTheSideMachineAnnouncesThroughTheConnectionWhenItCan(t *testing.T) {
+	set := new(features.Set)
+	set.Turn(features.Clipboard, true)
+	side := NewSide(context.Background(), SideConfig{
+		Running:   v012,
+		Following: func() bool { return true },
+		Features:  set,
+		Updater:   &fakeUpdater{},
+		Restart:   func() {},
+	})
+	conn := &connThatSendsTheLatest{}
+	side.Connected(conn)
+	if got := conn.frames(event.ControlFeatures); len(got) != 0 {
+		t.Errorf("the side machine built Features by hand: %+v", got)
+	}
+	if len(conn.announced) != 1 || conn.announced[0] != 1|1<<features.Follows {
+		t.Errorf("SendFeatures carried %v, want the whole set with bits 0 and 8", conn.announced)
+	}
+}
