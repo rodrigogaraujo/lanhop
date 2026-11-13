@@ -74,6 +74,13 @@ pair)
   read -r typed
   printf 'typed %%s\n' "$typed" >>'%[1]s'
   ;;
+join)
+  if [ -e '%[4]s.refuses' ]; then
+    echo 'lanhop: 10.0.0.5 is not waiting for a machine to join' >&2
+    exit 1
+  fi
+  echo 'Joined "iMac" at 10.0.0.5:24745.'
+  ;;
 status)
   if [ -s '%[4]s' ]; then
     head -n 1 '%[4]s'
@@ -259,6 +266,11 @@ func (r *releases) thatAsksAgainByItself() *releases {
 	return r
 }
 
+func (r *releases) refusesTheJoin() {
+	r.t.Helper()
+	writeFile(r.t, r.statuses+".refuses", nil, 0o644)
+}
+
 func (r *releases) statusSays(lines ...string) {
 	r.t.Helper()
 	writeFile(r.t, r.statuses, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
@@ -359,6 +371,7 @@ func newMachine(t *testing.T, shell, system, architecture string, from *releases
 		"LANHOP_SYSTEM_ROOT":    m.root,
 		"LANHOP_PRINT_COMMANDS": "1",
 		"LANHOP_TERMINAL":       filepath.Join(m.aside, "no terminal"),
+		"SHELL":                 "/bin/sh",
 	}
 	m.withGroups(notInTheInputGroup)
 	clock := filepath.Join(m.aside, "clock")
@@ -2144,4 +2157,135 @@ func TestALanhopThatDoesNotAskAgainGetsTheCommandThatRestartsIt(t *testing.T) {
 		output := m.mustRun()
 		expectMention(t, output, "If lanhop does not notice the permission, restart it with:\n  launchctl kickstart -k gui/501/com.github.rodrigogaraujo.lanhop")
 	})
+}
+
+const (
+	joinLine   = "10.0.0.5 RF4K-Q7MZ-2XPA-HB3T-W6NC-5LDE"
+	joinCalled = "join 10.0.0.5 RF4K-Q7MZ-2XPA-HB3T-W6NC-5LDE"
+)
+
+func TestAJoinLineInstallsASideMachineWithoutAQuestionAndJoinsBeforeTheService(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		m := newMachine(t, shell, "Linux", "x86_64", published)
+		m.settings["LANHOP_JOIN"] = joinLine
+		output := m.mustRun()
+		expectNoQuestion(t, output)
+		expectSame(t, "system commands", commandsIn(output), m.named(joinTheInputGroup, writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules, reloadTheUnits, enableTheUnit))
+		expectSame(t, "files in the home directory", m.files(), []string{unitFile, binaryFile, ruleRecordFile})
+		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", joinCalled))
+		expectMention(t, output, `Joined "iMac" at 10.0.0.5:24745.`)
+		if strings.Contains(output, "lanhop pair") || strings.Contains(output, "lanhop installer:") {
+			t.Errorf("the installer explains pairing or reports a problem after a join:\n%s", output)
+		}
+		if !strings.Contains(m.read(unitFile), "receive") {
+			t.Errorf("the unit does not receive:\n%s", m.read(unitFile))
+		}
+	})
+}
+
+func TestAJoinLineOnAMacStillWaitsForThePermissionsUntilConnected(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(notRunningYet, waitsForAccessibility, triesTheCentral, connectedToTheCentral)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.settings["LANHOP_JOIN"] = joinLine
+		m.typing()
+		output := m.mustRun()
+		expectNoQuestion(t, output)
+		expectMention(t, output, "Waiting until lanhop has the permission.", connectedToTheCentral+"\n")
+		calls := published.lanhopWasRunWith()
+		joined := slices.Index(calls, joinCalled+" [configuration default]")
+		if joined < 0 || joined > slices.Index(calls, "status [configuration default]") {
+			t.Errorf("lanhop was run with %q, want the join before the first status", calls)
+		}
+		expectSame(t, "files in the home directory", m.files(), []string{binaryFile, agentFile})
+	})
+}
+
+func TestARefusedJoinStopsTheInstallerBeforeAnyService(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, system := range []string{"Linux", "Darwin"} {
+			published := newReleases(t)
+			published.refusesTheJoin()
+			m := newMachine(t, shell, system, "arm64", published)
+			m.settings["LANHOP_JOIN"] = joinLine
+			output, code := m.run()
+			if code == 0 {
+				t.Fatalf("%s: exit code 0 after a refused join:\n%s", system, output)
+			}
+			expectMention(t, output, "did not join", "lanhop add again")
+			expectSame(t, system+": system commands", commandsIn(output), []string{})
+			expectSame(t, system+": files in the home directory", m.files(), []string{binaryFile})
+		}
+	})
+}
+
+func TestAJoinLineThatCannotBeUsedStopsBeforeDownloading(t *testing.T) {
+	for _, settings := range []map[string]string{
+		{"LANHOP_JOIN": joinLine, "LANHOP_ROLE": "share"},
+		{"LANHOP_JOIN": "10.0.0.5"},
+		{"LANHOP_JOIN": "10.0.0.5 CODE extra"},
+		{"LANHOP_JOIN": "10.0.0.5 $(reboot)"},
+	} {
+		published := newReleases(t)
+		m := newMachine(t, "sh", "Linux", "x86_64", published)
+		maps.Copy(m.settings, settings)
+		output, code := m.run()
+		if code == 0 || !strings.Contains(output, "LANHOP_") {
+			t.Errorf("settings %v: exit code %d, want a refusal that names the setting:\n%s", settings, code, output)
+		}
+		expectSame(t, "files in the home directory", m.files(), []string{})
+	}
+}
+
+func TestTheInstallerPutsLanhopOnThePathInTheFileOfTheShell(t *testing.T) {
+	for _, setup := range []struct {
+		name, system, shell string
+		existing            []string
+		profile             string
+	}{
+		{"zsh on Linux", "Linux", "/usr/bin/zsh", nil, ".zshrc"},
+		{"zsh on macOS", "Darwin", "/bin/zsh", nil, ".zshrc"},
+		{"bash on Linux", "Linux", "/bin/bash", nil, ".bashrc"},
+		{"bash on macOS with a profile", "Darwin", "/bin/bash", []string{".profile"}, ".profile"},
+		{"bash on macOS without one", "Darwin", "/bin/bash", nil, ".bash_profile"},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			published := newReleases(t)
+			m := newMachine(t, "sh", setup.system, "arm64", published)
+			for _, name := range setup.existing {
+				writeFile(t, m.path(name), []byte("# mine\n"), 0o644)
+			}
+			m.settings["SHELL"] = setup.shell
+			m.settings["LANHOP_YES"] = "1"
+			wanted := `export PATH="` + m.path(".local/bin") + `:$PATH"`
+
+			output := m.mustRun()
+			expectMention(t, output, "Added "+m.path(".local/bin")+" to the PATH in "+m.path(setup.profile))
+			m.mustRun()
+			if got := strings.Count(m.read(setup.profile), wanted); got != 1 {
+				t.Errorf("%s holds the PATH line %d times after two runs, want once:\n%s", setup.profile, got, m.read(setup.profile))
+			}
+		})
+	}
+}
+
+func TestThePathLineWaitsForAYesAndOtherShellsGetTheAdvice(t *testing.T) {
+	published := newReleases(t)
+	m := newMachine(t, "sh", "Linux", "x86_64", published)
+	m.settings["SHELL"] = "/usr/bin/zsh"
+	m.typing("n")
+	output := m.mustRun()
+	expectMention(t, output, "Add it in "+m.path(".zshrc")+"? [y/N]", "is not on your PATH")
+	if slices.Contains(m.files(), ".zshrc") {
+		t.Errorf("the installer wrote .zshrc after a no")
+	}
+
+	other := newMachine(t, "sh", "Linux", "x86_64", newReleases(t))
+	other.settings["SHELL"] = "/usr/bin/fish"
+	other.settings["LANHOP_YES"] = "1"
+	output = other.mustRun()
+	expectMention(t, output, "is not on your PATH. To run lanhop by its name, add this line")
+	expectSame(t, "files in the home directory", other.files(), []string{binaryFile})
 }

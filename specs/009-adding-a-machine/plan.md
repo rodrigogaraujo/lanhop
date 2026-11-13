@@ -117,7 +117,7 @@ One task, one pull request. Each verify list says what must be true before the t
   - The printed lines carry the address, the code, the version, and the installer at the tag of the release; the address skips tunnels, bridges and public addresses, and several candidates are all printed.
 - [x] **3. The hotkey and the editor.** → Verify with tests: the hotkey printed is the one `lanhop share` uses; a ninth machine is told it has no hotkey; the editor opens with the new machine in the tray, and the layout file is not written.
 - [x] **4. `lanhop status` lists the desk.** → Verify with tests on the status file, after connections and losses in an integration test: each side machine with its hotkey, and `connected`, `not connected since HH:MM`, with the date on another day, or `not connected since lanhop started`.
-- [ ] **5. The installer.** `LANHOP_JOIN`, the role without asking, going on from where it stopped, and the `PATH` line. → Verify in `install_test.go`:
+- [x] **5. The installer.** `LANHOP_JOIN`, the role without asking, going on from where it stopped, and the `PATH` line. → Verify in `install_test.go`:
   - With `LANHOP_JOIN`, no question is asked, each step is said, and `lanhop join` runs before the service is written.
   - On macOS with `LANHOP_JOIN`, the installer waits for Accessibility and Local Network until it sees `connected`, as spec 008 does.
   - A join that is refused, or a central that does not answer, ends the installer with an error before any service is written, with the advice to run `lanhop add` again.
