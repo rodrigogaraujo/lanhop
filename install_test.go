@@ -41,6 +41,7 @@ const (
 	usageWithTheEditor    = "lanhop layout --edit   arrange the machines on the desk by dragging them"
 	usageWithoutTheEditor = "lanhop layout          show where the layout file is"
 	usageWithTheStatus    = "lanhop status          say what lanhop is doing on this machine"
+	usageWithTheJoin      = "lanhop join ADDRESS CODE"
 
 	joinTheInputGroup   = "sudo usermod -aG input ana"
 	writeTheUdevRule    = `printf '%s\n' 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee {root}/etc/udev/rules.d/60-lanhop.rules`
@@ -267,6 +268,13 @@ func (r *releases) withTheStatus() *releases {
 func (r *releases) thatAsksAgainByItself() *releases {
 	r.t.Helper()
 	r.usage = usageWithTheEditor + "\n" + usageWithTheStatus + "\nlanhop ended to ask macOS again for the Accessibility permission"
+	r.publish(latestRelease, "1.0.0")
+	return r
+}
+
+func (r *releases) withTheJoin() *releases {
+	r.t.Helper()
+	r.usage += "\n" + usageWithTheJoin
 	r.publish(latestRelease, "1.0.0")
 	return r
 }
@@ -2171,7 +2179,7 @@ const (
 
 func TestAJoinLineInstallsASideMachineWithoutAQuestionAndJoinsBeforeTheService(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
-		published := newReleases(t)
+		published := newReleases(t).withTheJoin()
 		m := newMachine(t, shell, "Linux", "x86_64", published)
 		m.settings["LANHOP_JOIN"] = joinLine
 		m.typing()
@@ -2179,7 +2187,7 @@ func TestAJoinLineInstallsASideMachineWithoutAQuestionAndJoinsBeforeTheService(t
 		expectNoQuestion(t, output)
 		expectSame(t, "system commands", commandsIn(output), m.named(joinTheInputGroup, writeTheUdevRule, loadUinputAtBoot, loadUinputNow, reloadTheUdevRules, applyTheUdevRules, reloadTheUnits, enableTheUnit))
 		expectSame(t, "files in the home directory", m.files(), []string{unitFile, binaryFile, ruleRecordFile})
-		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", joinCalled))
+		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "help", joinCalled))
 		expectMention(t, output, `Joined "iMac" at 10.0.0.5:24745.`)
 		if strings.Contains(output, "lanhop pair") || strings.Contains(output, "lanhop installer:") {
 			t.Errorf("the installer explains pairing or reports a problem after a join:\n%s", output)
@@ -2192,7 +2200,7 @@ func TestAJoinLineInstallsASideMachineWithoutAQuestionAndJoinsBeforeTheService(t
 
 func TestAJoinLineOnAMacStillWaitsForThePermissionsUntilConnected(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
-		published := newReleases(t).withTheStatus()
+		published := newReleases(t).withTheStatus().withTheJoin()
 		published.statusSays(notRunningYet, waitsForAccessibility, triesTheCentral, connectedToTheCentral)
 		m := newMachine(t, shell, "Darwin", "arm64", published)
 		m.settings["LANHOP_JOIN"] = joinLine
@@ -2212,7 +2220,7 @@ func TestAJoinLineOnAMacStillWaitsForThePermissionsUntilConnected(t *testing.T) 
 func TestARefusedJoinStopsTheInstallerBeforeAnyService(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
 		for _, system := range []string{"Linux", "Darwin"} {
-			published := newReleases(t)
+			published := newReleases(t).withTheJoin()
 			published.refusesTheJoin()
 			m := newMachine(t, shell, system, "arm64", published)
 			m.settings["LANHOP_JOIN"] = joinLine
@@ -2229,7 +2237,7 @@ func TestARefusedJoinStopsTheInstallerBeforeAnyService(t *testing.T) {
 
 func TestAJoinLineTypedAgainAfterTheJoinRunsToTheEnd(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
-		published := newReleases(t)
+		published := newReleases(t).withTheJoin()
 		m := newMachine(t, shell, "Linux", "x86_64", published)
 		m.settings["LANHOP_JOIN"] = joinLine
 		m.mustRun()
@@ -2244,7 +2252,7 @@ func TestAJoinLineTypedAgainAfterTheJoinRunsToTheEnd(t *testing.T) {
 
 func TestAJoinLineAddsLanhopToThePathWithoutAQuestion(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
-		published := newReleases(t)
+		published := newReleases(t).withTheJoin()
 		m := newMachine(t, shell, "Linux", "x86_64", published)
 		m.settings["LANHOP_JOIN"] = joinLine
 		m.settings["SHELL"] = "/usr/bin/zsh"
@@ -2358,4 +2366,22 @@ func TestThePathLineWaitsForAYesAndOtherShellsGetTheAdvice(t *testing.T) {
 	output = other.mustRun()
 	expectMention(t, output, "is not on your PATH. To run lanhop by its name, add this line")
 	expectSame(t, "files in the home directory", other.files(), []string{binaryFile})
+}
+
+func TestAJoinLineWithAReleaseThatCannotJoinStopsAndSaysWhy(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, system := range []string{"Linux", "Darwin"} {
+			published := newReleases(t)
+			m := newMachine(t, shell, system, "arm64", published)
+			m.settings["LANHOP_JOIN"] = joinLine
+			output, code := m.run()
+			if code == 0 {
+				t.Fatalf("%s: exit code 0 with a release that cannot join:\n%s", system, output)
+			}
+			expectMention(t, output, "cannot join a machine yet", "LANHOP_VERSION", "lanhop version")
+			expectSame(t, system+": runs of lanhop", published.lanhopWasRunWith(), configured("version", "help"))
+			expectSame(t, system+": system commands", commandsIn(output), []string{})
+			expectSame(t, system+": files in the home directory", m.files(), []string{binaryFile})
+		}
+	})
 }
