@@ -220,17 +220,18 @@ type outcome struct {
 }
 
 type sharing struct {
-	t        *testing.T
-	journal  *journal
-	capture  *fakeCapture
-	screen   *fakeScreen
-	trusted  *fakeTrusted
-	clock    *fakeClock
-	desk     atomic.Pointer[layout.Layout]
-	speed    Speed
-	sharer   *Sharer
-	stop     context.CancelFunc
-	finished chan outcome
+	t           *testing.T
+	journal     *journal
+	capture     *fakeCapture
+	screen      *fakeScreen
+	trusted     *fakeTrusted
+	clock       *fakeClock
+	desk        atomic.Pointer[layout.Layout]
+	speed       Speed
+	sharer      *Sharer
+	onReceivers func(names []string)
+	stop        context.CancelFunc
+	finished    chan outcome
 }
 
 func startSharing(t *testing.T, peers ...trust.Peer) *sharing {
@@ -268,6 +269,9 @@ func (s *sharing) start(capture Capture) {
 	})
 	s.sharer.trustCheckInterval = testTrustCheck
 	s.sharer.now = s.clock.now
+	if s.onReceivers != nil {
+		s.sharer.OnReceivers(s.onReceivers)
+	}
 	ctx, stop := context.WithCancel(context.Background())
 	s.stop = stop
 	go func() {
@@ -912,5 +916,26 @@ func TestConnectionThatArrivesAfterTheSharerStoppedIsClosed(t *testing.T) {
 	case <-late.lost:
 	case <-time.After(testPatience):
 		t.Error("the late connection was left open")
+	}
+}
+
+func TestEveryChangeOfTheConnectedMachinesIsReportedWithTheirNames(t *testing.T) {
+	reports := &journal{}
+	s := newSharing(t, desk, laptop)
+	s.onReceivers = func(names []string) { reports.note(fmt.Sprint(names)) }
+	s.start(s.capture)
+	s.eventually("the empty list is reported at the start", func() bool { return slices.Equal(reports.read(), []string{"[]"}) })
+	lost := s.connect(laptop)
+	s.connect(desk)
+	s.eventually("both arrivals are reported", func() bool {
+		return slices.Equal(reports.read(), []string{"[]", "[laptop]", "[desk laptop]"})
+	})
+	lost.loseConnection()
+	s.eventually("the loss is reported", func() bool {
+		return slices.Equal(reports.read(), []string{"[]", "[laptop]", "[desk laptop]", "[desk]"})
+	})
+	s.captures(press(keyB), release(keyB))
+	if got := reports.read(); len(got) != 4 {
+		t.Errorf("reports = %v, want no report for input that changes no connection", got)
 	}
 }

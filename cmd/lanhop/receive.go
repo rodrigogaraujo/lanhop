@@ -14,28 +14,49 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
+	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
 type connectionReport struct {
 	stdout      io.Writer
-	sharer      string
+	status      statusFile
+	sharer      trust.Peer
 	lastFailure string
+}
+
+func (r *connectionReport) waitingForPermission() {
+	fmt.Fprintln(r.stdout, waitingForAccessibility)
+	r.status.set(status.Report{State: status.Accessibility})
+}
+
+func (r *connectionReport) connecting() {
+	r.status.set(r.about(status.Connecting, nil))
 }
 
 func (r *connectionReport) connected() {
 	r.lastFailure = ""
-	fmt.Fprintf(r.stdout, "Connected to %q.\n", r.sharer)
+	fmt.Fprintf(r.stdout, "Connected to %q.\n", r.sharer.Name)
+	r.status.set(r.about(status.Connected, nil))
 }
 
 func (r *connectionReport) failed(reason error) {
+	r.status.set(r.about(stateOfFailure(reason), reason))
 	failure := reason.Error()
 	if failure == r.lastFailure {
 		return
 	}
 	r.lastFailure = failure
 	fmt.Fprintf(r.stdout, "Not connected: %s. lanhop keeps trying.\n", failure)
+}
+
+func (r *connectionReport) about(state status.State, reason error) status.Report {
+	report := status.Report{State: state, Machines: []string{r.sharer.Name}, Address: r.sharer.Address}
+	if reason != nil {
+		report.Error = reason.Error()
+	}
+	return report
 }
 
 func sharerAmong(trusted []trust.Peer, from string) (trust.Peer, error) {
@@ -69,7 +90,7 @@ func sharerNamed(trusted []trust.Peer, name string) (trust.Peer, error) {
 	return trust.Peer{}, fmt.Errorf("no trusted machine is named %q. See the names with: lanhop peers", name)
 }
 
-func receive(args []string, stdout io.Writer) error {
+func receive(args []string, stdout io.Writer) (err error) {
 	flags := flag.NewFlagSet("receive", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	from := flags.String("from", "", "")
@@ -82,6 +103,8 @@ func receive(args []string, stdout io.Writer) error {
 	if flags.NArg() > 0 {
 		return usageError("receive takes no argument, only its option")
 	}
+	report := connectionReport{stdout: stdout, status: openStatus()}
+	defer func() { report.status.ended(err) }()
 
 	trusted, err := openTrusted()
 	if err != nil {
@@ -91,6 +114,7 @@ func receive(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	report.sharer = sharer
 	directory, err := configDirectory()
 	if err != nil {
 		return err
@@ -99,15 +123,21 @@ func receive(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := waitUntilAllowedToControl(interrupted, report.waitingForPermission); err != nil {
+		return err
+	}
+	if interrupted.Err() != nil {
+		return nil
+	}
 	replay, err := openReplay()
 	if err != nil {
 		return err
 	}
 
-	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	fmt.Fprintf(stdout, "Receiving from %q at %s. Press Ctrl+C to stop.\n", sharer.Name, sharer.Address)
-	report := connectionReport{stdout: stdout, sharer: sharer.Name}
+	report.connecting()
 	return receiver.Run(interrupted, receiver.Config{
 		Transport: transport.Config{Identity: local},
 		Sharer:    sharer,

@@ -117,7 +117,7 @@ func TestAFailureThatRepeatsIsPrintedOnceUntilTheConnectionComesBack(t *testing.
 	refused := errors.New("connection refused")
 	lost := errors.New("connection lost")
 	var stdout bytes.Buffer
-	report := connectionReport{stdout: &stdout, sharer: "desk"}
+	report := connectionReport{stdout: &stdout, sharer: trust.Peer{Name: "desk"}}
 
 	report.failed(refused)
 	report.failed(refused)

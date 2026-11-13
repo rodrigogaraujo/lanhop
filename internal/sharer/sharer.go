@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
@@ -48,6 +49,9 @@ type Sharer struct {
 	losses             chan Conn
 	stopped            chan struct{}
 	receivers          map[identity.Fingerprint]Conn
+	membership         int
+	reported           int
+	onReceivers        func(names []string)
 	focused            Conn
 	heldOnFocused      keystate.Tracker
 	unsent             []event.Event
@@ -70,11 +74,16 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges Edge
 		losses:             make(chan Conn),
 		stopped:            make(chan struct{}),
 		receivers:          make(map[identity.Fingerprint]Conn),
+		reported:           -1,
 		edges:              edges,
 		now:                time.Now,
 		ownEdges:           edge.New(edges.Watch),
 		remoteEdges:        watcherOfRemoteDesktops(edges.Watch),
 	}
+}
+
+func (s *Sharer) OnReceivers(report func(names []string)) {
+	s.onReceivers = report
 }
 
 func (s *Sharer) Connect(conn Conn) {
@@ -92,6 +101,7 @@ func (s *Sharer) Run(ctx context.Context) (err error) {
 
 	trustCheck := time.NewTicker(s.trustCheckInterval)
 	defer trustCheck.Stop()
+	s.reportReceivers()
 	for {
 		select {
 		case <-ctx.Done():
@@ -112,7 +122,21 @@ func (s *Sharer) Run(ctx context.Context) (err error) {
 		if err != nil {
 			return err
 		}
+		s.reportReceivers()
 	}
+}
+
+func (s *Sharer) reportReceivers() {
+	if s.onReceivers == nil || s.reported == s.membership {
+		return
+	}
+	s.reported = s.membership
+	names := make([]string, 0, len(s.receivers))
+	for _, conn := range s.receivers {
+		names = append(names, conn.Peer().Name)
+	}
+	slices.Sort(names)
+	s.onReceivers(names)
 }
 
 func (s *Sharer) handle(captured event.Event) error {
@@ -237,6 +261,7 @@ func (s *Sharer) admit(conn Conn) error {
 	fingerprint := conn.Peer().Fingerprint
 	previous, reconnecting := s.receivers[fingerprint]
 	s.receivers[fingerprint] = conn
+	s.membership++
 	go s.watch(conn)
 	if !reconnecting {
 		return nil
@@ -263,6 +288,7 @@ func (s *Sharer) drop(conn Conn) error {
 		return nil
 	}
 	delete(s.receivers, fingerprint)
+	s.membership++
 	return s.giveInputBackThenClose(conn)
 }
 
@@ -274,6 +300,7 @@ func (s *Sharer) giveInputBackThenClose(conn Conn) error {
 
 func (s *Sharer) forget(conn Conn) {
 	delete(s.receivers, conn.Peer().Fingerprint)
+	s.membership++
 	conn.Close()
 }
 
