@@ -206,7 +206,13 @@ func TestADataConnectionOpensForTheTransferNumberTheCentralHandedOut(t *testing.
 		t.Errorf("the side machine sees %q, want desk", got)
 	}
 	sendAndReceive(t, centralData, sideData, []byte("files from the desk"))
-	sendAndReceive(t, sideData, centralData, []byte("files from the laptop"))
+}
+
+func TestADataConnectionCarriesFilesTheOtherWayToo(t *testing.T) {
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience}, "laptop")
+	awaited := d.awaitDataFrom(context.Background(), "laptop")
+	sideData := d.mustDialData("laptop", awaited.transfer)
+	sendAndReceive(t, sideData, awaited.arrived(), []byte("files from the laptop"))
 }
 
 func TestTransferNumbersAreHandedOutBetween1AndTheLargestNumber(t *testing.T) {
@@ -608,10 +614,10 @@ func TestADataConnectionGivesUpAtItsDeadlines(t *testing.T) {
 	if _, err := centralData.Write(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Errorf("Write after the write deadline = %v, want os.ErrDeadlineExceeded", err)
 	}
-	if err := centralData.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+	if err := sideData.SetDeadline(time.Now().Add(-time.Second)); err != nil {
 		t.Fatalf("SetDeadline: %v", err)
 	}
-	if _, err := centralData.Read(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
+	if _, err := sideData.Read(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Errorf("Read after the deadline = %v, want os.ErrDeadlineExceeded", err)
 	}
 }
@@ -715,4 +721,172 @@ func TestATransferNumberNamesOneTransferUntilItsDataConnectionCloses(t *testing.
 	}
 	d.mustDialData("tablet", third.transfer)
 	third.arrived()
+}
+
+func connectedForData(t *testing.T) (writer, reader *DataConn) {
+	t.Helper()
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience, DataPace: NewPace(Unpaced)}, "laptop")
+	awaited := d.awaitDataFrom(context.Background(), "laptop")
+	reader = d.mustDialData("laptop", awaited.transfer)
+	return awaited.arrived(), reader
+}
+
+func writeInTheBackground(t *testing.T, writer *DataConn, size int) <-chan error {
+	t.Helper()
+	written := make(chan error, 1)
+	go func() {
+		_, err := writer.Write(make([]byte, size))
+		written <- err
+	}()
+	return written
+}
+
+func readExactly(t *testing.T, reader *DataConn, size int) {
+	t.Helper()
+	if _, err := io.ReadFull(reader, make([]byte, size)); err != nil {
+		t.Fatalf("ReadFull: %v", err)
+	}
+}
+
+func eventuallyAcknowledged(t *testing.T, writer *DataConn, blocks int32) {
+	t.Helper()
+	for deadline := time.Now().Add(testPatience); writer.acknowledged.Load() != blocks; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the writer saw %d blocks acknowledged, want %d", writer.acknowledged.Load(), blocks)
+		}
+	}
+}
+
+func TestTheReaderAcknowledgesEvery32KiBItReads(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 100<<10)
+	readExactly(t, reader, 100<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	eventuallyAcknowledged(t, writer, 3)
+}
+
+func TestTheWriterLearnsThatEveryFileArrived(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 64<<10)
+	readExactly(t, reader, 64<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := reader.TellAllArrived(); err != nil {
+		t.Fatalf("TellAllArrived: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); err != nil {
+		t.Fatalf("AwaitAllArrived = %v, want nil", err)
+	}
+	if got := writer.acknowledged.Load(); got != 2 {
+		t.Errorf("the writer saw %d blocks acknowledged, want 2", got)
+	}
+}
+
+func TestNoAcknowledgementFollowsTheLastAnswer(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 96<<10)
+	readExactly(t, reader, 32<<10)
+	eventuallyAcknowledged(t, writer, 1)
+	if err := reader.TellAllArrived(); err != nil {
+		t.Fatalf("TellAllArrived: %v", err)
+	}
+	readExactly(t, reader, 64<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); err != nil {
+		t.Fatalf("AwaitAllArrived = %v, want nil", err)
+	}
+	if got := writer.acknowledged.Load(); got != 1 {
+		t.Errorf("the writer saw %d blocks acknowledged, want 1: nothing after the last answer", got)
+	}
+}
+
+func TestAConnectionThatEndsWithoutTheAnswerIsNotAnArrival(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 8<<10)
+	readExactly(t, reader, 8<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	reader.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); !errors.Is(err, ErrDataEndedEarly) {
+		t.Fatalf("AwaitAllArrived after the reader closed = %v, want ErrDataEndedEarly", err)
+	}
+}
+
+func TestAwaitingTheAnswerStopsWithItsContext(t *testing.T) {
+	writer, _ := connectedForData(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AwaitAllArrived with a short context = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestADeadlineOnTheWriterDoesNotStopItsAcknowledgements(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 32<<10)
+	readExactly(t, reader, 32<<10)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := writer.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+	if err := writer.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if err := reader.TellAllArrived(); err != nil {
+		t.Fatalf("TellAllArrived: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
+	defer cancel()
+	if err := writer.AwaitAllArrived(ctx); err != nil {
+		t.Fatalf("AwaitAllArrived after a deadline on the writer = %v, want nil", err)
+	}
+}
+
+func TestADataConnectionUsedBothWaysFailsLoudly(t *testing.T) {
+	writer, reader := connectedForData(t)
+	written := writeInTheBackground(t, writer, 1)
+	readExactly(t, reader, 1)
+	if err := <-written; err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := writer.Read(make([]byte, 1)); !errors.Is(err, ErrDataUsedBothWays) {
+		t.Errorf("Read on the writing side = %v, want ErrDataUsedBothWays", err)
+	}
+	if _, err := reader.Write([]byte{1}); !errors.Is(err, ErrDataUsedBothWays) {
+		t.Errorf("Write on the reading side = %v, want ErrDataUsedBothWays", err)
+	}
+	if err := writer.TellAllArrived(); !errors.Is(err, ErrDataUsedBothWays) {
+		t.Errorf("TellAllArrived on the writing side = %v, want ErrDataUsedBothWays", err)
+	}
+	if err := reader.AwaitAllArrived(context.Background()); !errors.Is(err, ErrDataUsedBothWays) {
+		t.Errorf("AwaitAllArrived on the reading side = %v, want ErrDataUsedBothWays", err)
+	}
+}
+
+func TestTheValueOfAnAcknowledgementCarriesTheBlocksAndTheLastAnswer(t *testing.T) {
+	if blocks, all := event.SplitDataAck(event.DataAck(1234).Value); blocks != 1234 || all {
+		t.Errorf("DataAck(1234) reads as %d, %t, want 1234, false", blocks, all)
+	}
+	if _, all := event.SplitDataAck(event.AllArrived().Value); !all {
+		t.Errorf("AllArrived does not read as the last answer")
+	}
+	pastTheLargest := event.TransferNumberMax
+	pastTheLargest++
+	if blocks, all := event.SplitDataAck(event.DataAck(pastTheLargest).Value); blocks != 0 || all {
+		t.Errorf("a count past the largest reads as %d, %t, want 0 and not the last answer", blocks, all)
+	}
 }

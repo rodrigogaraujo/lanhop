@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/event"
@@ -22,6 +24,19 @@ var (
 	ErrDataFromAnotherMachine = errors.New("transport: that transfer number was handed to another machine")
 	ErrDataNotOpened          = errors.New("transport: the other machine did not open the data connection in time")
 	ErrDataRefused            = errors.New("transport: the other machine refused the data connection")
+	ErrDataUsedBothWays       = errors.New("transport: a data connection is read on one side and written on the other, never both")
+	ErrDataEndedEarly         = errors.New("transport: the data connection ended before the other machine said that every file arrived")
+	ErrDataNotAnAck           = errors.New("transport: the other machine sent something else than an acknowledgement back on the data connection")
+)
+
+const ackedBlock = 32 << 10
+
+type dataRole int
+
+const (
+	undecided dataRole = iota
+	reading
+	writing
 )
 
 type DataConn struct {
@@ -32,10 +47,31 @@ type DataConn struct {
 	writing   sync.Mutex
 	release   func()
 	releasing sync.Once
+
+	roleMutex sync.Mutex
+	role      dataRole
+
+	acking     sync.Mutex
+	unacked    int
+	blocksRead int32
+	told       bool
+
+	acknowledged atomic.Int32
+	arrived      chan struct{}
+	ended        chan struct{}
+	endedBy      error
 }
 
 func newDataConn(secured *tls.Conn, peer trust.Peer, transfer int32, pace *Pace, release func()) *DataConn {
-	return &DataConn{secured: secured, peer: peer, transfer: transfer, pace: pace, release: release}
+	return &DataConn{
+		secured:  secured,
+		peer:     peer,
+		transfer: transfer,
+		pace:     pace,
+		release:  release,
+		arrived:  make(chan struct{}),
+		ended:    make(chan struct{}),
+	}
 }
 
 func (d *DataConn) Peer() trust.Peer {
@@ -47,10 +83,108 @@ func (d *DataConn) Transfer() int32 {
 }
 
 func (d *DataConn) Read(buffer []byte) (int, error) {
-	return d.secured.Read(buffer)
+	if err := d.take(reading); err != nil {
+		return 0, err
+	}
+	n, err := d.secured.Read(buffer)
+	if n > 0 {
+		d.acknowledge(n)
+	}
+	return n, err
+}
+
+func (d *DataConn) take(wanted dataRole) error {
+	d.roleMutex.Lock()
+	defer d.roleMutex.Unlock()
+	switch d.role {
+	case wanted:
+		return nil
+	case undecided:
+		d.role = wanted
+		if wanted == writing {
+			d.secured.SetReadDeadline(time.Time{})
+			go d.readAcks()
+		}
+		return nil
+	}
+	return ErrDataUsedBothWays
+}
+
+func (d *DataConn) isWriting() bool {
+	d.roleMutex.Lock()
+	defer d.roleMutex.Unlock()
+	return d.role == writing
+}
+
+func (d *DataConn) acknowledge(read int) {
+	d.acking.Lock()
+	defer d.acking.Unlock()
+	if d.told {
+		return
+	}
+	d.unacked += read
+	for d.unacked >= ackedBlock {
+		d.unacked -= ackedBlock
+		d.blocksRead = (d.blocksRead + 1) & event.TransferNumberMax
+		if wire.Write(d.secured, event.DataAck(d.blocksRead)) != nil {
+			return
+		}
+	}
+}
+
+func (d *DataConn) readAcks() {
+	for {
+		frame, err := wire.Read(d.secured)
+		if err != nil {
+			d.endedBy = err
+			close(d.ended)
+			return
+		}
+		if !frame.IsControl() || frame.Code != event.ControlDataAck {
+			d.endedBy = ErrDataNotAnAck
+			close(d.ended)
+			return
+		}
+		blocks, all := event.SplitDataAck(frame.Value)
+		if all {
+			close(d.arrived)
+			return
+		}
+		d.acknowledged.Store(blocks)
+	}
+}
+
+func (d *DataConn) TellAllArrived() error {
+	if err := d.take(reading); err != nil {
+		return err
+	}
+	d.acking.Lock()
+	defer d.acking.Unlock()
+	if d.told {
+		return nil
+	}
+	d.told = true
+	return wire.Write(d.secured, event.AllArrived())
+}
+
+func (d *DataConn) AwaitAllArrived(ctx context.Context) error {
+	if err := d.take(writing); err != nil {
+		return err
+	}
+	select {
+	case <-d.arrived:
+		return nil
+	case <-d.ended:
+		return fmt.Errorf("%w: %w", ErrDataEndedEarly, d.endedBy)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (d *DataConn) Write(data []byte) (int, error) {
+	if err := d.take(writing); err != nil {
+		return 0, err
+	}
 	d.writing.Lock()
 	defer d.writing.Unlock()
 	written := 0
@@ -67,10 +201,16 @@ func (d *DataConn) Write(data []byte) (int, error) {
 }
 
 func (d *DataConn) SetDeadline(deadline time.Time) error {
+	if d.isWriting() {
+		return d.secured.SetWriteDeadline(deadline)
+	}
 	return d.secured.SetDeadline(deadline)
 }
 
 func (d *DataConn) SetReadDeadline(deadline time.Time) error {
+	if d.isWriting() {
+		return nil
+	}
 	return d.secured.SetReadDeadline(deadline)
 }
 

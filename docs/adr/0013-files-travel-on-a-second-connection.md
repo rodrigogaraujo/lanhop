@@ -26,7 +26,7 @@ Side machines open their connection to the central, and the central does not ope
 | 12 | File copy size | Right after File copy | The total size, in KiB, rounded up |
 | 13 | Open data | Control connection, from the central to a side machine | A new transfer number, and the way: bit 31 set means the side machine sends, clear means it receives |
 | 14 | Data stop | Control connection, either way | The transfer number to stop |
-| 15 | | Reserved | |
+| 15 | Data ack | Data connection, from the side that reads back to the side that writes | Bits 0 to 30: the number of blocks of 32 KiB read so far. Bit 31 set: every file has arrived whole, and no acknowledgement follows |
 
 **The answer to a leave stays light.** A side machine that holds a file copy answers with File copy and File copy size, worked out within the time an answer has (ADR 8). It reads no content and computes no digest at that moment. A list that cannot be counted in that time is not sent, and the log says that it was too slow to list, apart from a list over the limit.
 
@@ -36,7 +36,7 @@ Side machines open their connection to the central, and the central does not ope
 - The central accepts a data connection only from the machine it sent that number to, within 10 seconds of sending it, and only once. Anything else closes the connection.
 - A central on 0.1.x sees an unknown first frame and closes the connection. No machine opens one toward it, because it never sets bit 1.
 
-**Content.** The machine that has the files sends, for each file or folder, its relative path, its kind and its size, then the content, then a SHA-256 of the content worked out while sending it. It compares the size and modification time of each file before and after reading it, and stops the transfer if the file changed. The receiving side says on the same connection when every file has arrived whole, so that the machine that sent knows the copy is held there.
+**Content.** The machine that has the files sends, for each file or folder, its relative path, its kind and its size, then the content, then a SHA-256 of the content worked out while sending it. It compares the size and modification time of each file before and after reading it, and stops the transfer if the file changed. The receiving side says on the same connection when every file has arrived whole, so that the machine that sent knows the copy is held there. That answer is a Data ack with bit 31 set. Before it, the reading side sends a Data ack for each 32 KiB it reads, which tells the writing side how fast the bytes get through. Each data connection carries files one way only, and its way back carries only these Data acks.
 
 **Receiving safely.** The receiving side refuses absolute paths, `..`, links and special files; creates every file without following links, under a temporary name in the arrival folder; refuses a total size over the limit or over the free space; checks size and digest; and renames only when a file is whole. When the transfer stops, at a Data stop, at a lost connection on either the data or the control connection, or at any error, what arrived of that transfer is removed. Focus leaving the receiving machine stops a transfer too, except one that serves a drop already accepted there. A stopped transfer starts again from the beginning when it is needed again.
 
