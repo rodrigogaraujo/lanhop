@@ -1,6 +1,9 @@
 package main
 
 import (
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +15,7 @@ import (
 func TestShareWritesWhenEachMachineLeftAndForgetsItWhenItComesBack(t *testing.T) {
 	directory := useConfigDirectory(t)
 	clock := time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
-	report := reportReceivers(openStatus(), func() time.Time { return clock })
+	report := reportReceivers(openStatus(), func() time.Time { return clock }, nil)
 
 	report([]string{"desk", "laptop"})
 	clock = clock.Add(2 * time.Minute)
@@ -63,9 +66,16 @@ func TestTheDeskListsEachSideMachineWithItsHotkeyAndWhetherItIsConnected(t *test
 	}
 	desk := describeDesk(peers, report, now)
 
-	for _, line := range []string{"server      Ctrl+Alt+2   connected", "office-mac  Ctrl+Alt+3   not connected since 14:02", "radix       Ctrl+Alt+5   not connected since 12 Nov 09:30", "ntt         Ctrl+Alt+6   not connected since lanhop started", "no hotkey"} {
-		if !strings.Contains(desk, line) {
-			t.Errorf("the desk reads\n%s\nwant a line with %q", desk, line)
+	lines := strings.Split(desk, "\n")
+	for _, line := range []string{
+		"  server      Ctrl+Alt+2   connected",
+		"  office-mac  Ctrl+Alt+3   not connected since 14:02",
+		"  radix       Ctrl+Alt+5   not connected since 12 Nov 09:30",
+		"  ntt         Ctrl+Alt+6   not connected since lanhop started",
+		"  spare-j     no hotkey    not connected since lanhop started",
+	} {
+		if !slices.Contains(lines, line) {
+			t.Errorf("the desk reads\n%s\nwant the line %q", desk, line)
 		}
 	}
 	if strings.Contains(desk, "imac") {
@@ -81,18 +91,72 @@ func TestStatusOnTheCentralListsTheDeskAfterItsFirstLine(t *testing.T) {
 	shown := lanhopStatus(t)
 	first, rest, _ := strings.Cut(shown, "\n")
 	expectState(t, first, "sharing", `"server"`)
-	for _, part := range []string{"server", "Ctrl+Alt+2", "connected", "office-mac", "Ctrl+Alt+3", "not connected since lanhop started"} {
-		if !strings.Contains(rest, part) {
-			t.Errorf("lanhop status printed %q after its first line, want %q", rest, part)
+	lines := strings.Split(rest, "\n")
+	for _, line := range []string{"  server      Ctrl+Alt+2   connected", "  office-mac  Ctrl+Alt+3   not connected since lanhop started"} {
+		if !slices.Contains(lines, line) {
+			t.Errorf("lanhop status printed %q after its first line, want the line %q", rest, line)
 		}
 	}
 }
 
 func TestStatusOnASideMachineListsNoDesk(t *testing.T) {
 	directory := useConfigDirectory(t)
-	trustAlready(t, directory, trust.Peer{Name: "imac", Fingerprint: someFingerprint(1), Address: centralAddress})
+	trustAlready(t, directory, trust.Peer{Name: "imac", Fingerprint: someFingerprint(1), Address: centralAddress}, trust.Peer{Name: "laptop", Fingerprint: someFingerprint(2)})
 	openStatus().set(status.Report{State: status.Connected, Machines: []string{"imac"}, Address: centralAddress})
 	if shown := lanhopStatus(t); strings.Count(shown, "\n") != 1 {
 		t.Errorf("lanhop status on a side machine printed %q, want its one line", shown)
 	}
+}
+
+func TestShareForgetsWhenAMachineThatIsNoLongerTrustedLeft(t *testing.T) {
+	directory := useConfigDirectory(t)
+	trustAlready(t, directory, trust.Peer{Name: "desk", Fingerprint: someFingerprint(1)})
+	report := reportReceivers(openStatus(), time.Now, peersOnDisk(filepath.Join(directory, peersFileName)))
+
+	report([]string{"desk", "laptop"})
+	report(nil)
+
+	read, err := status.Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.Left) != 1 || read.Left[0].Name != "desk" {
+		t.Errorf("departures %+v, want only desk, because laptop is not trusted any more", read.Left)
+	}
+}
+
+func statusShows(t *testing.T, line *regexp.Regexp) {
+	t.Helper()
+	shown := ""
+	for deadline := time.Now().Add(testPatience); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if shown = lanhopStatus(t); line.MatchString(shown) {
+			return
+		}
+	}
+	t.Fatalf("lanhop status printed %q, want a line that matches %s", shown, line)
+}
+
+func TestStatusFollowsAMachineThatConnectsLeavesAndComesBack(t *testing.T) {
+	directory := useConfigDirectory(t)
+	local := identityIn(t, directory)
+	desk := identityIn(t, t.TempDir())
+	trustAlready(t, directory, trust.Peer{Name: "desk", Fingerprint: desk.Fingerprint}, trustedLaptop)
+	share := startShare(t)
+
+	first, err := dialShare(desk, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	statusShows(t, regexp.MustCompile(`(?m)^  desk    Ctrl\+Alt\+2   connected$`))
+	statusShows(t, regexp.MustCompile(`(?m)^  laptop  Ctrl\+Alt\+3   not connected since lanhop started$`))
+
+	first.Close()
+	statusShows(t, regexp.MustCompile(`(?m)^  desk    Ctrl\+Alt\+2   not connected since [0-9]{2}:[0-9]{2}$`))
+
+	second, err := dialShare(desk, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer second.Close()
+	statusShows(t, regexp.MustCompile(`(?m)^  desk    Ctrl\+Alt\+2   connected$`))
 }

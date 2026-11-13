@@ -97,7 +97,11 @@ func share(args []string, stdout io.Writer) (err error) {
 	return shareUntil(interrupted, capture, *listen, stdout)
 }
 
-func reportReceivers(record statusFile, now func() time.Time) func(names []string) {
+type peerList interface {
+	Peers() []trust.Peer
+}
+
+func reportReceivers(record statusFile, now func() time.Time, trusted peerList) func(names []string) {
 	var connected []string
 	departed := map[string]time.Time{}
 	return func(names []string) {
@@ -108,6 +112,17 @@ func reportReceivers(record statusFile, now func() time.Time) func(names []strin
 		}
 		for _, name := range names {
 			delete(departed, name)
+		}
+		if trusted != nil {
+			stillTrusted := map[string]bool{}
+			for _, peer := range trusted.Peers() {
+				stillTrusted[peer.Name] = true
+			}
+			for name := range departed {
+				if !stillTrusted[name] {
+					delete(departed, name)
+				}
+			}
 		}
 		connected = slices.Clone(names)
 		left := make([]status.Departure, 0, len(departed))
@@ -162,7 +177,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		Watch:  edge.DefaultSettings(),
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
-	machine.OnReceivers(reportReceivers(openStatus(), time.Now))
+	machine.OnReceivers(reportReceivers(openStatus(), time.Now, trusted))
 	defer shareTheClipboard(done, machine, directory, new(features.Set), stdout)()
 	go func() {
 		for {

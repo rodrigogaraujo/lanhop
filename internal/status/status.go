@@ -169,10 +169,11 @@ func Read(directory string) (Report, error) {
 }
 
 func departureFrom(value string) (Departure, bool) {
-	name, at, found := strings.Cut(value, " ")
-	if !found {
+	fields := strings.Fields(value)
+	if len(fields) < 2 {
 		return Departure{}, false
 	}
+	name, at := fields[0], fields[1]
 	when, err := time.Parse(time.RFC3339, at)
 	if err != nil {
 		return Departure{}, false
