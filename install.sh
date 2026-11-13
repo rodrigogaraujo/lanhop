@@ -557,7 +557,7 @@ terminal. In System Settings > Privacy & Security > Accessibility:
   3. $(how_to_choose_the_app)
   4. Make sure the switch next to lanhop is on.
 
-lanhop notices the permission by itself within about 10 seconds.
+$(how_lanhop_notices_the_permission)
 $guides_url/setup-macos.md says more.
 
 EOF
@@ -626,7 +626,7 @@ EOF
     fi
   fi
   stop_agent 2>/dev/null || true
-  if start_agent || { sleep 3 && start_agent; }; then
+  if start_agent 2>/dev/null || { sleep 3 && start_agent; }; then
     service_started=yes
     say "lanhop is running, and it starts every time you log in. It writes what it does in $log_path"
   else
@@ -718,6 +718,18 @@ EOF
   ask
   if [ -n "$reply" ]; then
     outliving_ctrl_c lanhop_as_the_service_runs_it pair "$reply" <&3 || problem "the machines are not paired. Run \"lanhop pair $reply\" again when both are ready."
+  fi
+}
+
+asks_again_by_itself() {
+  grep -q 'to ask macOS again for the Accessibility permission' "$binary" 2>/dev/null
+}
+
+how_lanhop_notices_the_permission() {
+  if asks_again_by_itself; then
+    printf 'lanhop notices the permission by itself within about 20 seconds.'
+  else
+    printf 'If lanhop does not notice the permission, restart it with:\n  launchctl kickstart -k gui/%s/%s' "$(id -u)" "$agent_label"
   fi
 }
 
@@ -834,7 +846,7 @@ check_service() {
         ;;
       accessibility)
         ask_for_accessibility
-        if [ "$os" = darwin ] && [ $((now - last_restart)) -ge "$accessibility_restart" ]; then
+        if [ "$os" = darwin ] && ! asks_again_by_itself && [ $((now - last_restart)) -ge "$accessibility_restart" ]; then
           last_restart=$now
           restart_agent
         fi

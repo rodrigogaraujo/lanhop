@@ -4,34 +4,26 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
-	"syscall"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/macos"
 )
 
+const agentLabel = "com.github.rodrigogaraujo.lanhop"
+
 func waitUntilAllowedToControl(ctx context.Context, waiting func()) error {
-	return askUntilAllowed(ctx, macos.CanPost, waiting)
+	return waitForPermission(ctx, macos.CanPost, waiting, permissionCheckInterval, giveUpForAFreshAnswerAfter())
 }
 
 func waitUntilAllowedToShare(ctx context.Context, waiting func()) error {
-	return askUntilAllowed(ctx, func() bool { return macos.CanListen() && macos.CanPost() }, waiting)
+	canShare := func() bool { return macos.CanListen() && macos.CanPost() }
+	return waitForPermission(ctx, canShare, waiting, permissionCheckInterval, giveUpForAFreshAnswerAfter())
 }
 
-func askUntilAllowed(ctx context.Context, granted func() bool, waiting func()) error {
-	err := waitForPermission(ctx, granted, waiting, permissionCheckInterval, freshProcessAfter)
-	if errors.Is(err, errAskAgainInAFreshProcess) {
-		return startAgainInPlace()
+func giveUpForAFreshAnswerAfter() time.Duration {
+	if os.Getenv("XPC_SERVICE_NAME") == agentLabel {
+		return freshAnswerAfter
 	}
-	os.Unsetenv(alreadyWaitingVariable)
-	return err
-}
-
-func startAgainInPlace() error {
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	return syscall.Exec(executable, os.Args, append(os.Environ(), alreadyWaitingVariable+"=1"))
+	return 0
 }

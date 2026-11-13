@@ -21,13 +21,14 @@ import (
 
 type connectionReport struct {
 	stdout      io.Writer
+	quiet       bool
 	record      statusFile
 	sharer      trust.Peer
 	lastFailure string
 }
 
 func (r *connectionReport) waitingForPermission() {
-	if !toldAboutThePermissionAlready() {
+	if !r.quiet {
 		fmt.Fprintln(r.stdout, waitingForAccessibility)
 	}
 	r.record.set(status.Report{State: status.Accessibility})
@@ -106,6 +107,7 @@ func receive(args []string, stdout io.Writer) (err error) {
 		return usageError("receive takes no argument, only its option")
 	}
 	report := connectionReport{stdout: stdout, record: openStatus()}
+	report.quiet = askedAgainAfterARestart(report.record.lastReport())
 	defer func() { report.record.ended(err) }()
 
 	trusted, err := openTrusted()
