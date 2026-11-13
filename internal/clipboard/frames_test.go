@@ -20,17 +20,22 @@ func framesOf(t *testing.T, text string) []event.Event {
 	return slices.Concat(parts...)
 }
 
+const withdrawn = "(withdrawn)"
+
 func assemble(t *testing.T, frames []event.Event) []string {
 	t.Helper()
 	var a Assembler
 	var texts []string
 	for i, frame := range frames {
-		text, complete, err := a.Take(frame)
+		text, progress, err := a.Take(frame)
 		if err != nil {
 			t.Fatalf("Take frame %d (%+v): %v", i, frame, err)
 		}
-		if complete {
+		switch progress {
+		case Arrived:
 			texts = append(texts, text)
+		case Withdrawn:
+			texts = append(texts, withdrawn)
 		}
 	}
 	return texts
@@ -84,12 +89,12 @@ func TestACopyIsCompleteOnlyAtItsLastFrame(t *testing.T) {
 	frames := framesOf(t, "abcdefghi")
 	var a Assembler
 	for i, frame := range frames {
-		_, complete, err := a.Take(frame)
+		_, progress, err := a.Take(frame)
 		if err != nil {
 			t.Fatalf("Take frame %d: %v", i, err)
 		}
-		if last := i == len(frames)-1; complete != last {
-			t.Errorf("frame %d of %d: complete = %v", i+1, len(frames), complete)
+		if last := i == len(frames)-1; (progress == Arrived) != last {
+			t.Errorf("frame %d of %d: progress = %v", i+1, len(frames), progress)
 		}
 	}
 }
@@ -187,9 +192,9 @@ func TestDataOutsideACopyIsRefusedAndTheNextCopyStillArrives(t *testing.T) {
 
 	var got []string
 	for _, frame := range framesOf(t, "ok") {
-		if text, complete, err := a.Take(frame); err != nil {
+		if text, progress, err := a.Take(frame); err != nil {
 			t.Fatalf("Take: %v", err)
-		} else if complete {
+		} else if progress == Arrived {
 			got = append(got, text)
 		}
 	}
@@ -218,10 +223,10 @@ func TestACopyThatIsNotUTF8IsRefusedWhenItArrives(t *testing.T) {
 	var a Assembler
 	a.Take(event.Clipboard(1))
 
-	text, complete, err := a.Take(event.ClipboardData(int32(binary.BigEndian.Uint32([]byte{0xff, 0, 0, 0}))))
+	text, progress, err := a.Take(event.ClipboardData(int32(binary.BigEndian.Uint32([]byte{0xff, 0, 0, 0}))))
 
-	if !errors.Is(err, ErrNotText) || complete || text != "" {
-		t.Errorf("Take = %q, %v, %v, want an incomplete copy and %v", text, complete, err, ErrNotText)
+	if !errors.Is(err, ErrNotText) || progress != Collecting || text != "" {
+		t.Errorf("Take = %q, %v, %v, want no copy and %v", text, progress, err, ErrNotText)
 	}
 }
 
@@ -234,6 +239,7 @@ func TestOnlyTheTwoCopyFramesAreCopyFrames(t *testing.T) {
 		{event.ClipboardData(0), true},
 		{Withdrawal(), true},
 		{event.ClipboardAck(1), false},
+		{event.ClipboardUnchanged(), false},
 		{event.Features(event.FeatureClipboard), false},
 		{event.Hello(), false},
 		{event.Ping(), false},
@@ -249,20 +255,20 @@ func TestOnlyTheTwoCopyFramesAreCopyFrames(t *testing.T) {
 	}
 }
 
-func TestAWithdrawalArrivesAsACompleteCopyWithNoText(t *testing.T) {
+func TestAWithdrawalIsNotACopy(t *testing.T) {
 	var a Assembler
 
-	text, complete, err := a.Take(Withdrawal())
+	text, progress, err := a.Take(Withdrawal())
 
-	if err != nil || !complete || text != "" {
-		t.Errorf("Take(Withdrawal()) = %q, %v, %v, want a complete copy with no text", text, complete, err)
+	if err != nil || progress != Withdrawn || text != "" {
+		t.Errorf("Take(Withdrawal()) = %q, %v, %v, want a withdrawal with no text", text, progress, err)
 	}
 }
 
 func TestAWithdrawalDropsACopyThatHasNotFinished(t *testing.T) {
 	frames := append(slices.Clone(framesOf(t, "unfinished copy")[:2]), Withdrawal())
 
-	if got := assemble(t, frames); !slices.Equal(got, []string{""}) {
+	if got := assemble(t, frames); !slices.Equal(got, []string{withdrawn}) {
 		t.Errorf("copies = %q, want only the withdrawal", got)
 	}
 }
@@ -290,9 +296,9 @@ func TestTheNextCopyArrivesAfterOneThatWasNotUTF8(t *testing.T) {
 
 	var got []string
 	for _, frame := range framesOf(t, "fine") {
-		if text, complete, err := a.Take(frame); err != nil {
+		if text, progress, err := a.Take(frame); err != nil {
 			t.Fatalf("Take: %v", err)
-		} else if complete {
+		} else if progress == Arrived {
 			got = append(got, text)
 		}
 	}
@@ -428,9 +434,9 @@ func TestASenderThatWaitsForAcknowledgementsDeliversTheLimitWithinTheWindow(t *t
 	)
 	deliverOneSlice := func() {
 		for _, frame := range onTheWay[:min(SliceFrames, len(onTheWay))] {
-			if text, complete, err := a.Take(frame); err != nil {
+			if text, progress, err := a.Take(frame); err != nil {
 				t.Fatalf("Take: %v", err)
-			} else if complete {
+			} else if progress == Arrived {
 				got = append(got, text)
 			}
 			if ack, due := a.Ack(); due {
@@ -443,7 +449,10 @@ func TestASenderThatWaitsForAcknowledgementsDeliversTheLimitWithinTheWindow(t *t
 	}
 
 	for _, part := range parts {
-		for w.Room() < len(part) {
+		for stalls := 0; w.Room() < len(part); stalls++ {
+			if len(onTheWay) == 0 || stalls > WindowFrames/SliceFrames {
+				t.Fatalf("the sender stalls with room %d for a slice of %d frames", w.Room(), len(part))
+			}
 			deliverOneSlice()
 		}
 		w.Sent(len(part))
@@ -461,5 +470,65 @@ func TestASenderThatWaitsForAcknowledgementsDeliversTheLimitWithinTheWindow(t *t
 	}
 	if w.Room() != WindowFrames {
 		t.Errorf("room at the end = %d, want the whole window", w.Room())
+	}
+}
+
+func TestTheWindowStillHasRoomForASliceWhenACopyWasAbandonedJustBeforeAnAcknowledgement(t *testing.T) {
+	leftUnacknowledged := SliceFrames - 1
+	if WindowFrames-leftUnacknowledged < SliceFrames {
+		t.Errorf("a window of %d frames with %d left unacknowledged has no room for a slice of %d", WindowFrames, leftUnacknowledged, SliceFrames)
+	}
+}
+
+func TestAnAbandonedCopyAndAWithdrawalLeaveTheWindowWorking(t *testing.T) {
+	var (
+		w Window
+		a Assembler
+	)
+	deliver := func(frames []event.Event) []string {
+		var got []string
+		w.Sent(len(frames))
+		for _, frame := range frames {
+			text, progress, _ := a.Take(frame)
+			switch progress {
+			case Arrived:
+				got = append(got, text)
+			case Withdrawn:
+				got = append(got, withdrawn)
+			}
+			if ack, due := a.Ack(); due {
+				if err := w.Acked(ack.Value); err != nil {
+					t.Fatalf("Acked: %v", err)
+				}
+			}
+		}
+		return got
+	}
+
+	abandoned := framesOf(t, strings.Repeat("a", 4*WindowFrames))[:3*SliceFrames-1]
+	if got := deliver(abandoned); got != nil {
+		t.Fatalf("an abandoned copy gave %q", got)
+	}
+	if got := deliver([]event.Event{Withdrawal()}); !slices.Equal(got, []string{withdrawn}) {
+		t.Fatalf("the withdrawal gave %q", got)
+	}
+	if got := w.Room(); got != WindowFrames {
+		t.Errorf("room after the withdrawal = %d, want the whole window", got)
+	}
+	if got := deliver(framesOf(t, "next")); !slices.Equal(got, []string{"next"}) {
+		t.Errorf("the next copy gave %q", got)
+	}
+}
+
+func TestAWithdrawalTheSenderDidNotCountIsAnAcknowledgementOfFramesNeverSent(t *testing.T) {
+	var (
+		w Window
+		a Assembler
+	)
+	a.Take(Withdrawal())
+	ack, _ := a.Ack()
+
+	if err := w.Acked(ack.Value); !errors.Is(err, ErrAck) {
+		t.Errorf("Acked = %v, want %v", err, ErrAck)
 	}
 }

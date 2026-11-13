@@ -26,6 +26,8 @@ const (
 	ControlClipboard     uint16 = 6
 	ControlClipboardData uint16 = 7
 	ControlClipboardAck  uint16 = 8
+
+	ControlClipboardUnchanged uint16 = 9
 )
 
 const FeatureClipboard int32 = 1 << 0
@@ -113,6 +115,10 @@ func ClipboardData(chunk int32) Event {
 
 func ClipboardAck(framesRead int32) Event {
 	return Event{Type: TypeControl, Code: ControlClipboardAck, Value: framesRead}
+}
+
+func ClipboardUnchanged() Event {
+	return Event{Type: TypeControl, Code: ControlClipboardUnchanged}
 }
 
 func (e Event) IsControl() bool {

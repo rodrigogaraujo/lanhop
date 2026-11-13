@@ -118,6 +118,7 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - I move through two or three machines faster than a large copy can travel.
 - I press paste in the same instant that focus arrives, before the copy has arrived.
 - I copy something on a machine while a copy from another machine is on its way to it.
+- Focus leaves a machine while a large copy is still on its way to it.
 - I copy the same text twice in a row, or copy on a machine the same text that lanhop has just put there.
 - A program changes the clipboard of a machine that does not have focus.
 - The connection to a machine is lost while a copy is on its way to it.
@@ -143,7 +144,7 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - **FR-010**: lanhop MUST NOT send a copy back to the machine it came from, and MUST NOT treat the text it writes to a clipboard as a new copy.
 - **FR-011**: On a machine where lanhop cannot reach the clipboard, it MUST say so in its log once, and the keyboard and mouse MUST keep working.
 - **FR-012**: Clipboard sharing MUST work on macOS and on Linux, each as central and as side machine. On Linux it MUST work in X11 sessions and in Wayland sessions of GNOME.
-- **FR-013**: lanhop MUST NOT overwrite a copy that I made on a machine while a copy from another machine was on its way to it.
+- **FR-013**: lanhop MUST NOT overwrite a copy that I made on a machine after focus arrived there.
 
 ### Out of scope for this feature
 

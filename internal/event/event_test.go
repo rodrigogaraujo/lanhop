@@ -13,6 +13,7 @@ func TestControlEventsAreOutsideTheKernelTypeRange(t *testing.T) {
 		"clipboard":      Clipboard(1),
 		"clipboard data": ClipboardData(0),
 		"clipboard ack":  ClipboardAck(1),
+		"unchanged":      ClipboardUnchanged(),
 	} {
 		if !e.IsControl() {
 			t.Errorf("%s is not a control event", name)
@@ -67,7 +68,7 @@ func TestHelloCarriesTheProtocolVersion(t *testing.T) {
 
 func TestControlCodesAreDistinct(t *testing.T) {
 	seen := map[uint16]bool{}
-	for _, e := range []Event{Hello(), Ping(), Enter(), Leave(), Features(0), Clipboard(1), ClipboardData(0), ClipboardAck(1)} {
+	for _, e := range []Event{Hello(), Ping(), Enter(), Leave(), Features(0), Clipboard(1), ClipboardData(0), ClipboardAck(1), ClipboardUnchanged()} {
 		if seen[e.Code] {
 			t.Errorf("control code %d is used twice", e.Code)
 		}
@@ -86,6 +87,7 @@ func TestClipboardFramesKeepTheirControlCodes(t *testing.T) {
 		{"clipboard", Clipboard(9), Event{Type: control, Code: 6, Value: 9}},
 		{"clipboard data", ClipboardData(-1), Event{Type: control, Code: 7, Value: -1}},
 		{"clipboard ack", ClipboardAck(512), Event{Type: control, Code: 8, Value: 512}},
+		{"clipboard unchanged", ClipboardUnchanged(), Event{Type: control, Code: 9}},
 	}
 	for _, test := range tests {
 		if test.got != test.want {

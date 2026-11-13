@@ -47,6 +47,14 @@ func IsCopyFrame(frame event.Event) bool {
 	return frame.IsControl() && (frame.Code == event.ControlClipboard || frame.Code == event.ControlClipboardData)
 }
 
+type Progress int
+
+const (
+	Collecting Progress = iota
+	Arrived
+	Withdrawn
+)
+
 type Assembler struct {
 	text   []byte
 	length int
@@ -55,9 +63,9 @@ type Assembler struct {
 	acked  uint32
 }
 
-func (a *Assembler) Take(frame event.Event) (text string, complete bool, err error) {
+func (a *Assembler) Take(frame event.Event) (text string, progress Progress, err error) {
 	if !IsCopyFrame(frame) {
-		return "", false, nil
+		return "", Collecting, nil
 	}
 	a.taken++
 	if frame.Code == event.ControlClipboard {
@@ -75,34 +83,34 @@ func (a *Assembler) Ack() (event.Event, bool) {
 	return event.ClipboardAck(int32(a.taken)), true
 }
 
-func (a *Assembler) start(length int32) (string, bool, error) {
+func (a *Assembler) start(length int32) (string, Progress, error) {
 	a.drop()
 	switch {
 	case length == 0:
-		return "", true, nil
+		return "", Withdrawn, nil
 	case length < 0 || length > Limit:
-		return "", false, fmt.Errorf("%w: %d bytes", ErrLength, length)
+		return "", Collecting, fmt.Errorf("%w: %d bytes", ErrLength, length)
 	}
 	a.length = int(length)
 	a.text = make([]byte, 0, min(dataFramesFor(a.length), SliceFrames)*bytesPerFrame)
 	a.open = true
-	return "", false, nil
+	return "", Collecting, nil
 }
 
-func (a *Assembler) add(chunk int32) (string, bool, error) {
+func (a *Assembler) add(chunk int32) (string, Progress, error) {
 	if !a.open {
-		return "", false, ErrUnannounced
+		return "", Collecting, ErrUnannounced
 	}
 	a.text = binary.BigEndian.AppendUint32(a.text, uint32(chunk))
 	if len(a.text) < a.length {
-		return "", false, nil
+		return "", Collecting, nil
 	}
 	text := a.text[:a.length]
 	a.drop()
 	if !utf8.Valid(text) {
-		return "", false, ErrNotText
+		return "", Collecting, ErrNotText
 	}
-	return string(text), true, nil
+	return string(text), Arrived, nil
 }
 
 func (a *Assembler) drop() {
