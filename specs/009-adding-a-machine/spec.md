@@ -36,10 +36,10 @@ On the central I run `lanhop add office-mac`. It prints a join line. On the new 
 
 1. **Given** the central runs lanhop as its service, **When** I run `lanhop add office-mac`, **Then** it prints a join line for a machine without lanhop and a shorter one for a machine that has it, and waits.
 2. **Given** a machine without lanhop, **When** I type the join line, **Then** it installs lanhop as a side machine, joins the central as office-mac, and connects, without asking whether the keyboard and mouse are there.
-3. **Given** the new machine joined, **When** `lanhop add` sees it, **Then** it prints its name, its address and its hotkey, and opens the layout editor with the new machine placed next to the others, ready to move.
+3. **Given** the new machine joined, **When** `lanhop add` sees it, **Then** it prints its name, its address and its hotkey, and opens the layout editor with the new machine waiting in the tray, ready to drag to its place.
 4. **Given** `lanhop share` is running, **When** a machine joins, **Then** it can take focus at once, with no restart of the central.
 5. **Given** the join line was used once, **When** anyone types it again, **Then** the central refuses it.
-6. **Given** ten minutes passed, or I pressed Ctrl+C in `lanhop add`, **When** the join line is typed, **Then** the central refuses it, and the new machine says to run `lanhop add` again.
+6. **Given** ten minutes passed, or I pressed Ctrl+C in `lanhop add`, **When** the join line is typed, **Then** the central is not waiting any more, and the new machine says to run `lanhop add` again.
 
 ### Story 2 - See the desk at a glance (Priority: P1)
 
@@ -60,25 +60,18 @@ On the central I run `lanhop add office-mac`. It prints a join line. On the new 
 2. **Given** the join already happened when the installer stopped, **When** I type the same join line again, **Then** the installer sees that the central is already trusted and goes on, although the join code is used.
 3. **Given** `~/.local/bin` is not on the `PATH`, **When** the installer ends, **Then** a new terminal finds `lanhop`, because the installer added the folder to the profile of the shell, after saying which file it changes.
 
-### Story 4 - The central can change address (Priority: P3)
-
-**Independent test**: give the central another address on the network, and restart a side machine.
-
-**Acceptance scenarios**:
-
-1. **Given** the central got another address from the router, **When** a side machine connects, **Then** it finds the central by its local name, where the network offers local names.
-
 ## Edge cases
 
 - A stray connection to the port of `lanhop add`: a scan, a `nc`, a browser.
 - Someone else types a wrong code three times while `lanhop add` waits.
 - The name given to `lanhop add` is already taken, or is the name of the central.
 - Two `lanhop add` at the same time on the central.
-- The new machine has lanhop 0.1.1, which has no `lanhop join`.
+- The new machine has lanhop 0.1.1, which has no `lanhop join`: the short line fails with an unknown command, and the installer line, which updates it, works.
 - The new machine is already paired with this central.
-- The new machine was a central before.
-- The central has several addresses: Wi-Fi, a cable, a VPN.
-- A VPN on the new machine blocks the local network (FortiClient did, on 2026-11-13).
+- The new machine was a central before, or already trusts another central: `lanhop join` refuses before it sends the token, and says to `lanhop forget` that central first.
+- The join line is typed on the central itself: the new machine sees its own key and refuses.
+- The central has several addresses: Wi-Fi, a cable, a VPN that holds the default route. `lanhop add` picks a private address of an interface that is not a tunnel, and `--address` picks another.
+- A VPN on the new machine blocks the local network (FortiClient did, on 2026-11-13): `lanhop join` cannot connect, and says that a VPN can block the local network.
 - A side machine that needs Accessibility and Local Network on macOS: the installer asks for them as spec 008 says, after the join.
 - More than eight side machines: there are not enough hotkey numbers.
 
@@ -90,18 +83,19 @@ On the central I run `lanhop add office-mac`. It prints a join line. On the new 
 - **FR-002**: The join line MUST be enough for a machine without lanhop to install it as a side machine, join and connect, with no other question than the permissions of its system.
 - **FR-003**: The new machine MUST know the central by the join code before it sends anything that lets it join, so that a machine in the middle can neither join in its place nor learn the code.
 - **FR-004**: A join code MUST work once, and only within the time `lanhop add` waits. Three wrong codes MUST end the wait.
-- **FR-005**: A connection that does not complete a join MUST NOT end the wait.
+- **FR-005**: A connection that sends no Join message MUST NOT end the wait, nor hold it.
 - **FR-006**: The name of the new machine MUST be the one given on the central, and the new machine MUST store the central under the central's own name.
 - **FR-007**: A machine that joined MUST be able to take focus at once, without restarting `lanhop share`.
-- **FR-008**: `lanhop add` MUST print the hotkey of the new machine and open the layout editor with it placed, or print the address of the editor where no browser opens.
-- **FR-009**: `lanhop status` on the central MUST list each side machine with its hotkey and whether it is connected, or since when it is not.
+- **FR-008**: `lanhop add` MUST print the hotkey of the new machine and open the layout editor, where the new machine waits in the tray, or print the address of the editor where no browser opens.
+- **FR-009**: `lanhop status` on the central MUST list each side machine with its hotkey and whether it is connected, since when it is not, or that it has not connected since `lanhop share` started.
 - **FR-010**: Typing the installer line again MUST go on from where it stopped.
 - **FR-011**: The installer MUST make `lanhop` reachable from a new terminal.
 - **FR-012**: `lanhop pair` MUST keep working as it does, for machines that pair by comparing codes.
 
 ### Out of scope for this feature
 
-- Finding the central with no address at all, by broadcast or Bonjour. It is spec 004.
+- Finding the central with no address at all, by broadcast or Bonjour, and finding it again after its address changes. It is spec 004.
+- Renaming the central. Its name still comes from its host name, as today.
 - Adding a machine from the machine itself, with no step on the central.
 - Changing hotkey numbers. They stay in the order of `lanhop peers`.
 - Windows. It is spec 003.
@@ -110,7 +104,7 @@ On the central I run `lanhop add office-mac`. It prints a join line. On the new 
 
 - **SC-001**: A Mac that never had lanhop goes from the join line to `connected` with one line typed and the permissions of macOS, in under 3 minutes not counting the clicks of the permissions.
 - **SC-002**: Adding a machine takes one trip to the central, one command there, and one line on the new machine.
-- **SC-003**: No setup step of the list in "Why" is needed any more for a new machine.
+- **SC-003**: No setup step of the list in "Why" is needed any more for a new machine, apart from a central whose address changes (spec 004) and the name of the central itself.
 
 ## Assumptions
 
