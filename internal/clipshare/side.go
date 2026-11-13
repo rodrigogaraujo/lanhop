@@ -41,7 +41,7 @@ func (s *Side) Run(ctx context.Context) {
 	defer func() { <-keeperStopped }()
 	s.reachable = <-reachedAtStart
 	s.on = s.reachable && s.config.SwitchedOn()
-	s.machine = clipboard.NewSide(s.on)
+	s.machine = clipboard.NewSide(onlyText(s.on))
 	defer s.lost()
 	for {
 		select {
@@ -129,7 +129,7 @@ func (s *Side) reachAgainIfLost() {
 
 func (s *Side) centralSays(l *link, takes bool) {
 	if l == s.current {
-		s.do(s.machine.CentralSays(takes))
+		s.do(s.machine.CentralSays(onlyText(takes)))
 	}
 }
 
@@ -150,7 +150,7 @@ func (s *Side) followTheSwitch() {
 		return
 	}
 	s.on = on
-	s.do(s.machine.Switch(on))
+	s.do(s.machine.Switch(onlyText(on)))
 }
 
 func (s *Side) readDone(l *link, result readResult) {
@@ -172,7 +172,7 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			s.send(s.config.announcement(action.On))
+			s.send(s.config.announcement(action.Takes.Has(clipboard.Text)))
 		case clipboard.Unchanged:
 			s.send(event.ClipboardUnchanged())
 		case clipboard.Withdraw:

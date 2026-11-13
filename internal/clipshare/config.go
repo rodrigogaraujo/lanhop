@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
@@ -52,6 +53,13 @@ func (c Config) announcement(on bool) event.Event {
 
 func takesCopies(features event.Event) bool {
 	return features.Value&event.FeatureClipboard != 0
+}
+
+func onlyText(on bool) clipboard.Kinds {
+	if on {
+		return clipboard.Text
+	}
+	return 0
 }
 
 type mailbox[T any] struct {
