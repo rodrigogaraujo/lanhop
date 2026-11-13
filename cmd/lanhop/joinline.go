@@ -16,9 +16,12 @@ const (
 	addressForTheRoute = "192.0.2.1:9"
 )
 
-var releaseVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+var (
+	releaseVersion  = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+	reachableByName = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
+)
 
-var notForJoining = []string{"utun", "tun", "tap", "ppp", "ipsec", "wg", "bridge", "virbr", "docker", "br-", "veth", "vmnet", "vboxnet"}
+var notForJoining = []string{"utun", "tun", "tap", "ppp", "ipsec", "wg", "zt", "bridge", "virbr", "docker", "podman", "cni", "lxdbr", "lxcbr", "br-", "veth", "vmnet", "vboxnet", "vnic"}
 
 type networkInterface struct {
 	name      string
@@ -99,7 +102,7 @@ func addressOfTheDefaultRoute() net.IP {
 }
 
 func joinAddress(host, port string) string {
-	if port == fmt.Sprint(pairing.DefaultPort) {
+	if strings.Contains(host, ":") || port == fmt.Sprint(pairing.DefaultPort) {
 		return host
 	}
 	return net.JoinHostPort(host, port)
@@ -113,7 +116,7 @@ func installerLine(running string, extra string) string {
 }
 
 func joinLines(running, address string, code pairing.JoinCode) (installer, short string) {
-	installer = installerLine(running, fmt.Sprintf("LANHOP_JOIN=%q", address+" "+code.String()))
+	installer = installerLine(running, fmt.Sprintf(`LANHOP_JOIN="%s %s"`, address, code))
 	short = fmt.Sprintf("lanhop join %s %s", address, code)
 	return installer, short
 }

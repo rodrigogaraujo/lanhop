@@ -7,10 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
 )
+
+var joinPatience = 2 * time.Minute
 
 const (
 	joinVariable  = "LANHOP_JOIN"
@@ -44,7 +47,7 @@ func join(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	central, err := pairing.Join(address, code, pairing.JoinConfig{Identity: local, Store: trusted})
+	central, err := pairing.Join(address, code, pairing.JoinConfig{Identity: local, Store: trusted, Timeout: joinPatience})
 	switch {
 	case errors.Is(err, pairing.ErrAlreadyJoined):
 		fmt.Fprintf(stdout, "This machine already trusts %q, the central of this join code. If %q no longer lists this machine, run lanhop forget %s here and type the same line again.\n", central.Name, central.Name, central.Name)
@@ -53,6 +56,8 @@ func join(args []string, stdout io.Writer) error {
 		return errors.New("this machine is the central of this join code. Type the line on the machine you are adding")
 	case errors.Is(err, pairing.ErrNotWaiting):
 		return fmt.Errorf("%s is not waiting for a machine to join. Run lanhop add there again for a new line", address)
+	case errors.Is(err, pairing.ErrWrongToken):
+		return fmt.Errorf("%w. Type the line again exactly as lanhop add printed it, or run lanhop add there again", err)
 	case errors.Is(err, pairing.ErrUnreachable):
 		return fmt.Errorf("%w. Check the address, and that no VPN on this machine blocks the local network", err)
 	case err != nil:
@@ -64,7 +69,7 @@ func join(args []string, stdout io.Writer) error {
 		return nil
 	}
 	if receivingServiceIsInstalled() {
-		fmt.Fprintf(stdout, "The lanhop service of this machine should connect to %q within about 10 seconds. lanhop status says when.\n", central.Name)
+		fmt.Fprintf(stdout, "When the lanhop service of this machine runs, it connects to %q within about 10 seconds. lanhop status says when.\n", central.Name)
 		return nil
 	}
 	fmt.Fprintf(stdout, "To start lanhop on this machine with each login, type:\n\n  %s\n", installerLine(version, "LANHOP_ROLE="+receivingRole))

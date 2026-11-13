@@ -948,3 +948,15 @@ func TestEveryChangeOfTheConnectedMachinesIsReportedWithTheirNames(t *testing.T)
 		t.Errorf("reports = %v, want no report for input that changes no connection", got)
 	}
 }
+
+func TestHotkeyNumbersStartAfterTheSharerAndStopAtNine(t *testing.T) {
+	for position, want := range map[int]struct {
+		number    int
+		reachable bool
+	}{0: {2, true}, 7: {9, true}, 8: {10, false}} {
+		number, reachable := HotkeyNumber(position)
+		if number != want.number || reachable != want.reachable {
+			t.Errorf("HotkeyNumber(%d) = %d, %v, want %d, %v", position, number, reachable, want.number, want.reachable)
+		}
+	}
+}

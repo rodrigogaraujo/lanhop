@@ -16,12 +16,8 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
+	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
-)
-
-const (
-	firstSideMachineDigit = 2
-	lastHotkeyDigit       = 9
 )
 
 var errAnotherPairingWaits = errors.New("another lanhop add or lanhop pair is already waiting on this machine. Let it finish, or stop it with Ctrl+C")
@@ -77,6 +73,10 @@ func add(args []string, stdout io.Writer) error {
 	}
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 
+	if *address != "" && !reachableByName.MatchString(*address) {
+		listener.Close()
+		return usageError(fmt.Sprintf("--address %q must be an IP address or a host name, with a port or without", *address))
+	}
 	hosts := []string{*address}
 	if *address == "" {
 		hosts = joinAddresses(interfacesOfThisMachine(), addressOfTheDefaultRoute())
@@ -112,8 +112,11 @@ func add(args []string, stdout io.Writer) error {
 		},
 	})
 	switch {
-	case errors.Is(err, pairing.ErrWaitOver):
-		return fmt.Errorf("%s did not join. Run lanhop add %s again for a new line", name, name)
+	case errors.Is(err, pairing.ErrWaitOver) && interrupted.Err() != nil:
+		fmt.Fprintf(stdout, "Stopped. %s did not join.\n", name)
+		return nil
+	case errors.Is(err, pairing.ErrWaitOver), errors.Is(err, pairing.ErrTooManyAttempts):
+		return fmt.Errorf("%w. Run lanhop add %s again for a new line", err, name)
 	case err != nil:
 		return err
 	}
@@ -127,11 +130,11 @@ func hotkeyOf(trusted *trust.Store, name string) string {
 		if peer.Name != name {
 			continue
 		}
-		digit := position + firstSideMachineDigit
-		if digit > lastHotkeyDigit {
-			return fmt.Sprintf("It has no hotkey: the hotkeys reach the first %d machines that lanhop peers lists.", lastHotkeyDigit-firstSideMachineDigit+1)
+		number, reachable := sharer.HotkeyNumber(position)
+		if !reachable {
+			return "It has no hotkey: the hotkeys reach only the first machines that lanhop peers lists. It can still be reached through the edges of the layout."
 		}
-		return fmt.Sprintf("%s+%d moves to it.", hotkey.DefaultModifiers, digit)
+		return fmt.Sprintf("%s+%d moves to it.", hotkey.DefaultModifiers, number)
 	}
 	return ""
 }

@@ -124,6 +124,9 @@ func TestTheJoinLinesNameTheReleaseOfTheCentral(t *testing.T) {
 	if got := joinAddress("192.168.1.10", "30000"); got != "192.168.1.10:30000" {
 		t.Errorf("joinAddress on another port = %q, want the host and the port", got)
 	}
+	if got := joinAddress("192.168.1.10:31000", "30000"); got != "192.168.1.10:31000" {
+		t.Errorf("joinAddress of an address given with its port = %q, want it as given", got)
+	}
 }
 
 func TestAddPrintsAJoinLineAndStoresTheMachineThatJoins(t *testing.T) {
@@ -181,6 +184,12 @@ func TestAddRefusesANameItCannotUse(t *testing.T) {
 	if err := add([]string{"--listen", "127.0.0.1:0", "server"}, &screen{}); err == nil || !strings.Contains(err.Error(), "lanhop forget server") {
 		t.Errorf("add with a taken name = %v, want the advice to forget it first", err)
 	}
+	for _, address := range []string{"x$(reboot)", "a b", "10.0.0.1;ls", `"`} {
+		var usage usageError
+		if err := add([]string{"--listen", "127.0.0.1:0", "--address", address, "office-mac"}, &screen{}); !errors.As(err, &usage) {
+			t.Errorf("add --address %q = %v, want a usage error", address, err)
+		}
+	}
 }
 
 func TestAddAndPairSayThatAnotherPairingWaits(t *testing.T) {
@@ -198,23 +207,22 @@ func TestAddAndPairSayThatAnotherPairingWaits(t *testing.T) {
 	}
 }
 
-func TestAMachineStoredWhileListeningConnectsWithoutARestart(t *testing.T) {
-	directory := t.TempDir()
+func TestAMachineAddedWhileShareListensConnectsWithoutARestart(t *testing.T) {
+	directory := useConfigDirectory(t)
 	central := identityIn(t, directory)
-	peersPath := filepath.Join(directory, peersFileName)
-	listener, err := transport.Listen("127.0.0.1:0", transport.Config{Identity: central}, peersOnDisk(peersPath))
+	listener, err := transport.Listen("127.0.0.1:0", transport.Config{Identity: central}, peersOnDisk(filepath.Join(directory, peersFileName)))
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
 	defer listener.Close()
 
 	newcomer := newJoiningMachine(t)
-	stored, err := trust.Open(peersPath)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
+	output, finished := runningAdd(t, "office-mac")
+	if err := joinAs(t, newcomer, output); err != nil {
+		t.Fatalf("join: %v", err)
 	}
-	if err := stored.Add(trust.Peer{Name: "office-mac", Fingerprint: newcomer.identity.Fingerprint}); err != nil {
-		t.Fatalf("Add: %v", err)
+	if err := ended(t, finished); err != nil {
+		t.Fatalf("add: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
@@ -346,6 +354,7 @@ func TestJoinWithNothingListeningLooksAtItsOwnStoreFirst(t *testing.T) {
 	if !strings.Contains(output.String(), "lanhop forget imac") {
 		t.Errorf("lanhop join printed %q, want how to start over", output.String())
 	}
+	expectStoredCentral(t, newcomer, central)
 
 	other := newJoiningMachine(t)
 	otherCode, err := pairing.NewJoinCode(other.identity.Fingerprint)
@@ -354,6 +363,27 @@ func TestJoinWithNothingListeningLooksAtItsOwnStoreFirst(t *testing.T) {
 	}
 	if err := join([]string{nobody, otherCode.String()}, &screen{}); err == nil || !strings.Contains(err.Error(), "lanhop forget imac") {
 		t.Errorf("join of another central = %v, want the advice to forget imac first", err)
+	}
+}
+
+func TestJoinSaysWhatToDoWhenTheCodeIsWrongOrTheCentralDoesNotAnswer(t *testing.T) {
+	useConfigDirectory(t)
+	homeWithoutServices(t)
+	address, code, _ := waitingCentral(t)
+	text := code.String()
+	mistyped := text[:len(text)-4] + "AAAA"
+	if mistyped == text {
+		mistyped = text[:len(text)-4] + "BBBB"
+	}
+	if err := join([]string{address, mistyped}, &screen{}); err == nil || !strings.Contains(err.Error(), "Type the line again") {
+		t.Errorf("join with a wrong token = %v, want the advice to type it again", err)
+	}
+
+	patience := joinPatience
+	joinPatience = 200 * time.Millisecond
+	t.Cleanup(func() { joinPatience = patience })
+	if err := join([]string{"192.0.2.1", text}, &screen{}); err == nil || !strings.Contains(err.Error(), "VPN") {
+		t.Errorf("join with an address that does not answer = %v, want it to mention a VPN", err)
 	}
 }
 

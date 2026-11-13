@@ -21,6 +21,13 @@ const (
 	trustCheckInterval  = time.Second
 )
 
+const lastHotkeyNumber = 9
+
+func HotkeyNumber(position int) (int, bool) {
+	number := position + firstReceiverNumber
+	return number, number <= lastHotkeyNumber
+}
+
 var errCaptureStopped = errors.New("sharer: the capture of the keyboard and mouse stopped")
 
 type Capture interface {
