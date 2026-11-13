@@ -7,10 +7,8 @@ import (
 	"io/fs"
 	"net"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/status"
@@ -19,7 +17,8 @@ import (
 const reachTimeout = 3 * time.Second
 
 type statusFile struct {
-	path string
+	owner     *status.Owner
+	directory string
 }
 
 func openStatus() statusFile {
@@ -27,31 +26,34 @@ func openStatus() statusFile {
 	if err != nil {
 		return statusFile{}
 	}
-	return statusFile{path: filepath.Join(directory, status.FileName)}
+	return statusFile{owner: status.NewOwner(directory), directory: directory}
 }
 
 func (f statusFile) set(report status.Report) {
-	if f.path == "" {
+	if f.owner == nil {
 		return
 	}
-	report.PID = os.Getpid()
-	if err := os.MkdirAll(filepath.Dir(f.path), 0o700); err != nil {
-		return
-	}
-	status.Write(f.path, report)
+	f.owner.Write(report)
 }
 
 func (f statusFile) ended(err error) {
+	if f.owner == nil {
+		return
+	}
+	if _, missing := os.Stat(f.directory); missing != nil && !f.owner.Owns() {
+		return
+	}
 	report := status.Report{State: status.Stopped}
 	if err != nil {
 		report.Error = err.Error()
 	}
-	f.set(report)
+	f.owner.Write(report)
 }
 
 func stateOfFailure(err error) status.State {
-	if errors.Is(err, syscall.EHOSTUNREACH) {
-		return status.NoRoute
+	var failed *net.OpError
+	if errors.As(err, &failed) && failed.Op == "dial" {
+		return status.NotReached
 	}
 	return status.Failing
 }
@@ -64,13 +66,13 @@ func showStatus(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	report, err := status.Read(filepath.Join(directory, status.FileName))
+	report, err := status.Read(directory)
 	if errors.Is(err, fs.ErrNotExist) {
 		report = status.Report{State: status.Stopped}
 	} else if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, describeStatus(report, status.Running(report.PID), reach, runtime.GOOS))
+	fmt.Fprintln(stdout, describeStatus(report, status.Running(directory), reach, runtime.GOOS))
 	return nil
 }
 
@@ -84,7 +86,7 @@ func reach(address string) error {
 
 func describeStatus(report status.Report, running bool, reach func(address string) error, system string) string {
 	if !running || report.State == status.Stopped {
-		if report.Error != "" {
+		if report.State == status.Stopped && report.Error != "" {
 			return "stopped: lanhop is not running here. It ended with: " + report.Error
 		}
 		return "stopped: lanhop is not running here."
@@ -99,8 +101,8 @@ func describeStatus(report status.Report, running bool, reach func(address strin
 		return fmt.Sprintf("connected: lanhop is connected to %s at %s.", machines, report.Address)
 	case status.Failing:
 		return fmt.Sprintf("failing: lanhop cannot connect to %s at %s, and keeps trying: %s", machines, report.Address, report.Error)
-	case status.NoRoute:
-		return describeNoRoute(report, machines, reach, system)
+	case status.NotReached:
+		return describeNotReached(report, machines, reach, system)
 	case status.Waiting:
 		return "waiting: lanhop shares the keyboard and mouse of this machine, and no machine is connected yet."
 	case status.Sharing:
@@ -109,7 +111,7 @@ func describeStatus(report status.Report, running bool, reach func(address strin
 	return fmt.Sprintf("%s: lanhop is in a state that this version of lanhop does not know.", report.State)
 }
 
-func describeNoRoute(report status.Report, machines string, reach func(address string) error, system string) string {
+func describeNotReached(report status.Report, machines string, reach func(address string) error, system string) string {
 	if err := reach(report.Address); err != nil {
 		return fmt.Sprintf("unreachable: neither lanhop nor this terminal can reach %s at %s: %s. Check that it is on, that lanhop share runs on it and that its address did not change.", machines, report.Address, err)
 	}

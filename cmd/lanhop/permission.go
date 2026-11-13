@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
 const waitingForAccessibility = "lanhop waits for the Accessibility permission: in System Settings > Privacy & Security > Accessibility, allow the program that starts lanhop, as docs/setup-macos.md explains. lanhop carries on by itself once it is allowed."
+
+var errAllowedButNotSeen = errors.New("lanhop was allowed, but this process cannot see the permission yet, so it ends. Started at login, lanhop starts again by itself. Started by hand, start it again")
 
 const (
 	permissionCheckInterval  = time.Second
@@ -20,6 +23,7 @@ func waitForPermission(ctx context.Context, granted, trusted func() bool, waitin
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	staleChecks := 0
+	sawUntrusted := !trusted()
 	for {
 		select {
 		case <-ctx.Done():
@@ -30,7 +34,11 @@ func waitForPermission(ctx context.Context, granted, trusted func() bool, waitin
 			return nil
 		}
 		if !trusted() {
+			sawUntrusted = true
 			staleChecks = 0
+			continue
+		}
+		if !sawUntrusted {
 			continue
 		}
 		staleChecks++

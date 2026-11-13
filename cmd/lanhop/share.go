@@ -68,13 +68,13 @@ func share(args []string, stdout io.Writer) (err error) {
 		return usageError("share takes no argument besides its options")
 	}
 
-	report := openStatus()
-	defer func() { report.ended(err) }()
+	record := openStatus()
+	defer func() { record.ended(err) }()
 	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopWaiting()
 	waiting := func() {
 		fmt.Fprintln(stdout, waitingForAccessibility)
-		report.set(status.Report{State: status.Accessibility})
+		record.set(status.Report{State: status.Accessibility})
 	}
 	if err := waitUntilAllowedToShare(interrupted, waiting); err != nil {
 		return err
@@ -90,13 +90,13 @@ func share(args []string, stdout io.Writer) (err error) {
 	return shareUntil(interrupted, capture, *listen, stdout)
 }
 
-func reportReceivers(report statusFile) func(names []string) {
+func reportReceivers(record statusFile) func(names []string) {
 	return func(names []string) {
 		if len(names) == 0 {
-			report.set(status.Report{State: status.Waiting})
+			record.set(status.Report{State: status.Waiting})
 			return
 		}
-		report.set(status.Report{State: status.Sharing, Machines: names})
+		record.set(status.Report{State: status.Sharing, Machines: names})
 	}
 }
 

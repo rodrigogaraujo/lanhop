@@ -26,6 +26,11 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+      - name: Test the macOS build without cgo
+        if: runner.os == 'macOS'
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./cmd/lanhop
       - name: Check the installer script
         if: runner.os == 'Linux'
         run: shellcheck install.sh

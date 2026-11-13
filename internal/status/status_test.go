@@ -3,32 +3,33 @@ package status
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"testing"
 )
 
+const helperDirectory = "LANHOP_STATUS_TEST_DIRECTORY"
+
 func TestReportReadsBackAsItWasWritten(t *testing.T) {
-	path := filepath.Join(t.TempDir(), FileName)
-	written := Report{PID: 4242, State: Sharing, Machines: []string{"desk", "laptop"}, Address: "192.168.1.9:24745", Error: "none"}
-	if err := Write(path, written); err != nil {
+	directory := t.TempDir()
+	written := Report{State: Sharing, Machines: []string{"desk", "laptop"}, Address: "192.168.1.9:24745", Error: "none"}
+	if err := NewOwner(directory).Write(written); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	read, err := Read(path)
+	read, err := Read(directory)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if read.PID != written.PID || read.State != written.State || !slices.Equal(read.Machines, written.Machines) || read.Address != written.Address || read.Error != written.Error {
+	if read.State != written.State || !slices.Equal(read.Machines, written.Machines) || read.Address != written.Address || read.Error != written.Error {
 		t.Errorf("read %+v, want %+v", read, written)
 	}
 }
 
 func TestErrorOverSeveralLinesIsKeptOnOne(t *testing.T) {
-	path := filepath.Join(t.TempDir(), FileName)
-	if err := Write(path, Report{State: Failing, Error: "first line\nsecond\tline\n"}); err != nil {
+	directory := t.TempDir()
+	if err := NewOwner(directory).Write(Report{State: Failing, Error: "first line\nsecond\tline\n"}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	read, err := Read(path)
+	read, err := Read(directory)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -37,16 +38,16 @@ func TestErrorOverSeveralLinesIsKeptOnOne(t *testing.T) {
 	}
 }
 
-func TestNewReportReplacesTheOldOneAndLeavesNoOtherFile(t *testing.T) {
+func TestNewReportReplacesTheOldOneAndLeavesOnlyTheStatusAndItsLock(t *testing.T) {
 	directory := t.TempDir()
-	path := filepath.Join(directory, FileName)
-	if err := Write(path, Report{State: Connecting, Machines: []string{"desk"}, Error: "old"}); err != nil {
+	owner := NewOwner(directory)
+	if err := owner.Write(Report{State: Connecting, Machines: []string{"desk"}, Error: "old"}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if err := Write(path, Report{State: Connected, Machines: []string{"desk"}}); err != nil {
+	if err := owner.Write(Report{State: Connected, Machines: []string{"desk"}}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	read, err := Read(path)
+	read, err := Read(directory)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -57,29 +58,83 @@ func TestNewReportReplacesTheOldOneAndLeavesNoOtherFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != FileName {
-		t.Errorf("the directory holds %v, want only %s", entries, FileName)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if !slices.Equal(names, []string{FileName, lockFileName}) {
+		t.Errorf("the directory holds %v, want only %s and %s", names, FileName, lockFileName)
 	}
 }
 
-func TestThisProcessIsRunning(t *testing.T) {
-	if !Running(os.Getpid()) {
-		t.Error("Running(own pid) = false")
+func TestOwnerCreatesTheDirectoryItWritesIn(t *testing.T) {
+	directory := t.TempDir() + "/lanhop"
+	if err := NewOwner(directory).Write(Report{State: Accessibility}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if read, err := Read(directory); err != nil || read.State != Accessibility {
+		t.Errorf("Read = %+v, %v, want the report", read, err)
 	}
 }
 
-func TestNoProcessIsRunningWithoutAPID(t *testing.T) {
-	if Running(0) || Running(-1) {
-		t.Error("a process without a pid counts as running")
+func TestNothingRunsWhereNoOwnerEverWrote(t *testing.T) {
+	if Running(t.TempDir()) {
+		t.Error("Running = true in a directory without a status")
 	}
 }
 
-func TestProcessThatEndedIsNotRunning(t *testing.T) {
-	ended := exec.Command(os.Args[0], "-test.run=^$")
-	if err := ended.Run(); err != nil {
-		t.Fatalf("run a process that ends: %v", err)
+func TestTheOwnerRunsWhileItHoldsTheStatus(t *testing.T) {
+	directory := t.TempDir()
+	owner := NewOwner(directory)
+	if err := owner.Write(Report{State: Waiting}); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
-	if Running(ended.Process.Pid) {
-		t.Errorf("Running(%d) = true for a process that ended", ended.Process.Pid)
+	if !owner.Owns() || !Running(directory) {
+		t.Errorf("Owns = %v, Running = %v, want both true", owner.Owns(), Running(directory))
+	}
+}
+
+func TestASecondWriterLeavesTheStatusOfTheFirstAlone(t *testing.T) {
+	directory := t.TempDir()
+	if err := NewOwner(directory).Write(Report{State: Connected, Machines: []string{"desk"}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	second := NewOwner(directory)
+	if err := second.Write(Report{State: Stopped, Error: "address already in use"}); err == nil {
+		t.Error("the second writer wrote while the first one holds the status")
+	}
+	if second.Owns() {
+		t.Error("the second writer owns the status")
+	}
+	if read, err := Read(directory); err != nil || read.State != Connected {
+		t.Errorf("Read = %+v, %v, want the report of the first writer", read, err)
+	}
+}
+
+func TestAWriterThatEndedNoLongerRuns(t *testing.T) {
+	directory := t.TempDir()
+	helper := exec.Command(os.Args[0], "-test.run=^TestHelperWritesAStatusAndEnds$")
+	helper.Env = append(os.Environ(), helperDirectory+"="+directory)
+	if output, err := helper.CombinedOutput(); err != nil {
+		t.Fatalf("the helper failed: %v\n%s", err, output)
+	}
+	if read, err := Read(directory); err != nil || read.State != Connected {
+		t.Fatalf("Read = %+v, %v, want what the helper wrote", read, err)
+	}
+	if Running(directory) {
+		t.Error("Running = true after the writer ended")
+	}
+	if err := NewOwner(directory).Write(Report{State: Waiting}); err != nil {
+		t.Errorf("a new writer cannot take over after the old one ended: %v", err)
+	}
+}
+
+func TestHelperWritesAStatusAndEnds(t *testing.T) {
+	directory := os.Getenv(helperDirectory)
+	if directory == "" {
+		t.Skip("only runs as the helper of another test")
+	}
+	if err := NewOwner(directory).Write(Report{State: Connected, Machines: []string{"desk"}}); err != nil {
+		t.Fatal(err)
 	}
 }

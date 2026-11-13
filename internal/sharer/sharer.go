@@ -49,8 +49,8 @@ type Sharer struct {
 	losses             chan Conn
 	stopped            chan struct{}
 	receivers          map[identity.Fingerprint]Conn
-	membership         int
-	reported           int
+	receiverChanges    int
+	reportedChanges    int
 	onReceivers        func(names []string)
 	focused            Conn
 	heldOnFocused      keystate.Tracker
@@ -74,7 +74,7 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges Edge
 		losses:             make(chan Conn),
 		stopped:            make(chan struct{}),
 		receivers:          make(map[identity.Fingerprint]Conn),
-		reported:           -1,
+		reportedChanges:    -1,
 		edges:              edges,
 		now:                time.Now,
 		ownEdges:           edge.New(edges.Watch),
@@ -127,10 +127,10 @@ func (s *Sharer) Run(ctx context.Context) (err error) {
 }
 
 func (s *Sharer) reportReceivers() {
-	if s.onReceivers == nil || s.reported == s.membership {
+	if s.onReceivers == nil || s.reportedChanges == s.receiverChanges {
 		return
 	}
-	s.reported = s.membership
+	s.reportedChanges = s.receiverChanges
 	names := make([]string, 0, len(s.receivers))
 	for _, conn := range s.receivers {
 		names = append(names, conn.Peer().Name)
@@ -261,7 +261,7 @@ func (s *Sharer) admit(conn Conn) error {
 	fingerprint := conn.Peer().Fingerprint
 	previous, reconnecting := s.receivers[fingerprint]
 	s.receivers[fingerprint] = conn
-	s.membership++
+	s.receiverChanges++
 	go s.watch(conn)
 	if !reconnecting {
 		return nil
@@ -288,7 +288,7 @@ func (s *Sharer) drop(conn Conn) error {
 		return nil
 	}
 	delete(s.receivers, fingerprint)
-	s.membership++
+	s.receiverChanges++
 	return s.giveInputBackThenClose(conn)
 }
 
@@ -300,7 +300,7 @@ func (s *Sharer) giveInputBackThenClose(conn Conn) error {
 
 func (s *Sharer) forget(conn Conn) {
 	delete(s.receivers, conn.Peer().Fingerprint)
-	s.membership++
+	s.receiverChanges++
 	conn.Close()
 }
 

@@ -30,10 +30,35 @@ func TestPermissionGivenLaterEndsTheWaitAfterOneNotice(t *testing.T) {
 	}
 }
 
-func TestPermissionThatThisProcessCannotSeeEndsItSoThatANewOneStarts(t *testing.T) {
-	err := waitForPermission(context.Background(), func() bool { return false }, func() bool { return true }, func() {}, testCheckInterval, errStalePermission)
+func trustedAfter(checks int32) func() bool {
+	var seen atomic.Int32
+	return func() bool { return seen.Add(1) > checks }
+}
+
+func TestPermissionGivenButNotSeenByThisProcessEndsItSoThatANewOneStarts(t *testing.T) {
+	err := waitForPermission(context.Background(), func() bool { return false }, trustedAfter(2), func() {}, testCheckInterval, errStalePermission)
 	if !errors.Is(err, errStalePermission) {
 		t.Errorf("waitForPermission = %v, want %v", err, errStalePermission)
+	}
+}
+
+func TestProcessThatWasTrustedFromTheStartKeepsWaitingInsteadOfEndingInALoop(t *testing.T) {
+	ctx, stop := context.WithTimeout(context.Background(), 50*testCheckInterval)
+	defer stop()
+	err := waitForPermission(ctx, func() bool { return false }, func() bool { return true }, func() {}, testCheckInterval, errStalePermission)
+	if err != nil {
+		t.Errorf("waitForPermission = %v, want it to wait until stopped", err)
+	}
+}
+
+func TestTrustThatComesAndGoesStartsTheCountAgain(t *testing.T) {
+	var checks atomic.Int32
+	flickering := func() bool { return checks.Add(1)%2 == 0 }
+	ctx, stop := context.WithTimeout(context.Background(), 50*testCheckInterval)
+	defer stop()
+	err := waitForPermission(ctx, func() bool { return false }, flickering, func() {}, testCheckInterval, errStalePermission)
+	if err != nil {
+		t.Errorf("waitForPermission = %v, want no restart while the trust keeps changing", err)
 	}
 }
 

@@ -21,28 +21,28 @@ import (
 
 type connectionReport struct {
 	stdout      io.Writer
-	status      statusFile
+	record      statusFile
 	sharer      trust.Peer
 	lastFailure string
 }
 
 func (r *connectionReport) waitingForPermission() {
 	fmt.Fprintln(r.stdout, waitingForAccessibility)
-	r.status.set(status.Report{State: status.Accessibility})
+	r.record.set(status.Report{State: status.Accessibility})
 }
 
 func (r *connectionReport) connecting() {
-	r.status.set(r.about(status.Connecting, nil))
+	r.record.set(r.about(status.Connecting, nil))
 }
 
 func (r *connectionReport) connected() {
 	r.lastFailure = ""
 	fmt.Fprintf(r.stdout, "Connected to %q.\n", r.sharer.Name)
-	r.status.set(r.about(status.Connected, nil))
+	r.record.set(r.about(status.Connected, nil))
 }
 
 func (r *connectionReport) failed(reason error) {
-	r.status.set(r.about(stateOfFailure(reason), reason))
+	r.record.set(r.about(stateOfFailure(reason), reason))
 	failure := reason.Error()
 	if failure == r.lastFailure {
 		return
@@ -103,8 +103,8 @@ func receive(args []string, stdout io.Writer) (err error) {
 	if flags.NArg() > 0 {
 		return usageError("receive takes no argument, only its option")
 	}
-	report := connectionReport{stdout: stdout, status: openStatus()}
-	defer func() { report.status.ended(err) }()
+	report := connectionReport{stdout: stdout, record: openStatus()}
+	defer func() { report.record.ended(err) }()
 
 	trusted, err := openTrusted()
 	if err != nil {
@@ -123,7 +123,7 @@ func receive(args []string, stdout io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
-	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	interrupted, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	if err := waitUntilAllowedToControl(interrupted, report.waitingForPermission); err != nil {
 		return err

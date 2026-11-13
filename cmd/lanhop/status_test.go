@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -10,8 +11,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
+	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
@@ -48,16 +52,46 @@ func TestStatusWithoutAServiceSaysItIsStopped(t *testing.T) {
 	expectState(t, lanhopStatus(t), "stopped", "not running")
 }
 
-func TestStatusOfAServiceThatEndedGivesItsLastError(t *testing.T) {
-	directory := useConfigDirectory(t)
-	ended := status.Report{PID: 0, State: status.Connected, Machines: []string{"iMac"}, Error: "this machine is not paired"}
+func leftBehind(t *testing.T, directory, contents string) {
+	t.Helper()
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := status.Write(filepath.Join(directory, status.FileName), ended); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, status.FileName), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestStatusOfAServiceThatEndedGivesItsLastError(t *testing.T) {
+	leftBehind(t, useConfigDirectory(t), "state=stopped\nerror=this machine is not paired\n")
 	expectState(t, lanhopStatus(t), "stopped", "not running", "this machine is not paired")
+}
+
+func TestStatusOfAServiceThatDiedWhileTryingDoesNotRepeatItsLastTry(t *testing.T) {
+	leftBehind(t, useConfigDirectory(t), "state=failing\nmachine=iMac\nerror=connection refused\n")
+	line := lanhopStatus(t)
+	expectState(t, line, "stopped", "not running")
+	if strings.Contains(line, "connection refused") {
+		t.Errorf("status %q repeats the last try of a service that is gone", line)
+	}
+}
+
+func TestASecondLanhopLeavesTheStatusOfTheServiceAlone(t *testing.T) {
+	useConfigDirectory(t)
+	service := openStatus()
+	service.set(status.Report{State: status.Connected, Machines: []string{"iMac"}, Address: centralAddress})
+	byHand := openStatus()
+	byHand.set(status.Report{State: status.Accessibility})
+	byHand.ended(errors.New("address already in use"))
+	expectState(t, lanhopStatus(t), "connected", `"iMac"`)
+}
+
+func TestEndingBeforeTheConfigurationDirectoryExistsCreatesNothing(t *testing.T) {
+	directory := useConfigDirectory(t)
+	openStatus().ended(errors.New("sharing is not supported here"))
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Errorf("the configuration directory was created: %v", err)
+	}
 }
 
 func TestStatusReadsWhatTheRunningServiceWrote(t *testing.T) {
@@ -94,14 +128,14 @@ func TestEachStateOfARunningServiceHasItsOwnLine(t *testing.T) {
 	}
 }
 
-func TestNoRouteThatThisTerminalGetsThroughIsMacOSBlockingLanhop(t *testing.T) {
-	report := status.Report{State: status.NoRoute, Machines: []string{"iMac"}, Address: centralAddress, Error: "no route to host"}
+func TestNotReachedButThisTerminalGetsThroughIsMacOSBlockingLanhop(t *testing.T) {
+	report := status.Report{State: status.NotReached, Machines: []string{"iMac"}, Address: centralAddress, Error: "no route to host"}
 	line := describeStatus(report, true, reachable, "darwin")
 	expectState(t, line, "blocked", `"iMac"`, centralAddress, "this terminal can", "Privacy & Security > Local Network")
 }
 
-func TestNoRouteThatThisTerminalGetsThroughOnLinuxNamesTheError(t *testing.T) {
-	report := status.Report{State: status.NoRoute, Machines: []string{"iMac"}, Address: centralAddress, Error: "no route to host"}
+func TestNotReachedButThisTerminalGetsThroughOnLinuxNamesTheError(t *testing.T) {
+	report := status.Report{State: status.NotReached, Machines: []string{"iMac"}, Address: centralAddress, Error: "no route to host"}
 	line := describeStatus(report, true, reachable, "linux")
 	expectState(t, line, "blocked", "this terminal can", "no route to host")
 	if strings.Contains(line, "Local Network") {
@@ -109,20 +143,62 @@ func TestNoRouteThatThisTerminalGetsThroughOnLinuxNamesTheError(t *testing.T) {
 	}
 }
 
-func TestNoRouteForTheTerminalTooMeansTheCentralCannotBeReached(t *testing.T) {
-	report := status.Report{State: status.NoRoute, Machines: []string{"iMac"}, Address: centralAddress, Error: "no route to host"}
+func TestNotReachedFromTheTerminalTooMeansTheCentralCannotBeReached(t *testing.T) {
+	report := status.Report{State: status.NotReached, Machines: []string{"iMac"}, Address: centralAddress, Error: "no route to host"}
 	line := describeStatus(report, true, unreachable, "darwin")
 	expectState(t, line, "unreachable", `"iMac"`, centralAddress, errNoRouteFromTheTerminal.Error(), "lanhop share")
 }
 
-func TestNoRouteIsToldApartFromOtherFailures(t *testing.T) {
-	noRoute := fmt.Errorf("transport: cannot connect to iMac at %s: %w", centralAddress, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)})
-	if state := stateOfFailure(noRoute); state != status.NoRoute {
-		t.Errorf("stateOfFailure(%v) = %q, want %q", noRoute, state, status.NoRoute)
+type trustingNobody struct{}
+
+func (trustingNobody) Find(identity.Fingerprint) (trust.Peer, bool) { return trust.Peer{}, false }
+
+func dialFailure(t *testing.T, peer trust.Peer) error {
+	t.Helper()
+	local, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	refused := fmt.Errorf("transport: cannot connect: %w", os.NewSyscallError("connect", syscall.ECONNREFUSED))
-	if state := stateOfFailure(refused); state != status.Failing {
-		t.Errorf("stateOfFailure(%v) = %q, want %q", refused, state, status.Failing)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := transport.Dial(ctx, transport.Config{Identity: local}, peer)
+	if err == nil {
+		conn.Close()
+		t.Fatalf("dialing %s succeeded", peer.Address)
+	}
+	return err
+}
+
+func TestAConnectionThatCouldNotOpenIsNotReached(t *testing.T) {
+	noRoute := fmt.Errorf("transport: cannot connect to iMac at %s: %w", centralAddress, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)})
+	if state := stateOfFailure(noRoute); state != status.NotReached {
+		t.Errorf("stateOfFailure(%v) = %q, want %q", noRoute, state, status.NotReached)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := listener.Addr().String()
+	listener.Close()
+	refused := dialFailure(t, trust.Peer{Name: "iMac", Address: closed})
+	if state := stateOfFailure(refused); state != status.NotReached {
+		t.Errorf("stateOfFailure(%v) = %q, want %q", refused, state, status.NotReached)
+	}
+}
+
+func TestACentralWithAnotherKeyIsAFailureAndNotAnUnreachedCentral(t *testing.T) {
+	central, err := identity.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := transport.Listen("127.0.0.1:0", transport.Config{Identity: central}, trustingNobody{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	mismatch := dialFailure(t, trust.Peer{Name: "iMac", Address: listener.Addr().String(), Fingerprint: identity.Fingerprint{9}})
+	if state := stateOfFailure(mismatch); state != status.Failing {
+		t.Errorf("stateOfFailure(%v) = %q, want %q", mismatch, state, status.Failing)
 	}
 }
 
@@ -143,7 +219,7 @@ func TestTryingAnAddressFromHereSucceedsOnlyWhereSomethingListens(t *testing.T) 
 
 func TestReceiverWritesEachChangeOfItsConnection(t *testing.T) {
 	useConfigDirectory(t)
-	report := connectionReport{stdout: &bytes.Buffer{}, status: openStatus(), sharer: trust.Peer{Name: "iMac", Address: centralAddress}}
+	report := connectionReport{stdout: &bytes.Buffer{}, record: openStatus(), sharer: trust.Peer{Name: "iMac", Address: centralAddress}}
 	report.connecting()
 	expectState(t, lanhopStatus(t), "connecting", `"iMac"`)
 	report.failed(fmt.Errorf("dial: %w", syscall.ECONNREFUSED))

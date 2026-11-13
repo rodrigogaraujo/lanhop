@@ -3,16 +3,16 @@ package status
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 )
 
-const FileName = "status"
+const (
+	FileName     = "status"
+	lockFileName = "status.lock"
+)
 
 type State string
 
@@ -20,7 +20,7 @@ const (
 	Accessibility State = "accessibility"
 	Connecting    State = "connecting"
 	Connected     State = "connected"
-	NoRoute       State = "no-route"
+	NotReached    State = "not-reached"
 	Failing       State = "failing"
 	Waiting       State = "waiting"
 	Sharing       State = "sharing"
@@ -28,16 +28,45 @@ const (
 )
 
 type Report struct {
-	PID      int
 	State    State
 	Machines []string
 	Address  string
 	Error    string
 }
 
-func Write(path string, report Report) error {
+type Owner struct {
+	directory string
+	lock      *os.File
+}
+
+func NewOwner(directory string) *Owner {
+	return &Owner{directory: directory}
+}
+
+func (o *Owner) Write(report Report) error {
+	if o.lock == nil {
+		if err := os.MkdirAll(o.directory, 0o700); err != nil {
+			return fmt.Errorf("status: %w", err)
+		}
+		lock, err := takeLock(filepath.Join(o.directory, lockFileName))
+		if err != nil {
+			return err
+		}
+		o.lock = lock
+	}
+	return write(filepath.Join(o.directory, FileName), report)
+}
+
+func (o *Owner) Owns() bool {
+	return o.lock != nil
+}
+
+func Running(directory string) bool {
+	return lockIsTaken(filepath.Join(directory, lockFileName))
+}
+
+func write(path string, report Report) error {
 	var text bytes.Buffer
-	fmt.Fprintf(&text, "pid=%d\n", report.PID)
 	fmt.Fprintf(&text, "state=%s\n", oneLine(string(report.State)))
 	for _, machine := range report.Machines {
 		fmt.Fprintf(&text, "machine=%s\n", oneLine(machine))
@@ -66,8 +95,8 @@ func Write(path string, report Report) error {
 	return nil
 }
 
-func Read(path string) (Report, error) {
-	contents, err := os.ReadFile(path)
+func Read(directory string) (Report, error) {
+	contents, err := os.ReadFile(filepath.Join(directory, FileName))
 	if err != nil {
 		return Report{}, err
 	}
@@ -79,8 +108,6 @@ func Read(path string) (Report, error) {
 			continue
 		}
 		switch key {
-		case "pid":
-			report.PID, _ = strconv.Atoi(value)
 		case "state":
 			report.State = State(value)
 		case "machine":
@@ -92,18 +119,6 @@ func Read(path string) (Report, error) {
 		}
 	}
 	return report, lines.Err()
-}
-
-func Running(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func oneLine(text string) string {
