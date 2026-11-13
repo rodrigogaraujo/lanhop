@@ -1,6 +1,7 @@
 package clipshare
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -26,11 +27,15 @@ type connThatHoldsCopies struct {
 	recordingConn
 	release   chan struct{}
 	announced []int32
+	order     []string
 }
 
 func (c *connThatHoldsCopies) Send(events ...event.Event) error {
 	if clipboard.IsCopyFrame(events[0]) {
 		<-c.release
+		c.mutex.Lock()
+		c.order = append(c.order, "copy")
+		c.mutex.Unlock()
 	}
 	return c.recordingConn.Send(events...)
 }
@@ -39,10 +44,17 @@ func (c *connThatHoldsCopies) SendFeatures(announced *features.Set) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.announced = append(c.announced, announced.Value())
+	c.order = append(c.order, "features")
 	return nil
 }
 
-func TestAnAnnouncementCarriesTheFeaturesAsTheyAreWhenItIsWritten(t *testing.T) {
+func (c *connThatHoldsCopies) written() (order []string, announced []int32) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return slices.Clone(c.order), slices.Clone(c.announced)
+}
+
+func TestAnAnnouncementWaitsForTheCopyAheadOfItAndCarriesTheFeaturesAsTheyAreWhenWritten(t *testing.T) {
 	conn := &connThatHoldsCopies{release: make(chan struct{})}
 	l := startLink(conn, "the other machine", time.Second, &logBook{})
 	t.Cleanup(l.close)
@@ -52,23 +64,20 @@ func TestAnAnnouncementCarriesTheFeaturesAsTheyAreWhenItIsWritten(t *testing.T) 
 	shared.Turn(features.Clipboard, true)
 	l.announce(shared)
 	shared.Turn(8, true)
+	if _, announced := conn.written(); len(announced) != 0 {
+		t.Fatalf("the announcement was written before the copy ahead of it: %#x", announced)
+	}
 	close(conn.release)
 
 	eventually(t, "the announcement is written", func() bool {
-		conn.mutex.Lock()
-		defer conn.mutex.Unlock()
-		return len(conn.announced) == 1
+		_, announced := conn.written()
+		return len(announced) == 1
 	})
-	if got := conn.announced[0]; got != event.FeatureClipboard|1<<8 {
-		t.Errorf("the announcement carried %#x, want the features as they were when it was written, %#x", got, event.FeatureClipboard|1<<8)
+	order, announced := conn.written()
+	if !slices.Equal(order, []string{"copy", "features"}) {
+		t.Errorf("written in the order %q, want the copy then the announcement", order)
 	}
-}
-
-func TestOnlyTheClipboardBitSaysWhetherTheOtherEndTakesCopies(t *testing.T) {
-	if takesCopies(event.Features(1 << 8)) {
-		t.Error("a machine that announced only another feature counts as taking copies")
-	}
-	if !takesCopies(event.Features(event.FeatureClipboard | 1<<8)) {
-		t.Error("a machine that announced the clipboard and another feature does not count as taking copies")
+	if announced[0] != event.FeatureClipboard|1<<8 {
+		t.Errorf("the announcement carried %#x, want the features as they were when it was written, %#x", announced[0], event.FeatureClipboard|1<<8)
 	}
 }
