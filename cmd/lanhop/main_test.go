@@ -58,3 +58,9 @@ func TestHelpNamesEveryCommandAndThePairingPort(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageNamesTheStatusCommandThatTheInstallerLooksFor(t *testing.T) {
+	if !strings.Contains(usage, "lanhop status") {
+		t.Error(`the usage does not name "lanhop status", so install.sh would take this lanhop for one without it`)
+	}
+}

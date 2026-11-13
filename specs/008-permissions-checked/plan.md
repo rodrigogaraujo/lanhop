@@ -63,12 +63,15 @@ pairing ─► layout (share only)
         ▼
 check, polling "lanhop status" every second:
   accessibility ─► say what to allow, open the Accessibility pane, wait
-  connecting    ─► say that macOS asks about the local network, and that the answer is Allow
-  blocked       ─► after 5 seconds of it: say that macOS blocks lanhop, open the Local Network pane, wait
-  unreachable   ─► say the address cannot be reached and what to check on the central, end
-  failing       ─► print the line, keep waiting, end with it when the limit runs out
-  connected     ─► "Connected to NAME", end
+  connecting    ─► on a Mac that receives: say that macOS may ask about the local network, and that the answer is Allow
+  blocked       ─► the same sentence about Allow; after 15 seconds of it on a Mac, say that macOS blocks lanhop,
+                   open the Local Network pane, wait. On Linux, print the line once and wait
+  unreachable   ─► print the line once (it says what to check on the central), keep waiting
+  failing       ─► print the line once, keep waiting
+  stopped       ─► wait: launchd and systemd start lanhop again after 10 seconds. After 25 seconds of it, print the line, end
+  connected     ─► print the line, end
   share: firewall on ─► show the two socketfilterfw commands, run them with sudo if agreed
+         firewall blocking every connection ─► say to switch that off, in Firewall > Options
          waiting ─► wait up to 60 seconds for a side machine
          sharing ─► name the side machines, end
 ```
@@ -77,8 +80,8 @@ check, polling "lanhop status" every second:
 - **Where the app goes**: `/Applications` when the user can write it (members of the `admin` group can), `~/Applications` otherwise. An app that is already installed is updated where it is, so that the launch agent and the Accessibility permission keep pointing at it. `LANHOP_SYSTEM_ROOT` stands for `/` in the tests, as it already does for the udev rule.
 - **The command**: `LANHOP_INSTALL_DIR` (default `~/.local/bin`) gets a link named `lanhop` to the program inside the app. A file that is not a link, left by 0.1.0, is replaced by the link, and the installer says that old "lanhop" or "a.out" entries in System Settings can be removed.
 - **Pane addresses**: `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` and `...?Privacy_LocalNetwork`.
-- **Time limits**: 5 minutes for each permission, which a person has to give; 60 seconds for a side machine to reach the central. When a limit runs out, the installer prints the last status line and says that `lanhop status` shows it later.
-- **Nobody at the keyboard**: no pane is opened and nothing waits. The installer runs `lanhop status` once, prints it, and ends.
+- **Time limits**: 10 minutes for the whole check, counted on the clock, because a try from the terminal can take 3 seconds; 60 seconds for a side machine to reach the central. When the limit runs out, the installer prints the last status line and says that `lanhop status` shows it later. The check is the last thing the installer prints, so its last line is the status.
+- **Nobody at the keyboard**: no pane is opened and nothing waits for a person. The installer waits up to 10 seconds for the service to start, prints `lanhop status` once, and also prints the Accessibility steps when that is what the service waits for.
 - **An installed lanhop without `lanhop status`** (an older release through `LANHOP_VERSION`): the installer keeps the steps of 0.1.0, with the Accessibility pane and Enter. It finds out by looking for `lanhop status` in the program, without running it.
 - **Older releases**: when the archive has no `lanhop.app` (0.1.0), the installer installs the bare program as before.
 
@@ -105,7 +108,7 @@ It also removes the app (from `/Applications` or `~/Applications`, only the one 
 
 ## Tasks
 
-- [x] **0. Measure the identity on a real Mac.** The program of 0.1.0, unchanged, inside a hand-made `lanhop.app` with the `Info.plist` above, signed ad hoc with the identifier, started by the launch agent with `AssociatedBundleIdentifiers`. → Verify: after Accessibility and Local Network are given to the app, the log of the service says `Connected to`. Done on 2026-11-13 on a MacBook with macOS 26.5.2 (arm64): once the app was added under Accessibility, the service started by launchd connected to the central, and macOS keeps a Local Network setting for `com.github.rodrigogaraujo.lanhop`, switched on. Whether that setting came from the alert or was switched on by hand was not recorded. Not tried yet: after a restart, on an Intel Mac, on a Mac central, and after an update to a new build.
+- [x] **0. Measure the identity on a real Mac.** The program of 0.1.0, unchanged, inside a hand-made `lanhop.app` with the `Info.plist` above, signed ad hoc with the identifier, started by the launch agent with `AssociatedBundleIdentifiers`. → Verify: after Accessibility and Local Network are given to the app, the log of the service says `Connected to`. Done on 2026-11-13 on a MacBook with macOS 26.5.2 (arm64): once the app was added under Accessibility, the service started by launchd connected to the central, and macOS keeps a Local Network setting for `com.github.rodrigogaraujo.lanhop`, switched on. Whether that setting came from the alert or was switched on by hand was not recorded. Not tried yet: after a restart, on an Intel Mac, on a Mac central, and after an update to a new build. Reported later the same night by the agents on two more Macs (macOS 15.5 and 26.6.2, the second with Zscaler): the same hand-made app connected; the first try failed with `no route to host`, the Local Network alert came, and the next try connected.
 - [x] **1. The app in the release.** `packaging/macos/Info.plist`, the bundle and its signature in `release.yml`, and the ADR. → Verify: on a pull request, both macOS jobs pass the `codesign` checks and the archives hold `lanhop.app`.
 - [x] **2. Status.** The `status` file, `lanhop status`, and the wait for Accessibility. → Verify: unit tests for each state, for a dead process and for the `blocked` and `unreachable` cases against a local listener; the macOS job runs the tests that do not need a permission.
 - [x] **3. Installer: the app.** The app in Applications, the link, the agent with `AssociatedBundleIdentifiers`, the move from 0.1.0, uninstall. The install step of `release.yml` on a Mac stops being only for tags and runs on every pull request, with `LANHOP_SYSTEM_ROOT` set to a temporary directory. → Verify: `install_test.go` with a fake app archive, with `/Applications` writable and not, with a 0.1.0 install in place, and with an archive without the app; on a pull request, the Mac install step puts the app where the installer says.

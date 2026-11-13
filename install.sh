@@ -15,9 +15,11 @@ uinput_at_boot_path=$system_root/etc/modules-load.d/lanhop.conf
 accessibility_pane='x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
 local_network_pane='x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork'
 firewall_tool=$system_root/usr/libexec/ApplicationFirewall/socketfilterfw
-permission_wait=300
+check_limit=600
 central_wait=60
-blocked_patience=5
+blocked_patience=15
+stopped_patience=25
+start_wait=10
 service_started=no
 showing=no
 someone_answers=no
@@ -631,7 +633,11 @@ open_pane() {
 }
 
 firewall_is_on() {
-  [ -x "$firewall_tool" ] && "$firewall_tool" --getglobalstate 2>/dev/null | grep -q enabled
+  [ -x "$firewall_tool" ] && "$firewall_tool" --getglobalstate 2>/dev/null | grep -q -e enabled -e 'State = [12]'
+}
+
+firewall_blocks_everything() {
+  "$firewall_tool" --getblockall 2>/dev/null | grep -q -i enabled
 }
 
 let_the_app_through() {
@@ -641,6 +647,15 @@ let_the_app_through() {
 
 offer_firewall() {
   if [ "$role" != share ] || [ -z "$app" ] || ! firewall_is_on; then
+    return 0
+  fi
+  if firewall_blocks_everything; then
+    cat <<EOF
+
+The firewall of this Mac blocks every incoming connection, so the other machines
+cannot connect to lanhop here. In System Settings > Network > Firewall > Options,
+switch off "Block all incoming connections".
+EOF
     return 0
   fi
   cat <<EOF
@@ -704,42 +719,72 @@ knows_its_status() {
 }
 
 current_status() {
-  lanhop_as_the_service_runs_it status 2>/dev/null || true
+  line=$(lanhop_as_the_service_runs_it status 2>/dev/null || true)
+  if [ -z "$line" ]; then
+    line='silent: lanhop status said nothing. Run "lanhop status" to see why.'
+  fi
+  printf '%s\n' "$line"
+}
+
+seconds_now() {
+  date +%s
+}
+
+tell_once() {
+  case " $told " in
+    *" $1 "*) return 0 ;;
+  esac
+  told="$told $1"
+  say ""
+  say "$2"
 }
 
 ask_for_accessibility() {
-  if [ "$told_accessibility" = yes ]; then
-    return 0
-  fi
-  told_accessibility=yes
+  case " $told " in
+    *" accessibility "*) return 0 ;;
+  esac
+  told="$told accessibility"
   explain_accessibility
   open_pane "$accessibility_pane"
   say "Waiting until lanhop has the permission."
 }
 
 warn_about_the_local_network_alert() {
-  if [ "$told_alert" = yes ] || [ "$os" != darwin ] || [ "$role" != receive ]; then
+  if [ "$os" != darwin ] || [ "$role" != receive ]; then
     return 0
   fi
-  told_alert=yes
-  say ""
-  say "macOS may now ask whether lanhop may find devices on your local network. Click Allow."
+  tell_once alert "macOS may now ask whether lanhop may find devices on your local network. Click Allow."
 }
 
 ask_for_local_network() {
-  if [ "$told_local_network" = yes ]; then
-    return 0
-  fi
-  told_local_network=yes
+  case " $told " in
+    *" local-network "*) return 0 ;;
+  esac
+  told="$told local-network"
   cat <<EOF
 
 macOS keeps lanhop off the local network, so lanhop cannot reach the other machine.
 In System Settings > Privacy & Security > Local Network, switch on lanhop.
-An "a.out" in that list is the lanhop of an earlier install: it can be removed.
+An "a.out" in that list is the lanhop of an earlier install, and switching it does
+nothing for the app.
 
 EOF
   open_pane "$local_network_pane"
   say "Waiting until lanhop connects."
+}
+
+report_status_once() {
+  begun=$(seconds_now)
+  line=$(current_status)
+  while [ "${line%%:*}" = stopped ] && [ $(($(seconds_now) - begun)) -lt "$start_wait" ]; do
+    sleep 1
+    line=$(current_status)
+  done
+  if [ "${line%%:*}" = accessibility ]; then
+    explain_accessibility
+  fi
+  say "lanhop says: $line"
+  say "\"lanhop status\" says it again at any time."
 }
 
 check_service() {
@@ -748,49 +793,62 @@ check_service() {
   fi
   say ""
   if [ "$someone_answers" != yes ]; then
-    say "lanhop says: $(current_status)"
-    say "\"lanhop status\" says it again at any time."
+    report_status_once
     return 0
   fi
   say "Checking lanhop as it runs at login."
-  told_accessibility=no
-  told_alert=no
-  told_local_network=no
+  told=
   previous=
-  waited=0
+  begun=$(seconds_now)
+  since=$begun
   while :; do
     line=$(current_status)
     state=${line%%:*}
+    now=$(seconds_now)
     if [ "$state" != "$previous" ]; then
       previous=$state
-      waited=0
+      since=$now
     fi
+    in_state=$((now - since))
     case $state in
-      connected | sharing | unreachable)
+      connected | sharing)
+        say ""
         say "$line"
         return 0
         ;;
       accessibility) ask_for_accessibility ;;
       connecting) warn_about_the_local_network_alert ;;
       blocked)
-        if [ "$waited" -ge "$blocked_patience" ]; then
+        warn_about_the_local_network_alert
+        if [ "$os" != darwin ]; then
+          tell_once blocked "$line"
+        elif [ "$in_state" -ge "$blocked_patience" ]; then
           ask_for_local_network
         fi
         ;;
+      unreachable | failing) tell_once "$state" "$line" ;;
+      stopped | silent)
+        if [ "$in_state" -ge "$stopped_patience" ]; then
+          say ""
+          say "$line"
+          return 0
+        fi
+        ;;
       waiting)
-        if [ "$waited" -ge "$central_wait" ]; then
-          say "lanhop is ready on this machine, and no other machine is connected yet. Each of them says so when it connects."
+        if [ "$in_state" -ge "$central_wait" ]; then
+          say ""
+          say "lanhop is ready on this machine, and no other machine is connected yet. The installer on each of them says so when it connects."
           return 0
         fi
         ;;
     esac
-    if [ "$waited" -ge "$permission_wait" ]; then
+    if [ $((now - begun)) -ge "$check_limit" ]; then
+      say ""
       say "lanhop is not connected yet. It says: $line"
       say "\"lanhop status\" says it again at any time."
       return 0
     fi
     sleep 1
-    waited=$((waited + 1))
   done
 }
 
@@ -827,9 +885,9 @@ install_lanhop() {
   if [ "$role" = share ]; then
     explain_layout
   fi
-  check_service
   say ""
   say "To remove lanhop: $install_command -s -- --uninstall"
+  check_service
 }
 
 disable_unit() {
