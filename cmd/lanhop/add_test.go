@@ -15,6 +15,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
+	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
@@ -157,8 +158,11 @@ func TestAddPrintsAJoinLineAndStoresTheMachineThatJoins(t *testing.T) {
 
 func TestAMachineAddedBeyondTheHotkeysIsToldItHasNone(t *testing.T) {
 	central := useConfigDirectory(t)
-	for seed := range byte(lastHotkeyDigit - firstSideMachineDigit + 1) {
-		trustAlready(t, central, trust.Peer{Name: fmt.Sprintf("side-%d", seed), Fingerprint: someFingerprint(seed + 1)})
+	for position := 0; ; position++ {
+		if _, reachable := sharer.HotkeyNumber(position); !reachable {
+			break
+		}
+		trustAlready(t, central, trust.Peer{Name: fmt.Sprintf("side-%d", position), Fingerprint: someFingerprint(byte(position + 1))})
 	}
 	output, finished := runningAdd(t, "ninth")
 	if err := joinAs(t, newJoiningMachine(t), output); err != nil {
