@@ -16,6 +16,7 @@ const (
 	DefaultSilenceLimit     = 3 * time.Second
 	defaultHandshakeTimeout = 5 * time.Second
 	pendingHandshakes       = 16
+	defaultDataWindow       = 10 * time.Second
 )
 
 var (
@@ -33,7 +34,12 @@ type Config struct {
 	PingInterval     time.Duration
 	SilenceLimit     time.Duration
 	HandshakeTimeout time.Duration
+	DataWindow       time.Duration
+	DataPace         *Pace
 	OnReject         func(remote net.Addr, reason error)
+
+	now                func() time.Time
+	drawTransferNumber func() (int32, error)
 }
 
 func (c Config) withDefaults() Config {
@@ -45,6 +51,18 @@ func (c Config) withDefaults() Config {
 	}
 	if c.HandshakeTimeout == 0 {
 		c.HandshakeTimeout = defaultHandshakeTimeout
+	}
+	if c.DataWindow == 0 {
+		c.DataWindow = defaultDataWindow
+	}
+	if c.DataPace == nil {
+		c.DataPace = paceOfThisMachine
+	}
+	if c.now == nil {
+		c.now = time.Now
+	}
+	if c.drawTransferNumber == nil {
+		c.drawTransferNumber = drawTransferNumber
 	}
 	return c
 }

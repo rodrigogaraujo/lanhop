@@ -92,11 +92,15 @@ func exchangeHello(secured *tls.Conn) error {
 	if err != nil {
 		return err
 	}
-	if !reply.IsControl() || reply.Code != event.ControlHello {
+	return checkHello(reply)
+}
+
+func checkHello(greeting event.Event) error {
+	if !greeting.IsControl() || greeting.Code != event.ControlHello {
 		return ErrNotLanhop
 	}
-	if reply.Value != event.ProtocolVersion {
-		return fmt.Errorf("%w: it speaks version %d, this machine speaks version %d", ErrVersion, reply.Value, event.ProtocolVersion)
+	if greeting.Value != event.ProtocolVersion {
+		return fmt.Errorf("%w: it speaks version %d, this machine speaks version %d", ErrVersion, greeting.Value, event.ProtocolVersion)
 	}
 	return nil
 }

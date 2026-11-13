@@ -1,6 +1,9 @@
 package event
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestControlEventsAreOutsideTheKernelTypeRange(t *testing.T) {
 	const kernelTypeMax = 0x1f
@@ -14,6 +17,11 @@ func TestControlEventsAreOutsideTheKernelTypeRange(t *testing.T) {
 		"clipboard data": ClipboardData(0),
 		"clipboard ack":  ClipboardAck(1),
 		"unchanged":      ClipboardUnchanged(),
+		"data hello":     DataHello(1),
+		"file copy":      FileCopy(1),
+		"file copy size": FileCopySize(1),
+		"open data":      OpenData(1, true),
+		"data stop":      DataStop(1),
 	} {
 		if !e.IsControl() {
 			t.Errorf("%s is not a control event", name)
@@ -68,7 +76,10 @@ func TestHelloCarriesTheProtocolVersion(t *testing.T) {
 
 func TestControlCodesAreDistinct(t *testing.T) {
 	seen := map[uint16]bool{}
-	for _, e := range []Event{Hello(), Ping(), Enter(), Leave(), Features(0), Clipboard(1), ClipboardData(0), ClipboardAck(1), ClipboardUnchanged()} {
+	for _, e := range []Event{
+		Hello(), Ping(), Enter(), Leave(), Features(0), Clipboard(1), ClipboardData(0), ClipboardAck(1), ClipboardUnchanged(),
+		DataHello(1), FileCopy(1), FileCopySize(1), OpenData(1, false), DataStop(1),
+	} {
 		if seen[e.Code] {
 			t.Errorf("control code %d is used twice", e.Code)
 		}
@@ -93,5 +104,52 @@ func TestClipboardFramesKeepTheirControlCodes(t *testing.T) {
 		if test.got != test.want {
 			t.Errorf("%s = %+v, want %+v", test.name, test.got, test.want)
 		}
+	}
+}
+
+func TestFileFramesKeepTheirControlCodes(t *testing.T) {
+	const control uint16 = 0xFF00
+	tests := []struct {
+		name string
+		got  Event
+		want Event
+	}{
+		{"data hello", DataHello(7), Event{Type: control, Code: 10, Value: 7}},
+		{"file copy", FileCopy(10000), Event{Type: control, Code: 11, Value: 10000}},
+		{"file copy size of 4 GiB", FileCopySize(4 << 20), Event{Type: control, Code: 12, Value: 4194304}},
+		{"open data, the central sends", OpenData(5, false), Event{Type: control, Code: 13, Value: 5}},
+		{"open data, the side machine sends", OpenData(5, true), Event{Type: control, Code: 13, Value: math.MinInt32 | 5}},
+		{"open data with the largest number", OpenData(math.MaxInt32, true), Event{Type: control, Code: 13, Value: -1}},
+		{"data stop", DataStop(7), Event{Type: control, Code: 14, Value: 7}},
+	}
+	for _, test := range tests {
+		if test.got != test.want {
+			t.Errorf("%s = %+v, want %+v", test.name, test.got, test.want)
+		}
+	}
+}
+
+func TestFileFramesStayBetweenCodes10And14(t *testing.T) {
+	for _, e := range []Event{DataHello(1), FileCopy(1), FileCopySize(1), OpenData(1, true), DataStop(1)} {
+		if e.Code < 10 || e.Code > 14 {
+			t.Errorf("a file frame uses control code %d, outside 10 to 14", e.Code)
+		}
+	}
+}
+
+func TestOpenDataGivesBackTheTransferNumberAndTheWay(t *testing.T) {
+	for _, transfer := range []int32{1, 5, 1 << 30, TransferNumberMax} {
+		for _, sideMachineSends := range []bool{false, true} {
+			gotTransfer, gotWay := SplitOpenData(OpenData(transfer, sideMachineSends).Value)
+			if gotTransfer != transfer || gotWay != sideMachineSends {
+				t.Errorf("OpenData(%d, %t) splits into %d, %t", transfer, sideMachineSends, gotTransfer, gotWay)
+			}
+		}
+	}
+}
+
+func TestTransferNumbersUseTheLow31Bits(t *testing.T) {
+	if TransferNumberMax != 1<<31-1 {
+		t.Errorf("TransferNumberMax = %d, want %d", TransferNumberMax, 1<<31-1)
 	}
 }

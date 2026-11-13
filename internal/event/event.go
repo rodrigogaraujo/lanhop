@@ -1,5 +1,7 @@
 package event
 
+import "math"
+
 type Event struct {
 	Type  uint16
 	Code  uint16
@@ -28,9 +30,20 @@ const (
 	ControlClipboardAck  uint16 = 8
 
 	ControlClipboardUnchanged uint16 = 9
+
+	ControlDataHello    uint16 = 10
+	ControlFileCopy     uint16 = 11
+	ControlFileCopySize uint16 = 12
+	ControlOpenData     uint16 = 13
+	ControlDataStop     uint16 = 14
 )
 
 const FeatureClipboard int32 = 1 << 0
+
+const (
+	TransferNumberMax   int32 = math.MaxInt32
+	sideMachineSendsBit int32 = math.MinInt32
+)
 
 const SyncReport uint16 = 0x00
 
@@ -119,6 +132,34 @@ func ClipboardAck(framesRead int32) Event {
 
 func ClipboardUnchanged() Event {
 	return Event{Type: TypeControl, Code: ControlClipboardUnchanged}
+}
+
+func DataHello(transfer int32) Event {
+	return Event{Type: TypeControl, Code: ControlDataHello, Value: transfer}
+}
+
+func FileCopy(filesAndFolders int32) Event {
+	return Event{Type: TypeControl, Code: ControlFileCopy, Value: filesAndFolders}
+}
+
+func FileCopySize(kibibytesRoundedUp int32) Event {
+	return Event{Type: TypeControl, Code: ControlFileCopySize, Value: kibibytesRoundedUp}
+}
+
+func OpenData(transfer int32, sideMachineSends bool) Event {
+	value := transfer & TransferNumberMax
+	if sideMachineSends {
+		value |= sideMachineSendsBit
+	}
+	return Event{Type: TypeControl, Code: ControlOpenData, Value: value}
+}
+
+func SplitOpenData(value int32) (transfer int32, sideMachineSends bool) {
+	return value & TransferNumberMax, value&sideMachineSendsBit != 0
+}
+
+func DataStop(transfer int32) Event {
+	return Event{Type: TypeControl, Code: ControlDataStop, Value: transfer}
 }
 
 func (e Event) IsControl() bool {
