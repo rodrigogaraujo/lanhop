@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: first release, v0.1.0.** One person has used it on one desk: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On another night, an x86-64 machine running macOS ran the 0.1.0 build for x86-64 as the machine with the keyboard, and three Macs and a Linux machine each connected to it; the three Macs ran a `lanhop.app` made by hand. The installer of 0.1.0 ran on Macs that night and did not get them connected; the installer that checks every permission has not run on a real machine yet. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: v0.1.1.** On macOS, lanhop is now an app, `lanhop.app`, with an identifier of its own, so that macOS can apply the Local Network permission to it. The installer now checks lanhop as it runs at login: on a Mac it opens the pane of each permission that is missing, Accessibility and Local Network, and it ends when the machine is connected or says what is still missing. The `lanhop.app`, `lanhop status` and the installer of this version have been checked only by automated tests, and no person has run them on a real machine yet. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -11,7 +11,7 @@ Share one keyboard and mouse across the computers on your desk, over the local n
 lanhop explores a narrower design:
 
 - **Kernel-level input on Linux.** It reads from `evdev` and writes to `uinput`, so the same code works on X11, on any Wayland compositor and on a text console. It does not depend on what the desktop environment exposes.
-- **One static binary, no runtime dependencies.** The Linux build uses only the Go standard library.
+- **One binary, no runtime dependencies.** The Linux build is static and uses only the Go standard library.
 - **Encrypted and authenticated by default.** A tool that carries keystrokes over the network must never have a plaintext mode.
 - **Small enough to read.** The whole wire format is one 8-byte frame.
 
@@ -47,14 +47,14 @@ The installer asks before each step:
 
 `lanhop status` says the same at any time: whether lanhop is waiting for a permission, trying to connect, connected, or why it stopped.
 
-Without a terminal to ask on, it installs the binary and changes nothing else. To read the script before running it, download [install.sh](install.sh) and run `sh install.sh`.
+Without a terminal to ask on, it installs lanhop and changes nothing else. To read the script before running it, download [install.sh](install.sh) and run `sh install.sh`.
 
 | Variable | What it does |
 |---|---|
-| `LANHOP_VERSION=v0.1.0` | Installs that release instead of the latest one |
+| `LANHOP_VERSION=v0.1.1` | Installs that release instead of the latest one |
 | `LANHOP_INSTALL_DIR=DIR` | Puts the binary in `DIR` instead of `~/.local/bin`. On macOS, `DIR` gets the `lanhop` command, and the app still goes to Applications |
 | `LANHOP_ROLE=share` or `receive` | Answers the question about the keyboard and mouse |
-| `LANHOP_YES=1` | Agrees to every step and asks nothing, for installs with nobody at the keyboard. Pairing still needs a person, and the check at the end prints what `lanhop status` says without waiting |
+| `LANHOP_YES=1` | Agrees to every step and asks nothing, for installs with nobody at the keyboard. Pairing still needs a person, and the check at the end prints what `lanhop status` says without waiting for a permission or a connection |
 
 A variable goes before `sh`, not before `curl`:
 
@@ -86,7 +86,7 @@ Each release also has the archives themselves, one per system and architecture, 
     - [ ] A hotkey that locks focus, and settings for the push time, the corner size and the cursor speed
 - [ ] Windows
 - [ ] Automatic discovery on the local network
-- [ ] Clipboard sharing
+- [ ] Clipboard sharing ([spec 005](specs/005-clipboard-sharing/spec.md)): the messages that carry a copy are built; lanhop does not use them yet, so nothing is copied between machines
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
   - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 is meant to fix
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
