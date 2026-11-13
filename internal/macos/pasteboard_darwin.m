@@ -92,10 +92,20 @@ static char *lanhopCopy(NSData *data, int64_t *length) {
 	if (copy == NULL) {
 		return NULL;
 	}
-	memcpy(copy, [data bytes], [data length]);
+	if ([data length] > 0) {
+		memcpy(copy, [data bytes], [data length]);
+	}
 	copy[[data length]] = '\0';
 	*length = (int64_t)[data length];
 	return copy;
+}
+
+static BOOL lanhopIsLocalFileURL(NSURL *url) {
+	if (![url isFileURL] || [url user] != nil || [url query] != nil || [url fragment] != nil) {
+		return NO;
+	}
+	NSString *host = [url host];
+	return [host length] == 0 || [host caseInsensitiveCompare:@"localhost"] == NSOrderedSame;
 }
 
 int lanhop_pasteboard_read_files(const char *name, int64_t limit, char **paths, int64_t *length, int64_t *count) {
@@ -108,7 +118,7 @@ int lanhop_pasteboard_read_files(const char *name, int64_t limit, char **paths, 
 		if (![types containsObject:NSPasteboardTypeFileURL]) {
 			return LANHOP_PASTEBOARD_NOT_FILES;
 		}
-		NSArray<NSURL *> *urls = [board readObjectsForClasses:@[ [NSURL class] ] options:@{ NSPasteboardURLReadingFileURLsOnlyKey : @YES }];
+		NSArray<NSURL *> *urls = [board readObjectsForClasses:@[ [NSURL class] ] options:nil];
 		*count = (int64_t)[urls count];
 		if (*count == 0) {
 			return LANHOP_PASTEBOARD_NOT_FILES;
@@ -118,6 +128,9 @@ int lanhop_pasteboard_read_files(const char *name, int64_t limit, char **paths, 
 		}
 		NSMutableData *joined = [NSMutableData data];
 		for (NSURL *url in urls) {
+			if (!lanhopIsLocalFileURL(url)) {
+				return LANHOP_PASTEBOARD_NOT_FILES;
+			}
 			NSString *path = [[url filePathURL] path];
 			if (path == nil || !lanhopAppendTerminated(joined, path)) {
 				return LANHOP_PASTEBOARD_NOT_FILES;
@@ -131,37 +144,66 @@ int lanhop_pasteboard_read_files(const char *name, int64_t limit, char **paths, 
 	}
 }
 
+static NSURL *lanhopURLOfPath(const char *path) {
+	struct stat info;
+	BOOL directory = stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+	return [NSURL fileURLWithFileSystemRepresentation:path isDirectory:directory relativeToURL:nil];
+}
+
+static NSURL *lanhopURLOfAddress(const char *address) {
+	NSString *string = [NSString stringWithUTF8String:address];
+	if (string == nil) {
+		return nil;
+	}
+	return [NSURL URLWithString:string];
+}
+
+static NSArray<NSURL *> *lanhopURLs(const char *joined, int64_t length, NSURL *(*urlOf)(const char *)) {
+	NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+	const char *entry = joined;
+	const char *end = joined + length;
+	while (entry < end) {
+		size_t size = strnlen(entry, (size_t)(end - entry));
+		if (size == 0 || size == (size_t)(end - entry)) {
+			return nil;
+		}
+		NSURL *url = urlOf(entry);
+		if (url == nil) {
+			return nil;
+		}
+		[urls addObject:url];
+		entry += size + 1;
+	}
+	if ([urls count] == 0) {
+		return nil;
+	}
+	return urls;
+}
+
+static int64_t lanhopWriteURLs(const char *name, NSArray<NSURL *> *urls, int markPrivate) {
+	if (urls == nil) {
+		return LANHOP_PASTEBOARD_REFUSED;
+	}
+	NSPasteboard *board = lanhopBoard(name);
+	[board clearContents];
+	if (![board writeObjects:urls]) {
+		return LANHOP_PASTEBOARD_REFUSED;
+	}
+	if (markPrivate && ![board setString:@"" forType:lanhopConcealedType]) {
+		return LANHOP_PASTEBOARD_REFUSED;
+	}
+	return (int64_t)[board changeCount];
+}
+
 int64_t lanhop_pasteboard_write_files(const char *name, const char *paths, int64_t length, int markPrivate) {
 	@autoreleasepool {
-		NSMutableArray<NSURL *> *urls = [NSMutableArray array];
-		const char *path = paths;
-		const char *end = paths + length;
-		while (path < end) {
-			size_t size = strnlen(path, (size_t)(end - path));
-			if (size == 0 || size == (size_t)(end - path)) {
-				return LANHOP_PASTEBOARD_REFUSED;
-			}
-			struct stat info;
-			BOOL directory = stat(path, &info) == 0 && S_ISDIR(info.st_mode);
-			NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path isDirectory:directory relativeToURL:nil];
-			if (url == nil) {
-				return LANHOP_PASTEBOARD_REFUSED;
-			}
-			[urls addObject:url];
-			path += size + 1;
-		}
-		if ([urls count] == 0) {
-			return LANHOP_PASTEBOARD_REFUSED;
-		}
-		NSPasteboard *board = lanhopBoard(name);
-		[board clearContents];
-		if (![board writeObjects:urls]) {
-			return LANHOP_PASTEBOARD_REFUSED;
-		}
-		if (markPrivate && ![board setString:@"" forType:lanhopConcealedType]) {
-			return LANHOP_PASTEBOARD_REFUSED;
-		}
-		return (int64_t)[board changeCount];
+		return lanhopWriteURLs(name, lanhopURLs(paths, length, lanhopURLOfPath), markPrivate);
+	}
+}
+
+int64_t lanhop_pasteboard_write_urls(const char *name, const char *addresses, int64_t length) {
+	@autoreleasepool {
+		return lanhopWriteURLs(name, lanhopURLs(addresses, length, lanhopURLOfAddress), 0);
 	}
 }
 
@@ -194,6 +236,19 @@ int lanhop_pasteboard_types(const char *name, char **types, int64_t *length) {
 		}
 		*types = lanhopCopy(joined, length);
 		return *types != NULL;
+	}
+}
+
+int lanhop_pasteboard_file_urls(const char *name, char **urls, int64_t *length) {
+	@autoreleasepool {
+		NSMutableData *joined = [NSMutableData data];
+		for (NSPasteboardItem *item in [lanhopBoard(name) pasteboardItems]) {
+			if (!lanhopAppendTerminated(joined, [item stringForType:NSPasteboardTypeFileURL])) {
+				return 0;
+			}
+		}
+		*urls = lanhopCopy(joined, length);
+		return *urls != NULL;
 	}
 }
 

@@ -18,8 +18,10 @@ int lanhop_pasteboard_read(const char *name, int64_t limit, char **text, int64_t
 int64_t lanhop_pasteboard_write(const char *name, const char *text, int64_t length, int markPrivate);
 int lanhop_pasteboard_read_files(const char *name, int64_t limit, char **paths, int64_t *length, int64_t *count);
 int64_t lanhop_pasteboard_write_files(const char *name, const char *paths, int64_t length, int markPrivate);
+int64_t lanhop_pasteboard_write_urls(const char *name, const char *addresses, int64_t length);
 int64_t lanhop_pasteboard_write_typed(const char *name, const char *type, const char *data, int64_t dataLength, const char *text, int64_t length);
 int lanhop_pasteboard_types(const char *name, char **types, int64_t *length);
+int lanhop_pasteboard_file_urls(const char *name, char **urls, int64_t *length);
 char *lanhop_file_reference_url(const char *path);
 void lanhop_pasteboard_empty(const char *name);
 void lanhop_pasteboard_release(const char *name);

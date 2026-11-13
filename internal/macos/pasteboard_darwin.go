@@ -23,6 +23,7 @@ var (
 	ErrPasteboardRefused      = errors.New("macos: the pasteboard did not take the text")
 	ErrPasteboardRefusedFiles = errors.New("macos: the pasteboard did not take the files")
 	ErrNotAbsolute            = errors.New("macos: a path to put on the pasteboard is not absolute")
+	ErrNULInPath              = errors.New("macos: a path to put on the pasteboard holds a NUL byte")
 	ErrOutOfMemory            = errors.New("macos: out of memory while reading the file copy")
 )
 
@@ -120,30 +121,32 @@ func (p Pasteboard) writeFiles(paths []string, markPrivate bool) (int64, error) 
 	if len(paths) == 0 {
 		return 0, clipboard.ErrEmpty
 	}
-	var joined strings.Builder
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
 			return 0, fmt.Errorf("%w: %q", ErrNotAbsolute, path)
 		}
 		if strings.IndexByte(path, 0) >= 0 {
-			return 0, fmt.Errorf("%w: %q holds a NUL byte", ErrPasteboardRefusedFiles, path)
+			return 0, fmt.Errorf("%w: %q", ErrNULInPath, path)
 		}
-		joined.WriteString(path)
-		joined.WriteByte(0)
 	}
 	name := p.cName()
 	defer C.free(unsafe.Pointer(name))
-	bytes := C.CString(joined.String())
+	joined := joinTerminated(paths)
+	bytes := C.CString(joined)
 	defer C.free(unsafe.Pointer(bytes))
 	private := C.int(0)
 	if markPrivate {
 		private = 1
 	}
-	mark := int64(C.lanhop_pasteboard_write_files(name, bytes, C.int64_t(joined.Len()), private))
+	mark := int64(C.lanhop_pasteboard_write_files(name, bytes, C.int64_t(len(joined)), private))
 	if mark == C.LANHOP_PASTEBOARD_REFUSED {
 		return 0, ErrPasteboardRefusedFiles
 	}
 	return mark, nil
+}
+
+func joinTerminated(entries []string) string {
+	return strings.Join(entries, "\x00") + "\x00"
 }
 
 func splitTerminated(joined string) []string {
@@ -180,14 +183,38 @@ func (p Pasteboard) writeTyped(kind, data string, text *string) error {
 	return nil
 }
 
+func (p Pasteboard) writeURLs(addresses ...string) error {
+	name := p.cName()
+	defer C.free(unsafe.Pointer(name))
+	joined := joinTerminated(addresses)
+	bytes := C.CString(joined)
+	defer C.free(unsafe.Pointer(bytes))
+	if C.lanhop_pasteboard_write_urls(name, bytes, C.int64_t(len(joined))) == C.LANHOP_PASTEBOARD_REFUSED {
+		return ErrPasteboardRefusedFiles
+	}
+	return nil
+}
+
 func (p Pasteboard) types() []string {
+	return p.listed(func(name *C.char, joined **C.char, length *C.int64_t) C.int {
+		return C.lanhop_pasteboard_types(name, joined, length)
+	})
+}
+
+func (p Pasteboard) fileURLs() []string {
+	return p.listed(func(name *C.char, joined **C.char, length *C.int64_t) C.int {
+		return C.lanhop_pasteboard_file_urls(name, joined, length)
+	})
+}
+
+func (p Pasteboard) listed(list func(name *C.char, joined **C.char, length *C.int64_t) C.int) []string {
 	name := p.cName()
 	defer C.free(unsafe.Pointer(name))
 	var (
 		joined *C.char
 		length C.int64_t
 	)
-	if C.lanhop_pasteboard_types(name, &joined, &length) == 0 {
+	if list(name, &joined, &length) == 0 {
 		return nil
 	}
 	defer C.free(unsafe.Pointer(joined))

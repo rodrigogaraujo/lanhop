@@ -281,6 +281,24 @@ func TestACopyThatIsNotAListOfLocalFilesIsNotFiles(t *testing.T) {
 		"an empty pasteboard": func(Pasteboard) error {
 			return nil
 		},
+		"a file and a web address copied as URLs": func(p Pasteboard) error {
+			return p.writeURLs("file:///tmp/report.pdf", "https://example.com/notes.txt")
+		},
+		"a file on another host": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file://server/share/report.pdf", nil)
+		},
+		"a user name before the host": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file://someone@localhost/tmp/report.pdf", nil)
+		},
+		"a query after the path": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/report.pdf?x=1", nil)
+		},
+		"a fragment after the path": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/report.pdf#part", nil)
+		},
+		"a NUL byte in the path": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/nul%00byte.pdf", nil)
+		},
 	}
 	for name, copyOnto := range copies {
 		t.Run(name, func(t *testing.T) {
@@ -295,6 +313,32 @@ func TestACopyThatIsNotAListOfLocalFilesIsNotFiles(t *testing.T) {
 				t.Errorf("ReadFiles = %q, %v, want nothing and %v", got, err, clipboard.ErrNotFiles)
 			}
 		})
+	}
+}
+
+func TestFileAddressesCopiedAsURLsReadAsTheirPaths(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if err := p.writeURLs("file:///tmp/report.pdf", "file:///tmp/notes.txt"); err != nil {
+		t.Fatalf("writeURLs: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil || !slices.Equal(got, []string{"/tmp/report.pdf", "/tmp/notes.txt"}) {
+		t.Errorf("ReadFiles = %q, %v, want both files and no error", got, err)
+	}
+}
+
+func TestAFileURLOnLocalhostReadsAsTheLocalPath(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if err := p.writeTyped("public.file-url", "file://localhost/tmp/report.pdf", nil); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil || !slices.Equal(got, []string{"/tmp/report.pdf"}) {
+		t.Errorf("ReadFiles = %q, %v, want the local path and no error", got, err)
 	}
 }
 
@@ -391,6 +435,34 @@ func TestAFileCopyWrittenByLanhopHoldsFileURLsAndIsNotText(t *testing.T) {
 	}
 }
 
+func TestAFolderIsWrittenAsAFolderURLAndAFileIsNot(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "a folder")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "a file.txt")
+	if err := os.WriteFile(file, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notThereYet := filepath.Join(dir, "not there yet.txt")
+	p := pasteboardOfThisTest(t)
+	if _, err := p.WriteFiles([]string{folder, file, notThereYet}); err != nil {
+		t.Fatalf("WriteFiles: %v", err)
+	}
+
+	urls := p.fileURLs()
+
+	if len(urls) != 3 {
+		t.Fatalf("file URLs = %q, want one for each of the 3 paths", urls)
+	}
+	for i, isFolder := range []bool{true, false, false} {
+		if !strings.HasPrefix(urls[i], "file:///") || strings.HasSuffix(urls[i], "/") != isFolder {
+			t.Errorf("file URL %d = %q, want a file URL that ends in a slash only for the folder", i, urls[i])
+		}
+	}
+}
+
 func TestWritingFilesMovesTheMark(t *testing.T) {
 	p := pasteboardOfThisTest(t)
 	before := p.Mark()
@@ -408,15 +480,16 @@ func TestWritingFilesMovesTheMark(t *testing.T) {
 	}
 }
 
-func TestNoPathsOrARelativePathIsRefusedAndLeavesThePasteboardAlone(t *testing.T) {
+func TestNoPathsOrABadPathIsRefusedAndLeavesThePasteboardAlone(t *testing.T) {
 	cases := map[string]struct {
 		paths []string
 		want  error
 	}{
-		"no list":         {nil, clipboard.ErrEmpty},
-		"an empty list":   {[]string{}, clipboard.ErrEmpty},
-		"a relative path": {[]string{"/tmp/report.pdf", "photos/beach.jpg"}, ErrNotAbsolute},
-		"an empty path":   {[]string{""}, ErrNotAbsolute},
+		"no list":                {nil, clipboard.ErrEmpty},
+		"an empty list":          {[]string{}, clipboard.ErrEmpty},
+		"a relative path":        {[]string{"/tmp/report.pdf", "photos/beach.jpg"}, ErrNotAbsolute},
+		"an empty path":          {[]string{""}, ErrNotAbsolute},
+		"a path with a NUL byte": {[]string{"/tmp/report.pdf", "/tmp/nul\x00byte.pdf"}, ErrNULInPath},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
