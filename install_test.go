@@ -59,6 +59,7 @@ const (
 	unblockInFirewall   = "sudo {root}/usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp {root}/Applications/lanhop.app"
 	stopTheAgent        = "launchctl bootout gui/501/com.github.rodrigogaraujo.lanhop"
 	startTheAgent       = "launchctl bootstrap gui/501 {home}/" + agentFile
+	restartTheAgent     = "launchctl kickstart -k gui/501/com.github.rodrigogaraujo.lanhop"
 	notInTheInputGroup  = "ana staff"
 	alreadyInInputGroup = "ana input staff"
 )
@@ -85,6 +86,15 @@ status)
   fi
   ;;
 esac
+`
+
+const fakeLaunchctlThatFailsTheFirstBootstrap = `#!/bin/sh
+echo "launchctl $*" >>'%[1]s'
+if [ "$1" = bootstrap ] && [ ! -e '%[2]s' ]; then
+  : >'%[2]s'
+  echo 'Bootstrap failed: 5: Input/output error' >&2
+  exit 5
+fi
 `
 
 const fakeSleep = `#!/bin/sh
@@ -238,6 +248,13 @@ func (r *releases) publish(directory, version string) {
 func (r *releases) withTheStatus() *releases {
 	r.t.Helper()
 	r.usage = usageWithTheEditor + "\n" + usageWithTheStatus
+	r.publish(latestRelease, "1.0.0")
+	return r
+}
+
+func (r *releases) thatAsksAgainByItself() *releases {
+	r.t.Helper()
+	r.usage = usageWithTheEditor + "\n" + usageWithTheStatus + "\nlanhop ended to ask macOS again for the Accessibility permission"
 	r.publish(latestRelease, "1.0.0")
 	return r
 }
@@ -2064,5 +2081,67 @@ func TestTheFirewallStepThatIsRefusedRunsNothing(t *testing.T) {
 		output := m.mustRun()
 		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent))
 		expectMention(t, output, shownToTheUser(m.named(addToTheFirewall, unblockInFirewall)...), "Not run. The other machines cannot connect until the firewall lets lanhop in")
+	})
+}
+
+func TestTheInstallerRestartsAServiceThatStillWaitsForAccessibilitySoThatItSeesThePermission(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		states := []string{}
+		for range 20 {
+			states = append(states, waitsForAccessibility)
+		}
+		published.statusSays(append(states, connectedToTheCentral)...)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent, openAccessibility, restartTheAgent))
+		expectMention(t, output, "1. If the list already has a lanhop or an a.out, select it and remove it with the\n     - button.")
+		expectLastLine(t, output, connectedToTheCentral)
+	})
+}
+
+func TestABootstrapThatFailsRightAfterTheStopIsTriedAgain(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.withRealSystemCommands()
+		fake := fmt.Sprintf(fakeLaunchctlThatFailsTheFirstBootstrap, filepath.Join(m.aside, "system commands"), filepath.Join(m.aside, "bootstrap failed once"))
+		writeFile(t, filepath.Join(m.aside, "bin", "launchctl"), []byte(fake), 0o755)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "system commands that ran", m.systemCommandsRun(), m.named(openAccessibility, stopTheAgent, startTheAgent, startTheAgent))
+		expectMention(t, output, "lanhop is running, and it starts every time you log in.")
+		if strings.Contains(output, "launchd did not start it now") || strings.Contains(output, "Bootstrap failed") {
+			t.Errorf("the installer gave up after the first bootstrap:\n%s", output)
+		}
+	})
+}
+
+func TestALanhopThatAsksAgainByItselfIsNotRestartedByTheInstaller(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).thatAsksAgainByItself()
+		states := []string{}
+		for range 20 {
+			states = append(states, waitsForAccessibility)
+		}
+		published.statusSays(append(states, connectedToTheCentral)...)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.typing("n", "y", "")
+		output := m.mustRun()
+		expectSame(t, "system commands", commandsIn(output), m.named(stopTheAgent, startTheAgent, openAccessibility))
+		expectMention(t, output, "lanhop notices the permission by itself within about 20 seconds.")
+	})
+}
+
+func TestALanhopThatDoesNotAskAgainGetsTheCommandThatRestartsIt(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.statusSays(waitsForAccessibility)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectMention(t, output, "If lanhop does not notice the permission, restart it with:\n  launchctl kickstart -k gui/501/com.github.rodrigogaraujo.lanhop")
 	})
 }

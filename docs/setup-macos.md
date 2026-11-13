@@ -35,7 +35,7 @@ You grant each one once per Mac.
 2. Click the **+** button under the list. macOS asks for your password or Touch ID.
 3. Choose the program that starts lanhop (see the table below) and click **Open**.
 4. Make sure the switch next to it is **on**.
-5. If you chose your terminal or your editor, quit it completely and open it again: the permission applies only to programs started after you granted it. The lanhop app that starts at login waits for the permission and carries on by itself.
+5. If you chose your terminal or your editor, quit it completely and open it again: the permission applies only to programs started after you granted it. The lanhop app that starts at login waits for the permission and carries on by itself within about 20 seconds, from the release after 0.1.1. lanhop 0.1.1 needs a restart: `launchctl kickstart -k gui/$(id -u)/com.github.rodrigogaraujo.lanhop`.
 
 ### Which program to choose
 
@@ -89,7 +89,7 @@ It writes a launch agent to `~/Library/LaunchAgents/com.github.rodrigogaraujo.la
 
 - The program to allow under Accessibility is then the **lanhop** app: see [Adding the lanhop app](#adding-the-lanhop-app). On a Mac that is controlled from another machine, it also needs [Local Network](#the-local-network-permission).
 - lanhop writes what it prints to `~/Library/Logs/lanhop.log`, and what it is doing to `~/Library/Application Support/lanhop/status`, which `lanhop status` reads.
-- Without Accessibility, lanhop waits and carries on once you allow it. When it ends with an error, such as on a Mac that receives, before `lanhop pair`, macOS starts it again after 10 seconds. `pkill lanhop` ends it until the next login.
+- Without Accessibility, lanhop waits. Every 10 seconds it ends, and macOS starts it again within 10 seconds, so that the new process gets a fresh answer: it carries on within about 20 seconds of the moment you allow it, from the release after 0.1.1. When it ends with an error, such as on a Mac that receives, before `lanhop pair`, macOS starts it again after 10 seconds. `pkill lanhop` ends it until the next login.
 - `launchctl bootout gui/$(id -u)/com.github.rodrigogaraujo.lanhop` stops it now. It starts again at the next login for as long as the file exists.
 - After an update, macOS may treat the new app as another program. If `lanhop status` says `accessibility` although the switch under Accessibility is on, remove lanhop from that list with the **−** button and add the app again. If it says `blocked` although lanhop is on under Local Network, see [The Local Network permission](#the-local-network-permission). This has not been measured yet: [The macOS app is not signed by Apple](#the-macos-app-is-not-signed-by-apple) says why it may happen.
 

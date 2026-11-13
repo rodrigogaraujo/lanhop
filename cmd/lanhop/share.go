@@ -69,11 +69,14 @@ func share(args []string, stdout io.Writer) (err error) {
 	}
 
 	record := openStatus()
+	quiet := quietAboutThePermission(record)
 	defer func() { record.ended(err) }()
 	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopWaiting()
 	waiting := func() {
-		fmt.Fprintln(stdout, waitingForAccessibility)
+		if !quiet {
+			fmt.Fprintln(stdout, waitingForAccessibility)
+		}
 		record.set(status.Report{State: status.Accessibility})
 	}
 	if err := waitUntilAllowedToShare(interrupted, waiting); err != nil {

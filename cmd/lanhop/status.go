@@ -36,6 +36,17 @@ func (f statusFile) set(report status.Report) {
 	f.owner.Write(report)
 }
 
+func (f statusFile) lastReport() status.Report {
+	if f.directory == "" {
+		return status.Report{}
+	}
+	report, err := status.Read(f.directory)
+	if err != nil {
+		return status.Report{}
+	}
+	return report
+}
+
 func (f statusFile) ended(err error) {
 	if f.owner == nil {
 		return
