@@ -45,11 +45,12 @@ var (
 	ErrAlreadyJoined   = errors.New("pairing: this machine already trusts the central of this join code")
 	ErrOtherCentral    = errors.New("pairing: this machine already trusts another central")
 	ErrNotWaiting      = errors.New("pairing: the central is not waiting for a machine to join")
-	ErrWrongToken      = errors.New("pairing: the central refused the join code")
-	ErrTooManyAttempts = errors.New("pairing: three wrong join codes ended the wait")
+	ErrWrongToken      = errors.New("pairing: wrong join code")
+	ErrTooManyAttempts = fmt.Errorf("pairing: %d wrong join codes ended the wait", JoinAttempts)
 	ErrWaitOver        = errors.New("pairing: the wait for a machine to join is over")
 	ErrKnownToCentral  = errors.New("pairing: the central already trusts this machine")
 	ErrTooManyAtOnce   = errors.New("pairing: too many connections at once")
+	ErrBadJoinName     = fmt.Errorf("pairing: a name to join with must have 1 to %d letters, digits, hyphens or underscores", trust.MaxNameLength)
 )
 
 type WaitConfig struct {
@@ -84,9 +85,14 @@ type joinWait struct {
 	done     chan joinResult
 	slots    chan struct{}
 	serving  sync.WaitGroup
+	speaking sync.Mutex
 }
 
 func WaitForJoin(ctx context.Context, listener net.Listener, config WaitConfig) (trust.Peer, error) {
+	if !trust.ValidName(config.Name) || !trust.ValidName(config.OwnName) {
+		listener.Close()
+		return trust.Peer{}, fmt.Errorf("%w: %q, %q", ErrBadJoinName, config.Name, config.OwnName)
+	}
 	wait := &joinWait{
 		config: config,
 		open:   map[net.Conn]struct{}{},
@@ -146,8 +152,12 @@ func (w *joinWait) accept(listener net.Listener) error {
 		select {
 		case w.slots <- struct{}{}:
 		default:
-			w.reject(raw, ErrTooManyAtOnce)
 			raw.Close()
+			w.serving.Add(1)
+			go func() {
+				defer w.serving.Done()
+				w.reportWhileWaiting(raw, ErrTooManyAtOnce)
+			}()
 			continue
 		}
 		if !w.track(raw) {
@@ -188,25 +198,25 @@ func (w *joinWait) serve(raw net.Conn) {
 	}
 	secured := tls.Server(raw, anyCertificate(w.config.Identity))
 	if err := secured.Handshake(); err != nil {
-		w.reject(raw, err)
+		w.reportWhileWaiting(raw, err)
 		return
 	}
 	if err := writeMessage(secured, slices.Concat([]byte{tagCentral}, []byte(w.config.OwnName))); err != nil {
-		w.reject(raw, err)
+		w.reportWhileWaiting(raw, err)
 		return
 	}
 	message, err := readMessage(secured, 1+tokenBytes)
 	if err != nil {
-		w.reject(raw, err)
+		w.reportWhileWaiting(raw, err)
 		return
 	}
 	if len(message) != 1+tokenBytes || message[0] != tagJoin {
-		w.reject(raw, ErrMalformed)
+		w.reportWhileWaiting(raw, ErrMalformed)
 		return
 	}
 	presented := secured.ConnectionState().PeerCertificates
 	if len(presented) == 0 {
-		w.reject(raw, ErrMalformed)
+		w.reportWhileWaiting(raw, ErrMalformed)
 		return
 	}
 	if wrong := w.decide(secured, identity.FingerprintOf(presented[0]), message[1:]); wrong != nil {
@@ -219,6 +229,9 @@ func (w *joinWait) decide(secured *tls.Conn, fingerprint identity.Fingerprint, t
 	defer w.mutex.Unlock()
 	if w.finished {
 		return nil
+	}
+	if err := secured.SetWriteDeadline(time.Now().Add(w.config.firstMessageLimit())); err != nil {
+		return err
 	}
 	if subtle.ConstantTimeCompare(token, w.config.Code.token[:]) != 1 {
 		w.attempts++
@@ -266,7 +279,7 @@ func (w *joinWait) end(result joinResult) {
 	}
 }
 
-func (w *joinWait) reject(conn net.Conn, reason error) {
+func (w *joinWait) reportWhileWaiting(conn net.Conn, reason error) {
 	w.mutex.Lock()
 	finished := w.finished
 	w.mutex.Unlock()
@@ -279,6 +292,8 @@ func (w *joinWait) report(conn net.Conn, reason error) {
 	if w.config.Rejected == nil {
 		return
 	}
+	w.speaking.Lock()
+	defer w.speaking.Unlock()
 	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {
 		host = conn.RemoteAddr().String()

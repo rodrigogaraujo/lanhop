@@ -334,10 +334,8 @@ func TestStrayConnectionsCostNoAttemptAndDoNotDelayAJoin(t *testing.T) {
 	if wrong := wait.rejected.because(ErrWrongToken); len(wrong) != 0 {
 		t.Errorf("stray connections counted %d wrong tokens, want none", len(wrong))
 	}
-	reportedAtTheEnd := wait.rejected.count()
-	time.Sleep(shortTimeout)
-	if later := wait.rejected.count(); later != reportedAtTheEnd {
-		t.Errorf("%d connections were reported after the wait ended, want none", later-reportedAtTheEnd)
+	if closedAtTheEnd := wait.rejected.because(net.ErrClosed); len(closedAtTheEnd) != 0 {
+		t.Errorf("%d connections the central closed at the end were reported, want none", len(closedAtTheEnd))
 	}
 }
 
@@ -489,6 +487,21 @@ func TestThePortTakesNoConnectionWhenTheWaitEnds(t *testing.T) {
 	expectRefusedConnection(t, wait.address)
 	if got := joinsWith(t, newcomer, wait.address, wait.code); !errors.Is(got.err, ErrNotWaiting) {
 		t.Errorf("join after the wait = %v, want ErrNotWaiting", got.err)
+	}
+}
+
+func TestAWaitWithANameThatCannotBeStoredDoesNotStart(t *testing.T) {
+	central := newMachine(t, "imac")
+	for _, names := range [][2]string{{"office mac", "imac"}, {"office-mac", ""}, {"office-mac", strings.Repeat("x", 300)}} {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+		config := WaitConfig{Identity: central.identity, Store: central.store, Name: names[0], OwnName: names[1]}
+		if _, err := WaitForJoin(context.Background(), listener, config); !errors.Is(err, ErrBadJoinName) {
+			t.Errorf("WaitForJoin with names %q = %v, want ErrBadJoinName", names, err)
+		}
+		expectRefusedConnection(t, listener.Addr().String())
 	}
 }
 
