@@ -85,7 +85,15 @@ func (s *Side) Connected(conn receiver.Connection) func(event.Event) {
 	return s.heard
 }
 
+type featuresSender interface {
+	SendFeatures(announced *features.Set) error
+}
+
 func (s *Side) announce(conn receiver.Connection) {
+	if sender, sendsTheLatest := conn.(featuresSender); sendsTheLatest {
+		sender.SendFeatures(s.config.Features)
+		return
+	}
 	conn.Send(event.Features(s.config.Features.Value()))
 }
 
