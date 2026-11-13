@@ -169,7 +169,7 @@ One task, one pull request. Each verify list says what must be true before the t
   - One that sends no Features and no Version, as 0.1.1 does, keeps getting focus and input from `lanhop share`, gets no Update, and is marked `needs the installer`.
   - A Features frame sent again for bit 8 keeps bit 0 as it was, because both features share one set, and the clipboard reacts only to a change of bit 0 (`TestOnlyTheClipboardBitSaysWhetherTheOtherEndTakesCopies` in `internal/clipshare`).
   - A side machine without `LANHOP_SERVICE=1`, without a release key, with updates off, or that is not a release, never sets bit 8.
-- [ ] **6. Versions in the status, and `lanhop update` waits for the desk.** → Verify with tests on a fake status file that changes over time:
+- [x] **6. Versions in the status, and `lanhop update` waits for the desk.** → Verify with tests on a fake status file that changes over time:
   - Machines are printed with their old and new versions as they come back.
   - The wait stops after 90 seconds.
   - The last lines name the machines that did not come back and the ones that need the installer.

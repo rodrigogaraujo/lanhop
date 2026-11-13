@@ -125,7 +125,7 @@ func describeDesk(peers []trust.Peer, report status.Report, now time.Time) strin
 
 func stateOfSeat(name string, report status.Report, now time.Time) string {
 	if slices.Contains(report.Machines, name) {
-		return "connected"
+		return "connected" + versionOfSeat(name, report)
 	}
 	for _, departure := range report.Left {
 		if departure.Name == name {
@@ -133,6 +133,25 @@ func stateOfSeat(name string, report status.Report, now time.Time) string {
 		}
 	}
 	return "not connected since lanhop started"
+}
+
+func versionOfSeat(name string, report status.Report) string {
+	for _, seat := range report.Seats {
+		if seat.Name != name {
+			continue
+		}
+		var told []string
+		if seat.Version != "" {
+			told = append(told, seat.Version)
+		}
+		if seat.Mark != "" {
+			told = append(told, seat.Mark)
+		}
+		if len(told) > 0 {
+			return ", " + strings.Join(told, ", ")
+		}
+	}
+	return ""
 }
 
 func whenSeen(at, now time.Time) string {

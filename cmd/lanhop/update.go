@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/follow"
+	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/update"
 )
 
@@ -30,6 +33,8 @@ const (
 )
 
 var (
+	deskPatience       = 90 * time.Second
+	deskPollInterval   = time.Second
 	answerPatience     = 10 * time.Second
 	projectReleaseKeys []ed25519.PublicKey
 	releasesAddress    = update.ProjectReleases
@@ -93,6 +98,7 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 		return fmt.Errorf("%s is older than lanhop %s here. To move back to it, run: lanhop update --version %s --older", want, target.Running, want)
 	}
 
+	deskBefore := sideMachinesOfThisCentral(directory)
 	staged, err := source.Prepare(ctx, target, want, *older)
 	if errors.Is(err, update.ErrNeedsInstaller) {
 		return fmt.Errorf("%w. Type the installer line instead:\n\n  %s", err, installerLine(want.String(), ""))
@@ -111,11 +117,67 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 			fmt.Fprintln(stdout, "This machine no longer follows the version of the machine with the keyboard, so that it is not moved back up. lanhop updates on lets it follow again.")
 		}
 	}
-	restartTheService(stdout)
+	restarted := restartTheService(stdout)
+	waitForTheDesk(directory, deskBefore, want, restarted, stdout)
 	if switchFailed != nil {
 		return fmt.Errorf("lanhop moved back to %s, but could not stop following the machine with the keyboard, which may move it up again: %w", want, switchFailed)
 	}
 	return nil
+}
+
+func sideMachinesOfThisCentral(directory string) []status.Seat {
+	report, err := status.Read(directory)
+	if err != nil || !status.Running(directory) || (report.State != status.Sharing && report.State != status.Waiting) {
+		return nil
+	}
+	return report.Seats
+}
+
+func waitForTheDesk(directory string, before []status.Seat, want update.Version, restarted bool, stdout io.Writer) {
+	waiting := map[string]string{}
+	var needInstaller, notFollowing []string
+	for _, seat := range before {
+		switch seat.Mark {
+		case string(follow.Follows):
+			if version, err := update.ParseVersion(seat.Version); restarted && err == nil && version.Compare(want) < 0 {
+				waiting[seat.Name] = seat.Version
+			}
+		case string(follow.NeedsTheInstaller):
+			needInstaller = append(needInstaller, seat.Name)
+		case string(follow.DoesNotFollow):
+			notFollowing = append(notFollowing, seat.Name)
+		}
+	}
+	if len(waiting) > 0 {
+		fmt.Fprintf(stdout, "Waiting up to %d seconds for the side machines to move to %s.\n", int(deskPatience.Seconds()), want)
+	}
+	for deadline := time.Now().Add(deskPatience); len(waiting) > 0 && time.Now().Before(deadline); time.Sleep(deskPollInterval) {
+		report, err := status.Read(directory)
+		if err != nil {
+			continue
+		}
+		for _, seat := range report.Seats {
+			old, found := waiting[seat.Name]
+			switch {
+			case !found:
+			case seat.Version == want.String():
+				fmt.Fprintf(stdout, "%s %s → %s\n", seat.Name, old, want)
+				delete(waiting, seat.Name)
+			case seat.Mark == string(follow.NeedsTheInstaller):
+				needInstaller = append(needInstaller, seat.Name)
+				delete(waiting, seat.Name)
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(waiting)) {
+		fmt.Fprintf(stdout, "%s did not come back on %s within %d seconds. lanhop status says where it is.\n", name, want, int(deskPatience.Seconds()))
+	}
+	for _, name := range needInstaller {
+		fmt.Fprintf(stdout, "%s cannot update by itself. Type the installer line on it once:\n\n  %s\n\n", name, installerLine(want.String(), "LANHOP_ROLE="+receivingRole))
+	}
+	for _, name := range notFollowing {
+		fmt.Fprintf(stdout, "%s does not follow this machine. Run lanhop update on it, or lanhop updates on there.\n", name)
+	}
 }
 
 func wantedRelease(ctx context.Context, source update.Source, asked string) (update.Version, error) {
@@ -252,7 +314,7 @@ func writeUpdatesSwitch(directory string, on bool) error {
 	return os.WriteFile(path, []byte("off\n"), 0o600)
 }
 
-func restartTheService(stdout io.Writer) {
+func restartTheService(stdout io.Writer) bool {
 	var restart *exec.Cmd
 	switch {
 	case runtime.GOOS == "darwin" && serviceDefinitionExists(true):
@@ -262,14 +324,15 @@ func restartTheService(stdout io.Writer) {
 	}
 	if restart == nil {
 		fmt.Fprintln(stdout, "Start lanhop again to use the new version.")
-		return
+		return false
 	}
 	output, err := restart.CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(stdout, "The lanhop service did not restart (%v): %s\nStart lanhop again to use the new version.\n", err, strings.TrimSpace(string(output)))
-		return
+		return false
 	}
 	fmt.Fprintln(stdout, "The lanhop service restarted on the new version. lanhop status says what it does.")
+	return true
 }
 
 func serviceDefinitionExists(launchAgent bool) bool {

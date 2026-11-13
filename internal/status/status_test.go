@@ -206,3 +206,18 @@ func TestDeparturesReadBackWithTheirTimes(t *testing.T) {
 		}
 	}
 }
+
+func TestSeatsReadBackWithTheirVersionAndMark(t *testing.T) {
+	directory := t.TempDir()
+	seats := []Seat{{Name: "office-mac", Version: "v0.1.3", Mark: "follows"}, {Name: "old", Mark: "needs the installer"}}
+	if err := OwnerOf(directory).Write(Report{State: Sharing, Machines: []string{"office-mac", "old"}, Seats: seats}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	read, err := Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !slices.Equal(read.Seats, seats) {
+		t.Errorf("seats read as %+v, want %+v", read.Seats, seats)
+	}
+}

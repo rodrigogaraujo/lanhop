@@ -13,11 +13,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
+	"github.com/rodrigogaraujo/lanhop/internal/follow"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
@@ -25,6 +27,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
+	"github.com/rodrigogaraujo/lanhop/internal/update"
 )
 
 const sharing = `Sharing the keyboard and mouse of this machine on port %d.
@@ -101,41 +104,72 @@ type peerList interface {
 	Peers() []trust.Peer
 }
 
-func reportReceivers(record statusFile, now func() time.Time, trusted peerList) func(names []string) {
-	var connected []string
-	departed := map[string]time.Time{}
-	return func(names []string) {
-		for _, name := range connected {
-			if !slices.Contains(names, name) {
-				departed[name] = now()
-			}
+type deskStatus struct {
+	mutex     sync.Mutex
+	record    statusFile
+	now       func() time.Time
+	trusted   peerList
+	connected []string
+	departed  map[string]time.Time
+	seats     []status.Seat
+}
+
+func newDeskStatus(record statusFile, now func() time.Time, trusted peerList) *deskStatus {
+	return &deskStatus{record: record, now: now, trusted: trusted, departed: map[string]time.Time{}}
+}
+
+func (d *deskStatus) receivers(names []string) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	for _, name := range d.connected {
+		if !slices.Contains(names, name) {
+			d.departed[name] = d.now()
 		}
-		for _, name := range names {
-			delete(departed, name)
-		}
-		if trusted != nil {
-			stillTrusted := map[string]bool{}
-			for _, peer := range trusted.Peers() {
-				stillTrusted[peer.Name] = true
-			}
-			for name := range departed {
-				if !stillTrusted[name] {
-					delete(departed, name)
-				}
-			}
-		}
-		connected = slices.Clone(names)
-		left := make([]status.Departure, 0, len(departed))
-		for name, at := range departed {
-			left = append(left, status.Departure{Name: name, At: at})
-		}
-		slices.SortFunc(left, func(a, b status.Departure) int { return strings.Compare(a.Name, b.Name) })
-		if len(names) == 0 {
-			record.set(status.Report{State: status.Waiting, Left: left})
-			return
-		}
-		record.set(status.Report{State: status.Sharing, Machines: names, Left: left})
 	}
+	for _, name := range names {
+		delete(d.departed, name)
+	}
+	if d.trusted != nil {
+		stillTrusted := map[string]bool{}
+		for _, peer := range d.trusted.Peers() {
+			stillTrusted[peer.Name] = true
+		}
+		for name := range d.departed {
+			if !stillTrusted[name] {
+				delete(d.departed, name)
+			}
+		}
+	}
+	d.connected = slices.Clone(names)
+	d.write()
+}
+
+func (d *deskStatus) seatsChanged(seats []follow.Seat) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	d.seats = d.seats[:0]
+	for _, seat := range seats {
+		written := status.Seat{Name: seat.Name, Mark: string(seat.Mark)}
+		if seat.Version != (update.Version{}) {
+			written.Version = seat.Version.String()
+		}
+		d.seats = append(d.seats, written)
+	}
+	d.write()
+}
+
+func (d *deskStatus) write() {
+	left := make([]status.Departure, 0, len(d.departed))
+	for name, at := range d.departed {
+		left = append(left, status.Departure{Name: name, At: at})
+	}
+	slices.SortFunc(left, func(a, b status.Departure) int { return strings.Compare(a.Name, b.Name) })
+	report := status.Report{State: status.Sharing, Machines: d.connected, Left: left, Seats: slices.Clone(d.seats)}
+	if len(d.connected) == 0 {
+		report.State = status.Waiting
+		report.Machines = nil
+	}
+	d.record.set(report)
 }
 
 func shareUntil(done context.Context, capture sharer.Capture, address string, stdout io.Writer) error {
@@ -177,8 +211,9 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		Watch:  edge.DefaultSettings(),
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
-	machine.OnReceivers(reportReceivers(openStatus(), time.Now, trusted))
-	defer shareTheClipboard(done, machine, directory, new(features.Set), followerOfTheCentral(), stdout)()
+	report := newDeskStatus(openStatus(), time.Now, trusted)
+	machine.OnReceivers(report.receivers)
+	defer shareTheClipboard(done, machine, directory, new(features.Set), followerOfTheCentral(report.seatsChanged), stdout)()
 	go func() {
 		for {
 			receiver, err := listener.Accept()
