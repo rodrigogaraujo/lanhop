@@ -85,7 +85,7 @@ Reaching for a button or a scroll bar at the edge of the screen does not throw m
 - **FR-005**: After a crossing, the cursor MUST appear on the opposite edge of the neighbour, at the position that matches where it left, in proportion to the two edges.
 - **FR-006**: Crossing back MUST work from any machine with focus, whatever system it runs.
 - **FR-007**: Edges without a neighbour, or whose neighbour is not connected, MUST behave as normal screen edges.
-- **FR-008**: A crossing MUST NOT happen while a mouse button is held, in a screen corner, or before the cursor has pushed against the edge for the configured time.
+- **FR-008**: A crossing MUST NOT happen while a mouse button is held, in a screen corner, or before the cursor has pushed against the edge for the configured time. The one exception is a file being dragged, under the stricter rules of [spec 011](../011-file-sharing/spec.md).
 - **FR-009**: The user MUST be able to lock focus on the current machine with a hotkey.
 - **FR-010**: A crossing MUST follow every rule of spec 001 for a focus change: no key stays held and a lost connection returns focus to the sharer.
 - **FR-011**: A change to the layout file MUST apply without restarting, and a broken file MUST NOT replace a working layout.

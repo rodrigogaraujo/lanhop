@@ -45,20 +45,25 @@ I start dragging a file on one screen, push it through the edge toward the machi
 
 **Acceptance scenarios**:
 
-1. **Given** I drag a file on one machine, **When** I push it through an edge that has a neighbour, **Then** the cursor crosses with the file still held, and dropping it in a folder of the neighbour puts the file there.
+1. **Given** I drag a file on one machine, **When** I push it through an edge that has a neighbour, **Then** the cursor crosses with the file still held, and dropping it in a folder of the neighbour, or in a window that takes dropped files, puts the file there once it has arrived.
 2. **Given** I hold the mouse button to move a window or select text, **When** I push against an edge, **Then** nothing crosses, as spec 002 says.
 3. **Given** I drag a file across and change my mind, **When** I drag it back across the edge or press Escape, **Then** nothing is dropped and nothing is left behind.
 4. **Given** the neighbour cannot take a dragged file, **When** I push a dragged file against that edge, **Then** nothing crosses, and lanhop's log says why.
+5. **Given** I drag a file to the Trash or to a sidebar near an edge, **When** the cursor touches that edge on the way, **Then** nothing crosses. A file drag crosses only after a longer push than the cursor alone, never in a corner, and never through the edge where the Dock of macOS sits.
 
 ### Story 3 - Keep control of what arrives (Priority: P2)
 
 Files that arrive take room on the disk of the machine they go to, and some machines should not take files from others.
+
+**Independent test**: switch file sharing off on one machine, copy a file toward it, and look at its arrival folder; then copy a file larger than the limit.
 
 **Acceptance scenarios**:
 
 1. **Given** file sharing is off on a machine, **When** I copy or drag a file toward it, **Then** nothing arrives, and text copy and paste of spec 005 keeps working if it is on.
 2. **Given** a file copy larger than the limit, **When** I move to another machine, **Then** it is not sent, and lanhop's log says it was over the limit.
 3. **Given** files arrived and were never pasted, **When** a day has passed, **Then** lanhop removes them from the arrival folder.
+4. **Given** I pass through a machine on my way to another, **When** files had started to arrive there, **Then** the transfer stops when focus leaves, and what had arrived is removed.
+5. **Given** a file copy that does not fit in the free space of the destination, or in the room lanhop allows itself there, **When** I move to it, **Then** nothing is sent, and lanhop's log says why.
 
 ## Edge cases
 
@@ -68,7 +73,10 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 - A file with no permission to read, a symbolic link, or a special file such as a pipe.
 - The disk of the destination fills up while a file arrives.
 - The connection is lost in the middle of a file.
-- On macOS, the file sits in a folder that macOS protects (Desktop, Documents, Downloads, iCloud Drive), which a program needs permission to read.
+- On macOS, the file sits in a folder that macOS protects (Desktop, Documents, Downloads, iCloud Drive, an external or network volume), which a program needs permission to read. The question of macOS appears on the machine the person just left.
+- An iCloud file that is not downloaded yet.
+- A file cut in the file manager instead of copied: it arrives as a copy, and the original stays where it was.
+- A file copy also offers its names or paths as text.
 - A machine on lanhop 0.1.0 or 0.1.1, which knows nothing of files.
 
 ## Requirements
@@ -85,10 +93,14 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 - **FR-008**: A dragged file MUST cross an edge only while the system reports a drag of files. Holding a button for anything else MUST keep blocking crossings (FR-008 of spec 002).
 - **FR-009**: Files left in the arrival folder MUST be removed after a day.
 - **FR-010**: On each system, lanhop MUST say in its log, once, when it cannot share files there and why.
+- **FR-011**: A file path that arrives MUST stay inside the arrival folder: lanhop MUST refuse absolute paths, `..` and links, and MUST NOT follow links when it creates files.
+- **FR-012**: When a copy offers both files and text, the files MUST win. A machine that takes text but not files MUST NOT get the names or paths of the files as text.
+- **FR-013**: lanhop MUST keep the arrival folder under a total size it allows itself, removing the oldest files first, and MUST NOT start a transfer that does not fit.
+- **FR-014**: On macOS, files that arrive MUST carry the quarantine mark that macOS gives to downloaded files.
 
 ### Out of scope for this feature
 
-- Dragging between machines where the plan finds it cannot work, such as from or to a Wayland application on Linux.
+- Dragging between machines where the plan finds it cannot work. From or to a Wayland application on Linux is the likely case, deduced and to be measured in task 8.
 - Syncing folders, or keeping a copy up to date when the original changes.
 - Images and other content copied as data rather than as a file.
 - Windows. It is spec 003.
@@ -96,7 +108,7 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 ## Success criteria
 
 - **SC-001**: A file of 10 MiB copied on one machine can be pasted on the next one within 2 seconds of focus arriving, on a wired network.
-- **SC-002**: While 100 MiB travel, no key or mouse movement arrives more than 50 ms later than it would without them.
+- **SC-002**: While 100 MiB travel over a link of 100 Mbit/s, no key or mouse movement arrives more than 50 ms later than it would without them.
 - **SC-003**: Stage A works from a Mac to a Mac, from a Mac to Linux and from Linux to a Mac.
 - **SC-004**: Stage B works at least from a Mac to a Mac. The plan says which other directions work.
 
