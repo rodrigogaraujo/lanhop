@@ -74,7 +74,7 @@ check, polling "lanhop status" every second:
 ```
 
 - **`lanhop status` from a terminal**: it runs the program inside the app through the link, started by the terminal. macOS lets programs started from Terminal use the local network, which `blocked` relies on. Not measured yet: task 6.
-- **Where the app goes**: `/Applications` when the user can write it (members of the `admin` group can), `~/Applications` otherwise. `LANHOP_SYSTEM_ROOT` stands for `/` in the tests, as it already does for the udev rule.
+- **Where the app goes**: `/Applications` when the user can write it (members of the `admin` group can), `~/Applications` otherwise. An app that is already installed is updated where it is, so that the launch agent and the Accessibility permission keep pointing at it. `LANHOP_SYSTEM_ROOT` stands for `/` in the tests, as it already does for the udev rule.
 - **The command**: `LANHOP_INSTALL_DIR` (default `~/.local/bin`) gets a link named `lanhop` to the program inside the app. A file that is not a link, left by 0.1.0, is replaced by the link, and the installer says that old "lanhop" or "a.out" entries in System Settings can be removed.
 - **Pane addresses**: `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` and `...?Privacy_LocalNetwork`.
 - **Time limits**: 5 minutes for each permission, which a person has to give; 60 seconds for a side machine to reach the central. When a limit runs out, the installer prints the last status line and says that `lanhop status` shows it later.

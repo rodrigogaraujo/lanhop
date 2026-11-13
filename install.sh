@@ -165,7 +165,11 @@ settle_paths() {
   earlier_program=
   app=
   if [ "$os" = darwin ]; then
-    if [ -w "$system_root/Applications" ]; then
+    if is_the_app "$system_root/Applications/lanhop.app" && [ -w "$system_root/Applications" ]; then
+      app_directory=$system_root/Applications
+    elif is_the_app "$HOME/Applications/lanhop.app" && [ -w "$HOME/Applications" ]; then
+      app_directory=$HOME/Applications
+    elif [ -w "$system_root/Applications" ]; then
       app_directory=$system_root/Applications
     else
       app_directory=$HOME/Applications
@@ -263,26 +267,18 @@ install_app() {
     esac
   fi
   mkdir -p "$app_directory" "$install_directory"
-  rm -rf "$app.new" "$app.old"
-  cp -R "$unpacked" "$app.new"
-  chmod 755 "$app.new/Contents/MacOS/lanhop"
+  rm -rf "$app".new.* "$app".old.* 2>/dev/null || true
+  staged=$app.new.$$
+  cp -R "$unpacked" "$staged"
+  chmod 755 "$staged/Contents/MacOS/lanhop"
   if [ -e "$app" ]; then
-    mv "$app" "$app.old"
+    mv "$app" "$app.old.$$"
   fi
-  mv "$app.new" "$app"
-  rm -rf "$app.old"
+  mv "$staged" "$app"
+  rm -rf "$app.old.$$" || problem "could not remove the earlier copy of the app, $app.old.$$"
   rm -f "$command_link.new"
   ln -s "$binary" "$command_link.new"
   mv -f "$command_link.new" "$command_link"
-  remove_the_other_copy
-}
-
-remove_the_other_copy() {
-  for candidate in "$system_root/Applications/lanhop.app" "$HOME/Applications/lanhop.app"; do
-    if [ "$candidate" != "$app" ] && is_the_app "$candidate" && [ -w "$(dirname "$candidate")" ]; then
-      rm -rf "$candidate" || problem "could not remove the copy of an earlier install in $candidate"
-    fi
-  done
 }
 
 advise_about_path() {

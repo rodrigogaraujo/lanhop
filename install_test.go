@@ -1535,24 +1535,50 @@ func TestUninstallLeavesALanhopAppThatIsNotThisOne(t *testing.T) {
 	})
 }
 
-func TestAnAppInTheHomeMovesToTheSystemApplicationsOnceTheyCanBeWritten(t *testing.T) {
+func TestAnInstalledAppStaysWhereItIsSoThatItsServiceKeepsRunningIt(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
-		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
-		if err := os.Remove(m.inRoot("Applications")); err != nil {
-			t.Fatal(err)
-		}
-		m.mustRun()
-		if err := os.MkdirAll(m.inRoot("Applications"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		output := m.mustRun()
-		expectSame(t, "entries in the system Applications", entriesOf(t, m.inRoot("Applications")), []string{"lanhop.app"})
-		expectSame(t, "files in the home directory", m.files(), []string{binaryFile})
-		if target := m.linkTarget(binaryFile); target != m.inRoot(appProgram) {
-			t.Errorf("%s links to %s, want %s", binaryFile, target, m.inRoot(appProgram))
-		}
-		if strings.Contains(output, "now runs the lanhop app") {
-			t.Errorf("moving the app is described as replacing an earlier program:\n%s", output)
+		for _, second := range []struct {
+			name     string
+			settings map[string]string
+			typed    []string
+		}{
+			{"with no role", map[string]string{"LANHOP_YES": "1"}, nil},
+			{"with the launch agent refused", nil, []string{"n", "n", ""}},
+		} {
+			t.Run(second.name, func(t *testing.T) {
+				published := newReleases(t)
+				m := newMachine(t, shell, "Darwin", "arm64", published)
+				if err := os.Remove(m.inRoot("Applications")); err != nil {
+					t.Fatal(err)
+				}
+				m.settings["LANHOP_ROLE"] = "receive"
+				m.settings["LANHOP_YES"] = "1"
+				m.mustRun()
+				if err := os.MkdirAll(m.inRoot("Applications"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				delete(m.settings, "LANHOP_ROLE")
+				delete(m.settings, "LANHOP_YES")
+				for name, value := range second.settings {
+					m.settings[name] = value
+				}
+				if second.typed != nil {
+					m.typing(second.typed...)
+				}
+				published.publish(latestRelease, "2.0.0")
+				output := m.mustRun()
+				if got, want := m.installedVersion(), "lanhop 2.0.0 darwin-arm64"; got != want {
+					t.Errorf("installed %q, want %q", got, want)
+				}
+				expectSame(t, "entries in the system Applications", entriesOf(t, m.inRoot("Applications")), []string{})
+				expectSame(t, "entries in the Applications of the home", entriesOf(t, m.path("Applications")), []string{"lanhop.app"})
+				if _, err := os.Stat(m.path(appProgram)); err != nil || !strings.Contains(m.read(agentFile), "<string>"+m.path(appProgram)+"</string>") {
+					t.Errorf("the launch agent does not run a program that exists (%v):\n%s", err, m.read(agentFile))
+				}
+				if strings.Contains(output, "now runs the lanhop app") {
+					t.Errorf("an update of the app is described as replacing an earlier program:\n%s", output)
+				}
+			})
 		}
 	})
 }
