@@ -98,7 +98,7 @@ The messages of `lanhop pair` stay as they are.
 One task, one pull request. Each verify list says what must be true before the task counts as done.
 
 - [ ] **0. Measure what the join relies on.** → Verify on the desk that, on a Mac central with the firewall of macOS on and `lanhop share` running as its service, `lanhop add` run from a terminal through the link to lanhop.app takes a connection on 24746 from another machine without a new question of macOS. The result goes in this plan.
-- [ ] **1. The join in `internal/pairing`.** Code, token, messages, lock, attempts and deadlines, as in ADR 12 and "Wire". → Verify with tests over TLS on loopback:
+- [x] **1. The join in `internal/pairing`.** Code, token, messages, lock, attempts and deadlines, as in ADR 12 and "Wire". → Verify with tests over TLS on loopback:
   - A good code joins, both stores hold the other machine with the right names, and the new machine stores the central at port 24745.
   - A code with another key prefix: the handshake fails and the new machine sends nothing more.
   - A name that the new machine cannot store: it refuses before sending the token, and the token stays good.

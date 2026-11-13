@@ -19,6 +19,11 @@ const (
 	fileMode      = 0o600
 )
 
+var (
+	ErrNameInUse = errors.New("trust: a machine with this name is already trusted")
+	ErrKeyInUse  = errors.New("trust: this machine is already trusted")
+)
+
 var validName = regexp.MustCompile(fmt.Sprintf(`^[A-Za-z0-9_-]{1,%d}$`, MaxNameLength))
 
 func ValidName(name string) bool {
@@ -111,10 +116,10 @@ func (s *Store) check(candidate Peer) error {
 	}
 	for _, peer := range s.peers {
 		if peer.Name == candidate.Name {
-			return fmt.Errorf("trust: a machine named %q is already trusted", candidate.Name)
+			return fmt.Errorf("%w: %q", ErrNameInUse, candidate.Name)
 		}
 		if peer.Fingerprint == candidate.Fingerprint {
-			return fmt.Errorf("trust: this machine is already trusted as %q", peer.Name)
+			return fmt.Errorf("%w as %q", ErrKeyInUse, peer.Name)
 		}
 	}
 	return nil
