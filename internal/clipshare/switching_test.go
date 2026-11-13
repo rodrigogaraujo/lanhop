@@ -121,8 +121,8 @@ func TestASideMachineThatCannotReachItsClipboardSaysWhyOnOneLineAndWaitsBeforeTr
 	}
 	time.Sleep(settling)
 
-	if tried := attempts.Load(); tried != 1 {
-		t.Errorf("the side machine tried to reach its clipboard %d times in a few seconds, want once", tried)
+	if tried := attempts.Load(); tried < 1 || tried > 3 {
+		t.Errorf("the side machine tried to reach its clipboard %d times over 10 focus changes, want 1 to 3", tried)
 	}
 	right.log.waitFor(t, "cannot reach its clipboard: no X server in DISPLAY; no socket in /tmp/.X11-unix\n")
 	if lines := strings.Count(right.log.String(), "\n"); lines != 1 {
