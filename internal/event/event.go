@@ -36,6 +36,9 @@ const (
 	ControlFileCopySize uint16 = 12
 	ControlOpenData     uint16 = 13
 	ControlDataStop     uint16 = 14
+
+	ControlUpdate  uint16 = 16
+	ControlVersion uint16 = 17
 )
 
 const FeatureClipboard int32 = 1 << 0
@@ -116,6 +119,14 @@ func Leave() Event {
 
 func Features(set int32) Event {
 	return Event{Type: TypeControl, Code: ControlFeatures, Value: set}
+}
+
+func Update(release int32) Event {
+	return Event{Type: TypeControl, Code: ControlUpdate, Value: release}
+}
+
+func Version(release int32) Event {
+	return Event{Type: TypeControl, Code: ControlVersion, Value: release}
 }
 
 func Clipboard(length int32) Event {

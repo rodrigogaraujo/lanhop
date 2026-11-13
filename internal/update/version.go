@@ -50,6 +50,11 @@ func (v Version) Compare(other Version) int {
 	return v.Patch - other.Patch
 }
 
+func VersionFromValue(value int32) (Version, bool) {
+	version := Version{Major: int(value >> 16), Minor: int(value >> 8 & 0xFF), Patch: int(value & 0xFF)}
+	return version, value > 0 && version.Major <= largestMajor
+}
+
 func (v Version) Value() int32 {
 	return int32(v.Major<<16 | v.Minor<<8 | v.Patch)
 }

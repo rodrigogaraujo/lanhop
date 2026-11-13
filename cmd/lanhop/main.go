@@ -21,6 +21,9 @@ Usage:
   lanhop receive         on the other machine: let the machine with the keyboard control this one
   lanhop status          say what lanhop is doing on this machine: waiting for a permission, connecting or connected
   lanhop update          move this machine to the latest release of lanhop, and restart its service
+  lanhop updates         say whether this machine follows the version of the machine with the keyboard: on or off
+  lanhop updates off     keep this machine on its version, whatever the machine with the keyboard runs
+  lanhop updates on      follow the version of the machine with the keyboard again, as after a new install
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
   lanhop layout          show where the layout file is and how lanhop understands it
@@ -87,6 +90,8 @@ func exitCodeFor(err error, stderr io.Writer) int {
 		return 2
 	case errors.Is(err, errAskAgainAfterARestart):
 		return 1
+	case errors.Is(err, errRestartForTheUpdate):
+		return exitStatusForTheRestart
 	default:
 		fmt.Fprintln(stderr, "lanhop:", err)
 		return 1
@@ -114,6 +119,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return showStatus(args, stdout)
 	case "update":
 		return updateThisMachine(args, stdout)
+	case "updates":
+		return switchUpdates(args, stdout)
 	case "peers":
 		return listPeers(stdout)
 	case "forget":

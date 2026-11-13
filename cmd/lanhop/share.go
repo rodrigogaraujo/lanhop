@@ -178,7 +178,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
 	machine.OnReceivers(reportReceivers(openStatus(), time.Now, trusted))
-	defer shareTheClipboard(done, machine, directory, new(features.Set), stdout)()
+	defer shareTheClipboard(done, machine, directory, new(features.Set), followerOfTheCentral(), stdout)()
 	go func() {
 		for {
 			receiver, err := listener.Accept()

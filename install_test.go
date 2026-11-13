@@ -158,6 +158,7 @@ Documentation=https://github.com/rodrigogaraujo/lanhop
 
 [Service]
 ExecStart="%[1]s" %[2]s
+Environment=LANHOP_SERVICE=1
 Restart=on-failure
 RestartSec=10
 
@@ -182,6 +183,11 @@ const agentOfTheService = `<?xml version="1.0" encoding="UTF-8"?>
   <dict>
     <key>SuccessfulExit</key>
     <false/>
+  </dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LANHOP_SERVICE</key>
+    <string>1</string>
   </dict>
   <key>ProcessType</key>
   <string>Interactive</string>
