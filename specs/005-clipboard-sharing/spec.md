@@ -111,6 +111,7 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 3. **Given** a large text is on its way to another machine, **When** I type or move the mouse, **Then** the keyboard and mouse respond as usual.
 4. **Given** I copied text on the central, took it to side machine A and came back, **When** I copy an image on the central and move to side machine B, **Then** B keeps what its clipboard held. The text from before the image is not handed out anymore.
 5. **Given** a password manager empties the clipboard of the machine where I copied a password, **When** I then move away from that machine, **Then** the machines I move to from then on do not get the password.
+6. **Given** I copy a password from a password manager that marks it as private, **When** I move to another machine, **Then** that machine does not get it, and lanhop's log says that the copy was private.
 
 ## Edge cases
 
@@ -145,6 +146,7 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - **FR-011**: On a machine where lanhop cannot reach the clipboard, it MUST say so in its log once, and the keyboard and mouse MUST keep working.
 - **FR-012**: Clipboard sharing MUST work on macOS and on Linux, each as central and as side machine. On Linux it MUST work in X11 sessions and in Wayland sessions of GNOME.
 - **FR-013**: lanhop MUST NOT overwrite a copy that I made on a machine after focus arrived there.
+- **FR-014**: A copy that the program it came from marks as private, as password managers do, MUST NOT be sent. It counts as a copy that lanhop does not carry (FR-005).
 
 ### Out of scope for this feature
 
@@ -153,7 +155,6 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - Images and formatted text.
 - The Linux primary selection: selecting text and pasting it with the middle button.
 - Emptying the copies on other machines when the clipboard of the machine where I copied is emptied.
-- Leaving out copies that password managers mark as private.
 - A clipboard history.
 - Windows. It is spec 003.
 
