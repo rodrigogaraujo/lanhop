@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	noVersion      = "-"
 	FileName       = "status"
 	lockFileName   = "status.lock"
 	lockAttempts   = 5
@@ -38,6 +39,13 @@ type Report struct {
 	Address  string
 	Error    string
 	Left     []Departure
+	Seats    []Seat
+}
+
+type Seat struct {
+	Name    string
+	Version string
+	Mark    string
 }
 
 type Departure struct {
@@ -120,6 +128,9 @@ func write(path string, report Report) error {
 	for _, departure := range report.Left {
 		fmt.Fprintf(&text, "left=%s %s\n", oneLine(departure.Name), departure.At.UTC().Format(time.RFC3339))
 	}
+	for _, seat := range report.Seats {
+		fmt.Fprintf(&text, "seat=%s %s %s\n", oneWord(seat.Name), oneWord(seat.Version), oneLine(seat.Mark))
+	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("status: %w", err)
@@ -163,6 +174,10 @@ func Read(directory string) (Report, error) {
 			if departure, ok := departureFrom(value); ok {
 				report.Left = append(report.Left, departure)
 			}
+		case "seat":
+			if seat, ok := seatFrom(value); ok {
+				report.Seats = append(report.Seats, seat)
+			}
 		}
 	}
 	return report, lines.Err()
@@ -179,6 +194,25 @@ func departureFrom(value string) (Departure, bool) {
 		return Departure{}, false
 	}
 	return Departure{Name: name, At: when}, true
+}
+
+func seatFrom(value string) (Seat, bool) {
+	fields := strings.Fields(value)
+	if len(fields) < 2 {
+		return Seat{}, false
+	}
+	seat := Seat{Name: fields[0], Version: fields[1], Mark: strings.Join(fields[2:], " ")}
+	if seat.Version == noVersion {
+		seat.Version = ""
+	}
+	return seat, true
+}
+
+func oneWord(text string) string {
+	if word := strings.Join(strings.Fields(text), ""); word != "" {
+		return word
+	}
+	return noVersion
 }
 
 func oneLine(text string) string {

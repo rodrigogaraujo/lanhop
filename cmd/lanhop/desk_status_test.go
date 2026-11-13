@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/follow"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
+	"github.com/rodrigogaraujo/lanhop/internal/update"
 )
 
 func TestShareWritesWhenEachMachineLeftAndForgetsItWhenItComesBack(t *testing.T) {
@@ -159,4 +161,35 @@ func TestStatusFollowsAMachineThatConnectsLeavesAndComesBack(t *testing.T) {
 	}
 	defer second.Close()
 	statusShows(t, regexp.MustCompile(`(?m)^  desk    Ctrl\+Alt\+2   connected$`))
+}
+
+func TestTheDeskShowsTheVersionAndMarkOfEachConnectedMachine(t *testing.T) {
+	peers := []trust.Peer{{Name: "server", Fingerprint: someFingerprint(1)}, {Name: "old", Fingerprint: someFingerprint(2)}}
+	report := status.Report{
+		State:    status.Sharing,
+		Machines: []string{"server", "old"},
+		Seats:    []status.Seat{{Name: "server", Version: "v0.1.3", Mark: "follows"}, {Name: "old", Mark: "needs the installer"}},
+	}
+	lines := strings.Split(describeDesk(peers, report, time.Now()), "\n")
+	for _, line := range []string{"  server  Ctrl+Alt+2   connected, v0.1.3, follows", "  old     Ctrl+Alt+3   connected, needs the installer"} {
+		if !slices.Contains(lines, line) {
+			t.Errorf("the desk reads %q, want the line %q", lines, line)
+		}
+	}
+}
+
+func TestShareWritesTheVersionAndMarkOfEachSideMachine(t *testing.T) {
+	directory := useConfigDirectory(t)
+	report := newDeskStatus(openStatus(), time.Now, nil)
+	report.receivers([]string{"office-mac"})
+	report.seatsChanged([]follow.Seat{{Name: "office-mac", Version: update.Version{Major: 0, Minor: 1, Patch: 3}, Mark: follow.Follows}})
+
+	read, err := status.Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	want := []status.Seat{{Name: "office-mac", Version: "v0.1.3", Mark: "follows"}}
+	if read.State != status.Sharing || !slices.Equal(read.Seats, want) || !slices.Equal(read.Machines, []string{"office-mac"}) {
+		t.Errorf("status %+v, want sharing with office-mac on v0.1.3, following", read)
+	}
 }

@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/update"
 )
 
@@ -469,5 +470,91 @@ func TestUpdateSaysWhenTheServiceStartsAProgramThatIsGone(t *testing.T) {
 	err := updateThisMachine(nil, &screen{})
 	if err == nil || !strings.Contains(err.Error(), "not there any more") {
 		t.Fatalf("lanhop update with the program gone = %v, want it to say so", err)
+	}
+}
+
+func centralBefore(t *testing.T, seats ...status.Seat) statusFile {
+	t.Helper()
+	names := make([]string, len(seats))
+	for i, seat := range seats {
+		names[i] = seat.Name
+	}
+	record := openStatus()
+	record.set(status.Report{State: status.Sharing, Machines: names, Seats: seats})
+	return record
+}
+
+func quickDesk(t *testing.T, patience time.Duration) {
+	t.Helper()
+	before, interval := deskPatience, deskPollInterval
+	deskPatience, deskPollInterval = patience, 20*time.Millisecond
+	t.Cleanup(func() { deskPatience, deskPollInterval = before, interval })
+}
+
+func TestUpdateOnTheCentralWaitsForEachSideMachineAndNamesTheOthers(t *testing.T) {
+	requireTheSwapOfApps(t)
+	releases := servingReleases(t)
+	releases.latest = "v0.1.3"
+	releases.publish(t, "v0.1.3", "v0.1.2")
+	machineWithLanhop(t, "v0.1.2")
+	quickDesk(t, 3*time.Second)
+	record := centralBefore(t,
+		status.Seat{Name: "office-mac", Version: "v0.1.2", Mark: "follows"},
+		status.Seat{Name: "old", Mark: "needs the installer"},
+		status.Seat{Name: "desk", Version: "v0.1.2", Mark: "does not follow"},
+	)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		record.set(status.Report{State: status.Sharing, Machines: []string{"office-mac"}, Seats: []status.Seat{{Name: "office-mac", Version: "v0.1.3", Mark: "follows"}}})
+	}()
+	output := &screen{}
+
+	if err := updateThisMachine(nil, output); err != nil {
+		t.Fatalf("lanhop update: %v", err)
+	}
+	for _, part := range []string{"office-mac v0.1.2 → v0.1.3", "old cannot update by itself", "LANHOP_ROLE=receive", "desk does not follow this machine"} {
+		if !strings.Contains(output.String(), part) {
+			t.Errorf("lanhop update printed %q, want it to say %q", output.String(), part)
+		}
+	}
+}
+
+func TestUpdateOnTheCentralStopsWaitingAndNamesWhoDidNotComeBack(t *testing.T) {
+	requireTheSwapOfApps(t)
+	releases := servingReleases(t)
+	releases.latest = "v0.1.3"
+	releases.publish(t, "v0.1.3", "v0.1.2")
+	machineWithLanhop(t, "v0.1.2")
+	quickDesk(t, 300*time.Millisecond)
+	centralBefore(t, status.Seat{Name: "office-mac", Version: "v0.1.2", Mark: "follows"})
+	output := &screen{}
+
+	started := time.Now()
+	if err := updateThisMachine(nil, output); err != nil {
+		t.Fatalf("lanhop update: %v", err)
+	}
+	if !strings.Contains(output.String(), "office-mac did not come back on v0.1.3") {
+		t.Errorf("lanhop update printed %q, want it to name office-mac", output.String())
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Errorf("lanhop update waited %v, want it to stop at its patience", took)
+	}
+}
+
+func TestUpdateOnASideMachineDoesNotWaitForADesk(t *testing.T) {
+	requireTheSwapOfApps(t)
+	releases := servingReleases(t)
+	releases.latest = "v0.1.3"
+	releases.publish(t, "v0.1.3", "v0.1.2")
+	machineWithLanhop(t, "v0.1.2")
+	quickDesk(t, 5*time.Second)
+	openStatus().set(status.Report{State: status.Connected, Machines: []string{"imac"}, Address: centralAddress})
+	output := &screen{}
+	started := time.Now()
+	if err := updateThisMachine(nil, output); err != nil {
+		t.Fatalf("lanhop update: %v", err)
+	}
+	if strings.Contains(output.String(), "Waiting up to") || time.Since(started) > 2*time.Second {
+		t.Errorf("lanhop update on a side machine waited for a desk: %q", output.String())
 	}
 }

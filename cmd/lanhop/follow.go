@@ -96,8 +96,8 @@ func followerOfThisSide(ctx context.Context, directory string, announced *featur
 	})
 }
 
-func followerOfTheCentral() *follow.Central {
-	return follow.NewCentral(follow.CentralConfig{Running: releaseOf(version), From: releaseOf(updateFrom)})
+func followerOfTheCentral(onChange func([]follow.Seat)) *follow.Central {
+	return follow.NewCentral(follow.CentralConfig{Running: releaseOf(version), From: releaseOf(updateFrom), OnChange: onChange})
 }
 
 func switchUpdates(args []string, stdout io.Writer) error {
