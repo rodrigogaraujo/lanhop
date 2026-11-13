@@ -284,3 +284,84 @@ func TestAnAnswerOfASideMachineThatSwitchedOffAndOnDuringASlowReadIsNotTakenForT
 		t.Errorf("B has had %q written, want %q", got, want)
 	}
 }
+
+func TestAnAnswerAcrossASwitchOffIsDroppedWhenTheNextLeaveIsAnsweredWithoutARead(t *testing.T) {
+	w := wire(Text, "A", "B")
+	w.focusOn("A")
+	readBeforeTheSwitch := "read before the central was switched off"
+	w.sides["A"].nextText = readBeforeTheSwitch
+	w.sides["A"].holdsReads = true
+	w.focusOn("B")
+	w.centralDoes(w.desk.Switch(none))
+	w.focusOn("A")
+
+	onAnnouncedAfterTheLeave := w.desk.Switch(Text)
+	w.sides["B"].machine.FocusArrives()
+	w.focused = "B"
+	countedWhileOn := w.desk.FocusOn("B")
+	w.sideDoes("A", w.sides["A"].machine.FocusLeaves())
+	w.centralDoes(onAnnouncedAfterTheLeave)
+	w.centralDoes(countedWhileOn)
+	w.letReadsOf("A")
+
+	if slices.Contains(w.sides["B"].written, readBeforeTheSwitch) {
+		t.Fatalf("B got %q, which A read before the central was switched off", readBeforeTheSwitch)
+	}
+	w.textsCopiedOnAReachB(t, 3)
+}
+
+func TestASideMachineSendsTheAnswersToItsLeavesInTheOrderOfTheLeaves(t *testing.T) {
+	s := connectedSide(t)
+	expect(t, "focus leaves", s.FocusLeaves(), toCentral{Do: Read})
+	expect(t, "the central switches off", s.CentralSays(none))
+	s.FocusArrives()
+	expect(t, "focus leaves while the first read runs", s.FocusLeaves())
+	s.FocusArrives()
+	expect(t, "focus leaves again while the first read runs", s.FocusLeaves())
+	expect(t, "the central switches on", s.CentralSays(Text), toCentral{Do: Mark, Takes: Text})
+	s.FocusArrives()
+	expect(t, "focus leaves once the central is on", s.FocusLeaves(), toCentral{Do: Read})
+	expect(t, "the central switches off again", s.CentralSays(none))
+	s.FocusArrives()
+	expect(t, "focus leaves while both reads run", s.FocusLeaves())
+	expect(t, "the central switches on again", s.CentralSays(Text), toCentral{Do: Mark, Takes: Text})
+
+	first, err := s.ReadGave("read at the first leave", nil)
+	if err != nil {
+		t.Fatalf("ReadGave: %v", err)
+	}
+	expect(t, "the first read ends", first, toCentral{Do: Send, Text: "read at the first leave"}, toCentral{Do: Unchanged}, toCentral{Do: Unchanged})
+	expect(t, "the second read ends", s.ReadUnchanged(), toCentral{Do: Unchanged}, toCentral{Do: Unchanged})
+	s.FocusArrives()
+	expect(t, "focus leaves with no read running", s.FocusLeaves(), toCentral{Do: Read})
+}
+
+func TestEveryWayAReadEndsReleasesTheAnswersQueuedBehindIt(t *testing.T) {
+	ends := []struct {
+		name   string
+		end    func(s *Side) []toCentral
+		answer toCentral
+	}{
+		{"a copy", func(s *Side) []toCentral { answer, _ := s.ReadGave("a copy", nil); return answer }, toCentral{Do: Send, Text: "a copy"}},
+		{"a withdrawal", func(s *Side) []toCentral { answer, _ := s.ReadGave("", ErrPrivate); return answer }, toCentral{Do: Withdraw}},
+		{"a file copy", func(s *Side) []toCentral { answer, _ := s.ReadGaveFiles(report, nil); return answer }, describe(report)},
+		{"nothing new", func(s *Side) []toCentral { return s.ReadUnchanged() }, toCentral{Do: Unchanged}},
+		{"a copy read after the central switched off", func(s *Side) []toCentral {
+			s.CentralSays(none)
+			answer, _ := s.ReadGave("a copy", nil)
+			return answer
+		}, toCentral{Do: Unchanged}},
+	}
+	for _, test := range ends {
+		t.Run(test.name, func(t *testing.T) {
+			s := sideSharingFiles(t)
+			expect(t, "focus leaves", s.FocusLeaves(), toCentral{Do: Read})
+			s.CentralSays(none)
+			s.FocusArrives()
+			expect(t, "focus leaves while the read runs and nothing is shared", s.FocusLeaves())
+			s.CentralSays(Text | Files)
+
+			expect(t, "the read ends", test.end(s), test.answer, toCentral{Do: Unchanged})
+		})
+	}
+}

@@ -151,24 +151,37 @@ func TestASideMachineUnderACentralOnTheOldVersionReadsNothingAndSaysOnlyThatNoth
 	if err := conn.Send(event.Enter(), press(event.KeyA), event.Sync(), event.Leave()); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	first, err := conn.Receive()
-	if err != nil || first != event.Features(event.FeatureClipboard) {
-		t.Fatalf("the side machine first sent %+v, %v, want Features with bit 0", first, err)
-	}
-	answer, err := conn.Receive()
-	if err != nil || answer != event.ClipboardUnchanged() {
-		t.Fatalf("the side machine answered the leave with %+v, %v, want unchanged", answer, err)
-	}
-	quiet := make(chan event.Event, 1)
+	frames := make(chan event.Event, 16)
 	go func() {
-		if next, err := conn.Receive(); err == nil {
-			quiet <- next
+		defer close(frames)
+		for {
+			frame, err := conn.Receive()
+			if err != nil {
+				return
+			}
+			select {
+			case frames <- frame:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
-	select {
-	case next := <-quiet:
+	nextWithin := func(limit time.Duration) (event.Event, bool) {
+		select {
+		case frame, open := <-frames:
+			return frame, open
+		case <-time.After(limit):
+			return event.Event{}, false
+		}
+	}
+	if first, sent := nextWithin(testPatience); !sent || first != event.Features(event.FeatureClipboard) {
+		t.Fatalf("the side machine first sent %+v (sent: %v), want Features with bit 0", first, sent)
+	}
+	if answer, sent := nextWithin(testPatience); !sent || answer != event.ClipboardUnchanged() {
+		t.Fatalf("the side machine answered the leave with %+v (sent: %v), want unchanged", answer, sent)
+	}
+	if next, sent := nextWithin(settling); sent {
 		t.Errorf("the side machine sent %+v after its answer, want nothing more", next)
-	case <-time.After(settling):
 	}
 	if reads := board.timesRead(); reads != 0 {
 		t.Errorf("the side machine read its clipboard %d times, want never", reads)

@@ -523,6 +523,8 @@ type Side struct {
 	receiving    int
 	isReceiving  bool
 	sending      []int
+
+	unchangedQueuedBehindReads []int
 }
 
 func NewSide(on Kinds) *Side {
@@ -556,14 +558,19 @@ func (s *Side) FocusArrives() {
 func (s *Side) FocusLeaves() []Action[ToCentral] {
 	s.focused = false
 	actions := s.stopReceiving()
-	if s.sharing() == 0 {
-		return append(actions, Action[ToCentral]{Do: Unchanged})
+	if s.sharing() != 0 {
+		s.unchangedQueuedBehindReads = append(s.unchangedQueuedBehindReads, 0)
+		return append(actions, Action[ToCentral]{Do: Read})
 	}
-	return append(actions, Action[ToCentral]{Do: Read})
+	if running := len(s.unchangedQueuedBehindReads); running > 0 {
+		s.unchangedQueuedBehindReads[running-1]++
+		return actions
+	}
+	return append(actions, Action[ToCentral]{Do: Unchanged})
 }
 
 func (s *Side) ReadUnchanged() []Action[ToCentral] {
-	return []Action[ToCentral]{{Do: Unchanged}}
+	return s.readEnded([]Action[ToCentral]{{Do: Unchanged}})
 }
 
 func (s *Side) ReadGave(text string, readErr error) ([]Action[ToCentral], error) {
@@ -621,16 +628,28 @@ func (s *Side) TransferEnded(transfer int) {
 
 func (s *Side) answer(kind Kinds, answer Action[ToCentral], readErr error) ([]Action[ToCentral], error) {
 	if s.sharing() == 0 {
-		return []Action[ToCentral]{{Do: Unchanged}}, nil
+		return s.readEnded([]Action[ToCentral]{{Do: Unchanged}}), nil
 	}
 	if readErr == nil && !s.sharing().Has(kind) {
 		readErr = notShared(kind)
 	}
 	s.offersFiles = readErr == nil && kind == Files
 	if readErr != nil {
-		return []Action[ToCentral]{{Do: Withdraw}}, readErr
+		return s.readEnded([]Action[ToCentral]{{Do: Withdraw}}), readErr
 	}
-	return []Action[ToCentral]{answer}, nil
+	return s.readEnded([]Action[ToCentral]{answer}), nil
+}
+
+func (s *Side) readEnded(answer []Action[ToCentral]) []Action[ToCentral] {
+	if len(s.unchangedQueuedBehindReads) == 0 {
+		return answer
+	}
+	queued := s.unchangedQueuedBehindReads[0]
+	s.unchangedQueuedBehindReads = s.unchangedQueuedBehindReads[1:]
+	for range queued {
+		answer = append(answer, Action[ToCentral]{Do: Unchanged})
+	}
+	return answer
 }
 
 func (s *Side) sharingChanged(sharedBefore Kinds) []Action[ToCentral] {
