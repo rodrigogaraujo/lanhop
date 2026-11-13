@@ -85,8 +85,8 @@ systemctl --user enable --now lanhop.service
 
 - `journalctl --user -u lanhop.service -f` shows what lanhop prints.
 - `systemctl --user disable --now lanhop.service` stops it and keeps it from starting again.
-- When lanhop ends with an error, systemd starts it again after 10 seconds. So a machine that is not paired yet starts receiving by itself soon after `lanhop pair`, or, from the next release, after `lanhop join` with the line that [`lanhop add`](../README.md#adding-a-machine) printed.
-- From the next release, the installer sets `LANHOP_SERVICE=1` in the unit. Only a lanhop started this way follows the version of the machine with the keyboard (see [Updating](../README.md#updating)), and it ends with exit status 3 after an update so that systemd starts the new version.
+- When lanhop ends with an error, systemd starts it again after 10 seconds. So a machine that is not paired yet starts receiving by itself soon after `lanhop pair`, or, once a release brings it, after `lanhop join` with the line that [`lanhop add`](../README.md#adding-a-machine) printed.
+- The installer on `main` sets `LANHOP_SERVICE=1` in the unit. Only a lanhop started this way can follow the version of the machine with the keyboard (see [Updating](../README.md#updating)). After an update it ends with exit status 3, so that systemd starts the new version. Following does not work yet: it needs a release that carries the keys of the project.
 - lanhop can read the input devices only in a session that began after step 3.
 
 `install.sh --uninstall` stops and removes the unit, the binary and, after asking, the files of step 2 when the installer wrote them. It keeps `~/.config/lanhop`, with the key of the machine and its trusted machines.
