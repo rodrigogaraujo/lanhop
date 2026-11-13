@@ -163,6 +163,11 @@ func TestTheJoinLinesNameTheReleaseOfTheCentral(t *testing.T) {
 func TestAddPrintsAJoinLineAndStoresTheMachineThatJoins(t *testing.T) {
 	central := useConfigDirectory(t)
 	trustAlready(t, central, trust.Peer{Name: "server", Fingerprint: someFingerprint(1)})
+	layoutPath := filepath.Join(central, layoutFileName)
+	drawn := []byte(pairing.OwnName() + " server\n")
+	if err := os.WriteFile(layoutPath, drawn, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 	run := runningAdd(t, "office-mac")
 
 	if err := joinAs(t, newJoiningMachine(t), run.output); err != nil {
@@ -176,11 +181,17 @@ func TestAddPrintsAJoinLineAndStoresTheMachineThatJoins(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &desk); status != http.StatusOK || err != nil {
 		t.Fatalf("GET /desk = %d %s, %v", status, body, err)
 	}
-	if !slices.Contains(desk.Machines, "office-mac") || slices.ContainsFunc(desk.Rows, func(row []string) bool { return slices.Contains(row, "office-mac") }) {
-		t.Errorf("the editor shows %+v, want office-mac among the machines and in no row, so in the tray", desk)
+	inARow := func(name string) bool {
+		return slices.ContainsFunc(desk.Rows, func(row []string) bool { return slices.Contains(row, name) })
+	}
+	if !slices.Contains(desk.Machines, "office-mac") || inARow("office-mac") || !inARow("server") {
+		t.Errorf("the editor shows %+v, want server on the desk and office-mac among the machines in no row, so in the tray", desk)
 	}
 	if err := run.finishInTheEditor(t); err != nil {
 		t.Fatalf("add: %v", err)
+	}
+	if kept, err := os.ReadFile(layoutPath); err != nil || string(kept) != string(drawn) {
+		t.Errorf("the layout file holds %q, %v after lanhop add, want it untouched: %q", kept, err, drawn)
 	}
 	shown := run.output.String()
 	for _, part := range []string{"LANHOP_JOIN=", "office-mac joined from 127.0.0.1. Ctrl+Alt+3 moves to it.", "waits in the tray"} {
@@ -194,6 +205,34 @@ func TestAddPrintsAJoinLineAndStoresTheMachineThatJoins(t *testing.T) {
 	}
 	if !slices.Equal(names, []string{"server", "office-mac"}) {
 		t.Errorf("the central trusts %v, want server and office-mac", names)
+	}
+}
+
+func TestAJoinStillCountsWhenTheLayoutEditorCannotOpen(t *testing.T) {
+	central := useConfigDirectory(t)
+	if err := os.MkdirAll(central, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(central, layoutFileName), []byte(pairing.OwnName()+" nobody-here\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	run := runningAdd(t, "office-mac")
+	if err := joinAs(t, newJoiningMachine(t), run.output); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if err := ended(t, run.finished); err != nil {
+		t.Fatalf("add with a layout file that has problems = %v, want the join to count", err)
+	}
+	expectNeverOpened(t, run.opened)
+	if shown := run.output.String(); !strings.Contains(shown, "did not open") || !strings.Contains(shown, "Place office-mac on the desk later with: lanhop layout --edit") {
+		t.Errorf("lanhop add printed %q, want it to say the editor did not open and how to place the machine later", shown)
+	}
+	names := []string{}
+	for _, peer := range trustedIn(t, central).Peers() {
+		names = append(names, peer.Name)
+	}
+	if !slices.Equal(names, []string{"office-mac"}) {
+		t.Errorf("the central trusts %v, want office-mac", names)
 	}
 }
 
