@@ -73,7 +73,9 @@ func share(args []string, stdout io.Writer) (err error) {
 	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stopWaiting()
 	waiting := func() {
-		fmt.Fprintln(stdout, waitingForAccessibility)
+		if !toldAboutThePermissionAlready() {
+			fmt.Fprintln(stdout, waitingForAccessibility)
+		}
 		record.set(status.Report{State: status.Accessibility})
 	}
 	if err := waitUntilAllowedToShare(interrupted, waiting); err != nil {

@@ -27,7 +27,9 @@ type connectionReport struct {
 }
 
 func (r *connectionReport) waitingForPermission() {
-	fmt.Fprintln(r.stdout, waitingForAccessibility)
+	if !toldAboutThePermissionAlready() {
+		fmt.Fprintln(r.stdout, waitingForAccessibility)
+	}
 	r.record.set(status.Report{State: status.Accessibility})
 }
 

@@ -46,7 +46,7 @@ lanhop.app/
 
 The installer reads only the first word. People read the sentence.
 
-**Waiting for Accessibility.** When the permission is missing, the service writes `accessibility` and checks again every second, instead of ending. When `AXIsProcessTrusted` turns true during the wait but the checks for posting and listening stay false for 3 seconds, the process ends with an error and launchd starts a new one, which sees the permission. A process that was trusted from its first check keeps waiting, because a new one would see the same. Either way the person restarts nothing.
+**Waiting for Accessibility.** When the permission is missing, the service writes `accessibility` and checks again every second, instead of ending. On three Macs on 2026-11-13 (macOS 15.5, 26.5 and 26.6), a running process never saw the permission it was given, not even through `AXIsProcessTrusted`, until it was started again. So after 10 seconds of waiting, lanhop starts itself again in place, with `exec`: the process ID stays, so launchd sees nothing, and macOS answers the new program. It does that every 10 seconds until the permission comes, and says what it waits for only the first time. The person restarts nothing.
 
 ## The installer on a Mac
 
@@ -80,6 +80,8 @@ check, polling "lanhop status" every second:
 - **Where the app goes**: `/Applications` when the user can write it (members of the `admin` group can), `~/Applications` otherwise. An app that is already installed is updated where it is, so that the launch agent and the Accessibility permission keep pointing at it. `LANHOP_SYSTEM_ROOT` stands for `/` in the tests, as it already does for the udev rule.
 - **The command**: `LANHOP_INSTALL_DIR` (default `~/.local/bin`) gets a link named `lanhop` to the program inside the app. A file that is not a link, left by 0.1.0, is replaced by the link, and the installer says that old "lanhop" or "a.out" entries in System Settings can be removed.
 - **Pane addresses**: `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` and `...?Privacy_LocalNetwork`.
+- **A service that waits for Accessibility** is restarted by the installer every 15 seconds with `launchctl kickstart -k`, so that a lanhop that does not start itself again, such as 0.1.1, also sees the permission once it is given.
+- **Starting the agent**: when `launchctl bootstrap` fails right after `bootout`, while the old lanhop is still ending, the installer waits 3 seconds and tries once more. This happened on one of three Macs on 2026-11-13.
 - **Time limits**: 10 minutes for the whole check, counted on the clock, because a try from the terminal can take 3 seconds; 60 seconds for a side machine to reach the central. When the limit runs out, the installer prints the last status line and says that `lanhop status` shows it later. The check is the last thing the installer prints, so its last line is the status.
 - **Nobody at the keyboard**: no pane is opened and nothing waits for a person. The installer waits up to 10 seconds for the service to start, prints `lanhop status` once, and also prints the Accessibility steps when that is what the service waits for.
 - **An installed lanhop without `lanhop status`** (an older release through `LANHOP_VERSION`): the installer keeps the steps of 0.1.0, with the Accessibility pane and Enter. It finds out by looking for `lanhop status` in the program, without running it.
