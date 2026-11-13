@@ -16,6 +16,7 @@ Usage:
   lanhop pair ADDRESS    on the other machine: pair with the machine that waits at ADDRESS
   lanhop share           on the machine with the keyboard: share it and the mouse with the paired machines
   lanhop receive         on the other machine: let the machine with the keyboard control this one
+  lanhop status          say what lanhop is doing on this machine: waiting for a permission, connecting or connected
   lanhop peers           list the machines this one trusts
   lanhop forget NAME     stop trusting a machine
   lanhop layout          show where the layout file is and how lanhop understands it
@@ -84,6 +85,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return pair(args, stdin, stdout)
 	case "share":
 		return share(args, stdout)
+	case "status":
+		return showStatus(args, stdout)
 	case "peers":
 		return listPeers(stdout)
 	case "forget":

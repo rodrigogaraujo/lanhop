@@ -18,6 +18,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
+	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
@@ -53,7 +54,7 @@ func (p peersOnDisk) read() *trust.Store {
 	return stored
 }
 
-func share(args []string, stdout io.Writer) error {
+func share(args []string, stdout io.Writer) (err error) {
 	flags := flag.NewFlagSet("share", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	listen := flags.String("listen", ":"+strconv.Itoa(transport.DefaultPort), "")
@@ -67,14 +68,36 @@ func share(args []string, stdout io.Writer) error {
 		return usageError("share takes no argument besides its options")
 	}
 
+	record := openStatus()
+	defer func() { record.ended(err) }()
+	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stopWaiting()
+	waiting := func() {
+		fmt.Fprintln(stdout, waitingForAccessibility)
+		record.set(status.Report{State: status.Accessibility})
+	}
+	if err := waitUntilAllowedToShare(interrupted, waiting); err != nil {
+		return err
+	}
+	if interrupted.Err() != nil {
+		return nil
+	}
 	capture, err := startCapture()
 	if err != nil {
 		return err
 	}
 	defer capture.Close()
-	interrupted, stopWaiting := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stopWaiting()
 	return shareUntil(interrupted, capture, *listen, stdout)
+}
+
+func reportReceivers(record statusFile) func(names []string) {
+	return func(names []string) {
+		if len(names) == 0 {
+			record.set(status.Report{State: status.Waiting})
+			return
+		}
+		record.set(status.Report{State: status.Sharing, Machines: names})
+	}
 }
 
 func shareUntil(done context.Context, capture sharer.Capture, address string, stdout io.Writer) error {
@@ -116,6 +139,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		Watch:  edge.DefaultSettings(),
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
+	machine.OnReceivers(reportReceivers(openStatus()))
 	go func() {
 		for {
 			receiver, err := listener.Accept()
