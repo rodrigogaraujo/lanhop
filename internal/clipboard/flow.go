@@ -11,6 +11,7 @@ const (
 	Unchanged
 	Write
 	Read
+	Mark
 )
 
 func (d Do) String() string {
@@ -27,6 +28,8 @@ func (d Do) String() string {
 		return "write"
 	case Read:
 		return "read"
+	case Mark:
+		return "mark"
 	}
 	return "nothing"
 }
@@ -46,46 +49,43 @@ type sideMachine struct {
 }
 
 type Desk[M comparable] struct {
-	on                bool
-	sides             map[M]*sideMachine
-	connected         []M
-	focused           M
-	focusOnSide       bool
-	last              string
-	number            int
-	hasCopy           bool
-	centralHolds      int
-	waitingFor        map[M]bool
-	waitingForCentral bool
+	on           bool
+	sides        map[M]*sideMachine
+	connected    []M
+	focused      M
+	focusOnSide  bool
+	last         string
+	number       int
+	hasCopy      bool
+	centralHolds int
+	answersDue   map[M]int
+	readsDue     int
 }
 
 func NewDesk[M comparable](on bool) *Desk[M] {
-	return &Desk[M]{on: on, sides: make(map[M]*sideMachine), waitingFor: make(map[M]bool)}
+	return &Desk[M]{on: on, sides: make(map[M]*sideMachine), answersDue: make(map[M]int)}
 }
 
 func (d *Desk[M]) Connected(side M) []Action[M] {
-	if _, already := d.sides[side]; !already {
+	if _, known := d.sides[side]; known {
+		d.writeOffAnswersOf(side)
+	} else {
 		d.connected = append(d.connected, side)
 	}
 	d.sides[side] = &sideMachine{}
-	return []Action[M]{{Do: Announce, To: side, On: d.on}}
+	return append([]Action[M]{{Do: Announce, To: side, On: d.on}}, d.deliverToFocused()...)
 }
 
 func (d *Desk[M]) Lost(side M) []Action[M] {
+	d.writeOffAnswersOf(side)
 	delete(d.sides, side)
 	d.connected = slices.DeleteFunc(d.connected, func(m M) bool { return m == side })
-	return d.noAnswerFrom(side)
+	return d.deliverToFocused()
 }
 
 func (d *Desk[M]) GaveUpOn(side M) []Action[M] {
-	return d.noAnswerFrom(side)
-}
-
-func (d *Desk[M]) noAnswerFrom(side M) []Action[M] {
-	if d.waitingFor[side] {
-		d.withdraw()
-	}
-	return d.answered(side)
+	d.writeOffAnswersOf(side)
+	return d.deliverToFocused()
 }
 
 func (d *Desk[M]) Says(side M, takes bool) []Action[M] {
@@ -93,12 +93,17 @@ func (d *Desk[M]) Says(side M, takes bool) []Action[M] {
 	if !connected {
 		return nil
 	}
+	tookPart := d.takingPart()
 	machine.takes = takes
 	if !takes {
 		machine.holds = 0
-		delete(d.waitingFor, side)
+		delete(d.answersDue, side)
 	}
-	return d.deliverToFocused()
+	var actions []Action[M]
+	if !tookPart && d.takingPart() {
+		actions = append(actions, Action[M]{Do: Mark})
+	}
+	return append(actions, d.deliverToFocused()...)
 }
 
 func (d *Desk[M]) Switch(on bool) []Action[M] {
@@ -108,12 +113,15 @@ func (d *Desk[M]) Switch(on bool) []Action[M] {
 	d.on = on
 	if !on {
 		d.withdraw()
-		d.waitingForCentral = false
-		clear(d.waitingFor)
+		d.readsDue = 0
+		clear(d.answersDue)
 	}
-	actions := make([]Action[M], 0, len(d.connected))
+	actions := make([]Action[M], 0, len(d.connected)+1)
 	for _, side := range d.connected {
 		actions = append(actions, Action[M]{Do: Announce, To: side, On: on})
+	}
+	if d.takingPart() {
+		actions = append(actions, Action[M]{Do: Mark})
 	}
 	return actions
 }
@@ -123,8 +131,8 @@ func (d *Desk[M]) FocusOn(side M) []Action[M] {
 		return nil
 	}
 	var actions []Action[M]
-	if !d.focusOnSide && d.on {
-		d.waitingForCentral = true
+	if !d.focusOnSide && d.takingPart() {
+		d.readsDue++
 		actions = append(actions, Action[M]{Do: Read})
 	}
 	d.awaitTheSideThatLostFocus()
@@ -143,12 +151,12 @@ func (d *Desk[M]) FocusOnCentral() []Action[M] {
 }
 
 func (d *Desk[M]) ReadUnchanged() []Action[M] {
-	d.waitingForCentral = false
+	d.readArrived()
 	return d.deliverToFocused()
 }
 
 func (d *Desk[M]) ReadGave(text string, readErr error) ([]Action[M], error) {
-	d.waitingForCentral = false
+	d.readArrived()
 	if !d.on {
 		return nil, nil
 	}
@@ -173,15 +181,20 @@ func (d *Desk[M]) SendStopped(side M) {
 }
 
 func (d *Desk[M]) UnchangedOn(side M) []Action[M] {
-	return d.answered(side)
+	d.answerArrived(side)
+	return d.deliverToFocused()
+}
+
+func (d *Desk[M]) WithdrawalFrom(side M) []Action[M] {
+	return d.CopyFrom(side, "")
 }
 
 func (d *Desk[M]) CopyFrom(side M, text string) []Action[M] {
 	machine, connected := d.sides[side]
 	if !d.on || !connected || !machine.takes {
-		return d.answered(side)
+		return d.UnchangedOn(side)
 	}
-	delete(d.waitingFor, side)
+	d.answerArrived(side)
 	switch {
 	case text == "":
 		d.withdraw()
@@ -194,18 +207,44 @@ func (d *Desk[M]) CopyFrom(side M, text string) []Action[M] {
 	return d.deliverToFocused()
 }
 
+func (d *Desk[M]) takingPart() bool {
+	if !d.on {
+		return false
+	}
+	for _, machine := range d.sides {
+		if machine.takes {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Desk[M]) awaitTheSideThatLostFocus() {
 	if !d.focusOnSide || !d.on {
 		return
 	}
 	if machine, connected := d.sides[d.focused]; connected && machine.takes {
-		d.waitingFor[d.focused] = true
+		d.answersDue[d.focused]++
 	}
 }
 
-func (d *Desk[M]) answered(side M) []Action[M] {
-	delete(d.waitingFor, side)
-	return d.deliverToFocused()
+func (d *Desk[M]) answerArrived(side M) {
+	if d.answersDue[side] > 1 {
+		d.answersDue[side]--
+		return
+	}
+	delete(d.answersDue, side)
+}
+
+func (d *Desk[M]) writeOffAnswersOf(side M) {
+	if d.answersDue[side] > 0 {
+		d.withdraw()
+	}
+	delete(d.answersDue, side)
+}
+
+func (d *Desk[M]) readArrived() {
+	d.readsDue = max(d.readsDue-1, 0)
 }
 
 func (d *Desk[M]) newCopy(text string) {
@@ -220,7 +259,7 @@ func (d *Desk[M]) withdraw() {
 }
 
 func (d *Desk[M]) deliverToFocused() []Action[M] {
-	if !d.on || !d.hasCopy || d.waitingForCentral || len(d.waitingFor) > 0 {
+	if !d.on || !d.hasCopy || d.readsDue > 0 || len(d.answersDue) > 0 {
 		return nil
 	}
 	if !d.focusOnSide {
@@ -254,8 +293,13 @@ func (s *Side) Connected() []Action[ToCentral] {
 	return []Action[ToCentral]{{Do: Announce, On: s.on}}
 }
 
-func (s *Side) CentralSays(takes bool) {
+func (s *Side) CentralSays(takes bool) []Action[ToCentral] {
+	tookPart := s.sharing()
 	s.centralTakes = takes
+	if !tookPart && s.sharing() {
+		return []Action[ToCentral]{{Do: Mark}}
+	}
+	return nil
 }
 
 func (s *Side) Switch(on bool) []Action[ToCentral] {
@@ -263,7 +307,11 @@ func (s *Side) Switch(on bool) []Action[ToCentral] {
 		return nil
 	}
 	s.on = on
-	return []Action[ToCentral]{{Do: Announce, On: on}}
+	actions := []Action[ToCentral]{{Do: Announce, On: on}}
+	if s.sharing() {
+		actions = append(actions, Action[ToCentral]{Do: Mark})
+	}
+	return actions
 }
 
 func (s *Side) FocusArrives() {
@@ -299,7 +347,7 @@ func (s *Side) ReadGave(text string, readErr error) ([]Action[ToCentral], error)
 }
 
 func (s *Side) CopyFromCentral(text string) []Action[ToCentral] {
-	if !s.on || !s.focused || text == "" {
+	if !s.sharing() || !s.focused || text == "" {
 		return nil
 	}
 	return []Action[ToCentral]{{Do: Write, Text: text}}

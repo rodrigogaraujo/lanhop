@@ -25,9 +25,13 @@ func expect[M comparable](t *testing.T, step string, got []Action[M], want ...Ac
 func deskWith(t *testing.T, sides ...string) *Desk[string] {
 	t.Helper()
 	d := NewDesk[string](true)
-	for _, side := range sides {
+	for i, side := range sides {
 		expect(t, "connect "+side, d.Connected(side), announce(side, true))
-		expect(t, side+" says it takes copies", d.Says(side, true))
+		var startsToTakePart []action
+		if i == 0 {
+			startsToTakePart = []action{{Do: Mark}}
+		}
+		expect(t, side+" says it takes copies", d.Says(side, true), startsToTakePart...)
 	}
 	return d
 }
@@ -51,7 +55,7 @@ func connectedSide(t *testing.T) *Side {
 	t.Helper()
 	s := NewSide(true)
 	expect(t, "connect", s.Connected(), toCentral{Do: Announce, On: true})
-	s.CentralSays(true)
+	expect(t, "the central takes copies", s.CentralSays(true), toCentral{Do: Mark})
 	s.FocusArrives()
 	return s
 }
@@ -249,7 +253,7 @@ func TestASideMachineSaysWhenItsClipboardDidNotChange(t *testing.T) {
 	expect(t, "nothing new while off", s.ReadUnchanged())
 }
 
-func TestACopyThePersonMadeWhileAnotherWasOnItsWayIsTheOneThatMoves(t *testing.T) {
+func TestACentralWhoseWriteWasSkippedSendsItsOwnCopyOnTheNextLeave(t *testing.T) {
 	d := deskWith(t, "A", "B")
 	d.FocusOn("A")
 	d.ReadUnchanged()
@@ -359,7 +363,7 @@ func TestSwitchingTheCentralOffTellsEverySideMachineAndForgetsTheLastCopy(t *tes
 
 	expect(t, "switch off", d.Switch(false), announce("A", false), announce("C", false))
 	expect(t, "switch off again", d.Switch(false))
-	expect(t, "switch on", d.Switch(true), announce("A", true), announce("C", true))
+	expect(t, "switch on", d.Switch(true), announce("A", true), announce("C", true), action{Do: Mark})
 	expect(t, "focus to C", d.FocusOn("C"), read())
 	expect(t, "the central had nothing new", d.ReadUnchanged())
 }
@@ -370,7 +374,7 @@ func TestSwitchingASideMachineTellsTheCentral(t *testing.T) {
 	expect(t, "switch off", s.Switch(false), toCentral{Do: Announce, On: false})
 	expect(t, "switch off again", s.Switch(false))
 	expect(t, "focus leaves while off", s.FocusLeaves())
-	expect(t, "switch on", s.Switch(true), toCentral{Do: Announce, On: true})
+	expect(t, "switch on", s.Switch(true), toCentral{Do: Announce, On: true}, toCentral{Do: Mark})
 	expect(t, "focus leaves while on", s.FocusLeaves(), toCentral{Do: Read})
 }
 
@@ -408,7 +412,7 @@ func TestASideMachineThatReconnectsGetsTheLastCopyAgain(t *testing.T) {
 	d.UnchangedOn("A")
 	d.Lost("A")
 	expect(t, "A connects again", d.Connected("A"), announce("A", true))
-	expect(t, "A says it takes copies", d.Says("A", true))
+	expect(t, "A says it takes copies", d.Says("A", true), action{Do: Mark})
 	expect(t, "focus to A", d.FocusOn("A"), read())
 	expect(t, "the central had nothing new", d.ReadUnchanged(), send("A", "x"))
 }
@@ -477,6 +481,7 @@ func TestActionsHaveNames(t *testing.T) {
 		Unchanged: "unchanged",
 		Write:     "write",
 		Read:      "read",
+		Mark:      "mark",
 		0:         "nothing",
 	}
 	for do, want := range names {
@@ -484,4 +489,113 @@ func TestActionsHaveNames(t *testing.T) {
 			t.Errorf("Do(%d) = %q, want %q", do, got, want)
 		}
 	}
+}
+
+func TestASideMachineLeftTwiceIsWaitedForTwice(t *testing.T) {
+	d := deskWith(t, "A", "B", "C")
+	copyOnTheCentralGoesTo(t, d, "A", "x")
+	d.FocusOn("B")
+	d.FocusOn("A")
+
+	expect(t, "focus from A to C, A left twice", d.FocusOn("C"))
+	expect(t, "A answers its first leave", d.UnchangedOn("A"))
+	expect(t, "B answers", d.UnchangedOn("B"))
+	expect(t, "A withdraws in answer to its second leave", d.WithdrawalFrom("A"))
+	expect(t, "focus to the central", d.FocusOnCentral())
+	expect(t, "C had nothing new", d.UnchangedOn("C"))
+}
+
+func TestTheCentralLeftTwiceWaitsForBothReads(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	expect(t, "focus to A", d.FocusOn("A"), read())
+	d.FocusOnCentral()
+	d.UnchangedOn("A")
+	expect(t, "focus to B before the first read ends", d.FocusOn("B"), read())
+
+	expect(t, "the first read gives a text", readGave(t, d, "first"))
+	actions, err := d.ReadGave("", ErrPrivate)
+	if !errors.Is(err, ErrPrivate) {
+		t.Errorf("error = %v, want %v", err, ErrPrivate)
+	}
+	expect(t, "the second read gives a private copy", actions)
+}
+
+func TestLosingTheSideMachineThatHasFocusLeavesNothingToWaitFor(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	copyOnTheCentralGoesTo(t, d, "A", "x")
+
+	expect(t, "A is lost while it has focus", d.Lost("A"))
+	expect(t, "focus goes back to the central", d.FocusOnCentral())
+	expect(t, "focus to B", d.FocusOn("B"), read())
+	expect(t, "the central had nothing new", d.ReadUnchanged(), send("B", "x"))
+}
+
+func TestASideMachineThatReconnectsWithoutBeingLostIsNoLongerWaitedFor(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	d.FocusOn("A")
+	d.ReadUnchanged()
+	d.FocusOn("B")
+
+	expect(t, "A connects again", d.Connected("A"), announce("A", true))
+	expect(t, "focus to the central", d.FocusOnCentral())
+	expect(t, "B had nothing new", d.UnchangedOn("B"))
+	expect(t, "focus to B", d.FocusOn("B"), read())
+	expect(t, "the central read its copy", readGave(t, d, "z"), send("B", "z"))
+}
+
+func TestASideMachineThatReconnectsBeforeAnsweringCountsAsAWithdrawal(t *testing.T) {
+	d := waitingForA(t)
+
+	expect(t, "A connects again", d.Connected("A"), announce("A", true))
+	expect(t, "focus to the central", d.FocusOnCentral())
+	expect(t, "B had nothing new", d.UnchangedOn("B"))
+}
+
+func TestASideMachineThatStartsToTakePartWaitsForTheAnswersStillDue(t *testing.T) {
+	d := deskWith(t, "A", "B", "C")
+	d.Says("C", false)
+	copyOnTheCentralGoesTo(t, d, "A", "x")
+	d.FocusOn("C")
+
+	expect(t, "C starts to take part while A has not answered", d.Says("C", true))
+	expect(t, "A had nothing new", d.UnchangedOn("A"), send("C", "x"))
+}
+
+func TestTheCentralDoesNotReadWhenNoSideMachineTakesPart(t *testing.T) {
+	d := NewDesk[string](true)
+	d.Connected("old")
+
+	expect(t, "focus to the old side machine", d.FocusOn("old"))
+	expect(t, "focus back on the central", d.FocusOnCentral())
+}
+
+func TestTheCentralTakesAFreshMarkWhenItStartsToTakePart(t *testing.T) {
+	d := NewDesk[string](false)
+	d.Connected("A")
+
+	expect(t, "A takes copies while the central is off", d.Says("A", true))
+	expect(t, "switch on", d.Switch(true), announce("A", true), action{Do: Mark})
+	expect(t, "A stops taking copies", d.Says("A", false))
+	expect(t, "A takes copies again", d.Says("A", true), action{Do: Mark})
+	d.Connected("B")
+	expect(t, "B takes copies too", d.Says("B", true))
+}
+
+func TestASideMachineTakesAFreshMarkWhenItStartsToTakePart(t *testing.T) {
+	s := NewSide(true)
+	s.Connected()
+
+	expect(t, "the central takes copies", s.CentralSays(true), toCentral{Do: Mark})
+	expect(t, "the central says it again", s.CentralSays(true))
+	expect(t, "the central stops", s.CentralSays(false))
+	expect(t, "switch off", s.Switch(false), toCentral{Do: Announce, On: false})
+	expect(t, "the central takes copies while this side is off", s.CentralSays(true))
+	expect(t, "switch on", s.Switch(true), toCentral{Do: Announce, On: true}, toCentral{Do: Mark})
+}
+
+func TestASideMachineDropsACopyThatArrivesAfterTheCentralStopped(t *testing.T) {
+	s := connectedSide(t)
+	s.CentralSays(false)
+
+	expect(t, "a copy still on its way", s.CopyFromCentral("x"))
 }
