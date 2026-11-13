@@ -68,14 +68,16 @@ func heard(frame event.Event) string {
 	return fmt.Sprintf("heard %+v", frame)
 }
 
-func connectedDeskWithAClipboard(t *testing.T) (*desk, *recordedClipboard, *transport.Listener, *transport.Conn) {
+func connectedDeskWithAClipboard(t *testing.T) (*desk, *recordedClipboard, *heldAddress, *transport.Conn) {
 	t.Helper()
 	d := newDesk(t)
 	board := &recordedClipboard{}
 	d.clipboard = board
+	address := holdAddress(t)
 	listener := d.sharerListens(t, loopback)
-	d.receiverRuns(t, listener.Addr().String())
-	return d, board, listener, accept(t, listener)
+	address.passTo(t, listener)
+	d.receiverRuns(t, address.String())
+	return d, board, address, accept(t, listener)
 }
 
 func TestTheClipboardHearsOfFocusAndOfControlFramesAndInputIsReplayedAsBefore(t *testing.T) {
@@ -99,7 +101,7 @@ func TestTheClipboardHearsOfFocusAndOfControlFramesAndInputIsReplayedAsBefore(t 
 }
 
 func TestTheClipboardSendsOnTheConnectionItIsGivenAndHearsWhenItIsLost(t *testing.T) {
-	_, board, listener, sharerSide := connectedDeskWithAClipboard(t)
+	_, board, address, sharerSide := connectedDeskWithAClipboard(t)
 	board.expect(t, "connected")
 
 	if err := board.connection(t).Send(event.Features(event.FeatureClipboard)); err != nil {
@@ -108,7 +110,7 @@ func TestTheClipboardSendsOnTheConnectionItIsGivenAndHearsWhenItIsLost(t *testin
 	if got, err := sharerSide.Receive(); err != nil || got != event.Features(event.FeatureClipboard) {
 		t.Fatalf("the sharer received %+v, %v, want the features the clipboard sent", got, err)
 	}
-	listener.Close()
+	address.refuse()
 	sharerSide.Close()
 
 	board.expect(t, "connected", "lost")
