@@ -142,10 +142,13 @@ func receive(args []string, stdout io.Writer) (err error) {
 
 	fmt.Fprintf(stdout, "Receiving from %q at %s. Press Ctrl+C to stop.\n", sharer.Name, sharer.Address)
 	report.connecting()
+	clipboard, stopSharingTheClipboard := clipboardOfThisSide(interrupted, directory, stdout)
+	defer stopSharingTheClipboard()
 	return receiver.Run(interrupted, receiver.Config{
 		Transport: transport.Config{Identity: local},
 		Sharer:    sharer,
 		Replay:    replay,
+		Clipboard: clipboard,
 		OnConnect: report.connected,
 		OnFailure: report.failed,
 	})
