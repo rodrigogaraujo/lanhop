@@ -38,18 +38,21 @@ curl -fsSL https://raw.githubusercontent.com/rodrigogaraujo/lanhop/main/install.
 
 The installer asks before each step:
 
-1. It downloads the build for the machine (Linux or macOS, x86-64 or arm64) from the latest [release](https://github.com/rodrigogaraujo/lanhop/releases), checks it against the `SHA256SUMS` of that release and puts `lanhop` in `~/.local/bin`. This needs no root.
+1. It downloads the build for the machine (Linux or macOS, x86-64 or arm64) from the latest [release](https://github.com/rodrigogaraujo/lanhop/releases), checks it against the `SHA256SUMS` of that release and puts `lanhop` in `~/.local/bin`. On macOS it puts `lanhop.app` in Applications and makes `~/.local/bin/lanhop` a link to it. This needs no root.
 2. It asks whether the keyboard and mouse are plugged into this machine. That machine shares them, and the others receive.
 3. On Linux, it shows the commands of the [permission steps](docs/setup-linux.md), which need `sudo`, and asks before running them. Then it writes a systemd user unit and offers to enable it, so that lanhop starts when you log in.
-4. On macOS, it offers a launch agent that starts lanhop when you log in. Then it opens the [Accessibility](docs/setup-macos.md) pane of System Settings and waits until you have allowed lanhop there.
+4. On macOS, it offers a launch agent that starts lanhop when you log in.
 5. It offers to pair the machine, and to arrange the desk on the machine with the keyboard.
+6. It checks lanhop as it runs at login. On macOS it opens the pane of each permission that is missing, [Accessibility and Local Network](docs/setup-macos.md), and says what to switch on. It ends when the machine is connected, or says what is still missing.
+
+`lanhop status` says the same at any time: whether lanhop is waiting for a permission, trying to connect, connected, or why it stopped.
 
 Without a terminal to ask on, it installs the binary and changes nothing else. To read the script before running it, download [install.sh](install.sh) and run `sh install.sh`.
 
 | Variable | What it does |
 |---|---|
 | `LANHOP_VERSION=v0.1.0` | Installs that release instead of the latest one |
-| `LANHOP_INSTALL_DIR=DIR` | Puts the binary in `DIR` instead of `~/.local/bin` |
+| `LANHOP_INSTALL_DIR=DIR` | Puts the binary in `DIR` instead of `~/.local/bin`. On macOS, `DIR` gets the `lanhop` command, and the app still goes to Applications |
 | `LANHOP_ROLE=share` or `receive` | Answers the question about the keyboard and mouse |
 | `LANHOP_YES=1` | Agrees to every step and asks nothing, for installs with nobody at the keyboard. Pairing still needs a person |
 
@@ -65,9 +68,9 @@ To remove lanhop:
 curl -fsSL https://raw.githubusercontent.com/rodrigogaraujo/lanhop/main/install.sh | sh -s -- --uninstall
 ```
 
-It stops lanhop and removes the service, the binary and, after asking, the udev rule that the installer wrote. It keeps the key of the machine and its trusted machines, and says where they are. If you installed with `LANHOP_INSTALL_DIR`, give it again.
+It stops lanhop and removes the service, the binary, `lanhop.app` on macOS and, after asking, the udev rule that the installer wrote. It keeps the key of the machine and its trusted machines, and says where they are. If you installed with `LANHOP_INSTALL_DIR`, give it again.
 
-Each release also has the archives themselves, one per system and architecture, with `SHA256SUMS`. The macOS builds are not signed: [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-build-is-not-signed) says what that means when you download one with a browser.
+Each release also has the archives themselves, one per system and architecture, with `SHA256SUMS`. The macOS archives hold `lanhop.app`, which is not signed with an Apple developer certificate: [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-build-is-not-signed) says what that means when you download one with a browser.
 
 ## Roadmap
 
@@ -86,6 +89,7 @@ Each release also has the archives themselves, one per system and architecture, 
 - [ ] Clipboard sharing
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
   - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built, not yet tried on a real machine
+  - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the app, built by hand, works on four Macs; the installer has not run on a real Mac yet
   - [ ] Homebrew formula
 
 ## Layout
@@ -134,7 +138,7 @@ lanhop layout --edit
 
 lanhop reads and creates keyboard and mouse input, and every system asks you to allow that first:
 
-- **macOS:** the Accessibility permission. See [Setting up lanhop on macOS](docs/setup-macos.md).
+- **macOS:** the Accessibility permission, and Local Network on a Mac that is controlled from another machine. See [Setting up lanhop on macOS](docs/setup-macos.md).
 - **Linux:** access to the input devices and to `uinput`. See [Setting up lanhop on Linux](docs/setup-linux.md).
 
 ## Building

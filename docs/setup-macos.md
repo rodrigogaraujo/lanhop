@@ -1,23 +1,26 @@
 # Setting up lanhop on macOS
 
-> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person has shared the keyboard and trackpad of one Mac (macOS 26.5, Apple silicon) with a Linux machine, by hotkey and through the screen edge. A Mac controlled from another machine has been tried only with input that a program generated, not with a person typing. Two Macs together have not been tried. The build for Intel Macs has never been run.
+> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person uses lanhop on a desk of four Macs and a Linux machine: an Intel Mac shares its keyboard and mouse, and Macs with macOS 15.5, 26.5 and 26.6 (Apple silicon) and the Linux machine receive. Those Macs ran a `lanhop.app` built by hand the way this page describes. The installer that builds it has not been run on a real Mac yet.
 
 ## The quick way: the installer
 
-The [installer](../README.md#install) downloads lanhop, offers a launch agent that starts it when you log in, opens the Accessibility pane and tells you what to add there. [Starting lanhop when you log in](#starting-lanhop-when-you-log-in) describes what it sets up.
+The [installer](../README.md#install) puts `lanhop.app` in Applications, offers a launch agent that starts it when you log in, and then checks lanhop as it runs: it opens the pane of each permission that is missing, says what to switch on, and ends when the Mac is connected or says what is still missing. [Starting lanhop when you log in](#starting-lanhop-when-you-log-in) describes what it sets up.
 
-The rest of this page explains the permission and the same setup by hand.
+`lanhop status` says at any time what lanhop is doing on the Mac: waiting for a permission, trying to connect, connected, or why it stopped.
 
-## Why lanhop needs a permission
+The rest of this page explains the permissions and the same setup by hand.
 
-To share a keyboard and mouse, lanhop has to do two things that macOS protects:
+## Why lanhop needs permissions
+
+To share a keyboard and mouse, lanhop has to do things that macOS protects:
 
 - **read** what you type and how you move the mouse, when the Mac is the machine with the keyboard;
-- **create** key presses and mouse movement, when the Mac is controlled from another machine.
+- **create** key presses and mouse movement, when the Mac is controlled from another machine;
+- **reach** the machine with the keyboard over the local network, when the Mac is controlled from another machine and lanhop starts at login.
 
-macOS allows this only to programs you have approved under **Accessibility**. Without it, lanhop starts, tells you the permission is missing and does nothing else.
+macOS allows the first two only to programs you have approved under **Accessibility**, and the third under **Local Network**. Without Accessibility, lanhop waits, says that the permission is missing, and carries on by itself once you give it. Without Local Network, it cannot connect: see [The Local Network permission](#the-local-network-permission).
 
-You grant it once per Mac.
+You grant each one once per Mac.
 
 ## Granting the permission
 
@@ -42,14 +45,26 @@ macOS gives the permission to the program that starts lanhop, not always to lanh
 |---|---|
 | From a terminal window | Your terminal: **Terminal**, **iTerm**, **Ghostty** and so on |
 | From the terminal inside an editor | The editor: **Visual Studio Code**, **Zed** and so on |
-| From the launch agent that the installer sets up | **lanhop** itself, the file `~/.local/bin/lanhop` |
+| From the launch agent that the installer sets up | **lanhop**, the app in Applications |
 
-### Adding lanhop itself
+### Adding the lanhop app
 
-The file chooser of step 3 does not show `~/.local`, because its name starts with a dot. With the chooser open, press Command+Shift+G, type `~/.local/bin/lanhop`, press Return and click **Open**.
+The file chooser of step 3 starts in Applications: choose **lanhop** and click **Open**. When the installer put the app in the Applications folder of your home, because the one of the Mac could not be written, press Command+Shift+G in the chooser, type `~/Applications`, press Return, then choose **lanhop**.
+
+If the list already has a **lanhop** or an **a.out** from lanhop 0.1.0, remove it with the **−** button. That was another program for macOS, and its switch does nothing for the app.
+
+## The Local Network permission
+
+A Mac that is controlled from another machine connects to it over the local network. macOS lets a program started at login do that only after you allow it, while a program started from a terminal may do it without asking.
+
+- The first time lanhop started at login tries to connect, macOS asks whether lanhop may find devices on your local network. Click **Allow**. The first try fails while macOS asks, and the next one connects.
+- If you missed the question or said no, open **System Settings → Privacy & Security → Local Network** and switch on **lanhop**. lanhop connects on its next try, with no restart.
+- While it is blocked, `lanhop status` says `blocked`, and the log says `no route to host`.
+- An **a.out** in that list is lanhop 0.1.0, a bare program that macOS could not tie the setting to. Its switch does nothing for the app. [ADR 6](adr/0006-an-app-bundle-with-its-own-identifier-on-macos.md) says why lanhop is an app now.
 
 ## If it does not work
 
+- **Start with `lanhop status`.** It asks the lanhop that runs at login, not your terminal, so its answer is the one that counts. `lanhop devices` answers for the terminal you type it in.
 - **The switch is on, but lanhop still says the permission is missing.** Select the program in the list, remove it with the **−** button and add it again. This is needed after the program was updated or rebuilt, because macOS ties the permission to the exact program it approved.
 - **You granted it and nothing changed.** Quit the terminal completely (Cmd+Q, not only closing the window) and open it again.
 - **The + button is greyed out, or the list cannot be changed.** The Mac is managed by an organisation that blocks this setting. Ask whoever manages it.
@@ -57,30 +72,33 @@ The file chooser of step 3 does not show `~/.local`, because its name starts wit
 
 ## Starting lanhop when you log in
 
-The installer writes a launch agent to `~/Library/LaunchAgents/com.github.rodrigogaraujo.lanhop.plist`. It runs `~/.local/bin/lanhop share` or `~/.local/bin/lanhop receive` every time you log in, as your own user.
+The installer puts `lanhop.app` in `/Applications`, or in `~/Applications` when `/Applications` cannot be written, and makes `~/.local/bin/lanhop` a link to the program inside it. An app that is already installed is updated where it is.
 
-- The program to allow under Accessibility is then **lanhop** itself: see [Adding lanhop itself](#adding-lanhop-itself).
-- lanhop writes what it prints to `~/Library/Logs/lanhop.log`.
-- When lanhop ends with an error, macOS starts it again after 10 seconds. So it starts working by itself soon after you allow it, and soon after `lanhop pair`. `pkill lanhop` ends it until the next login.
+It writes a launch agent to `~/Library/LaunchAgents/com.github.rodrigogaraujo.lanhop.plist`. It runs `/Applications/lanhop.app/Contents/MacOS/lanhop share` or `... receive` every time you log in, as your own user, and names the app as responsible for it.
+
+- The program to allow under Accessibility and Local Network is then the **lanhop** app: see [Adding the lanhop app](#adding-the-lanhop-app).
+- lanhop writes what it prints to `~/Library/Logs/lanhop.log`, and what it is doing to the file `status` that `lanhop status` reads.
+- Without Accessibility, lanhop waits and carries on once you allow it. When it ends with an error, such as before `lanhop pair`, macOS starts it again after 10 seconds. `pkill lanhop` ends it until the next login.
 - `launchctl bootout gui/$(id -u)/com.github.rodrigogaraujo.lanhop` stops it now. It starts again at the next login for as long as the file exists.
-- After every update of lanhop, remove it from the Accessibility list with the **−** button and add it again. [The macOS build is not signed](#the-macos-build-is-not-signed) says why.
+- After an update, macOS may take the new app for another program: if `lanhop status` says that a permission is missing although its switch is on, remove lanhop from that list with the **−** button and add it again. [The macOS build is not signed](#the-macos-build-is-not-signed) says why.
 
-`install.sh --uninstall` stops and removes the launch agent, its log and the binary. It keeps `~/Library/Application Support/lanhop`, with the key of the Mac and its trusted machines. Remove lanhop from the Accessibility list yourself.
+`install.sh --uninstall` stops and removes the launch agent, its log, the app and the link. It keeps `~/Library/Application Support/lanhop`, with the key of the Mac and its trusted machines. Remove lanhop from the Accessibility and Local Network lists yourself.
 
 ## The macOS build is not signed
 
-The macOS builds of a release are not signed with an Apple developer certificate and are not notarized by Apple. Two things follow:
+The macOS archive of a release holds `lanhop.app`, signed ad hoc with its own identifier, `com.github.rodrigogaraujo.lanhop`. It is not signed with an Apple developer certificate and is not notarized by Apple. Two things follow:
 
-- **A build downloaded with a browser does not start.** The browser marks the archive as downloaded from the internet, and macOS refuses to run a program that carries that mark unless Apple has checked it: it says that it could not verify that "lanhop" is free of malware. The installer downloads with `curl`, which sets no mark, so the lanhop it installs starts. If you download the archive with a browser, download `SHA256SUMS` too, check the archive against it, and then take the mark away from the unpacked program:
+- **An app downloaded with a browser does not start.** The browser marks the archive as downloaded from the internet, and macOS refuses to run a program that carries that mark unless Apple has checked it: it says that it could not verify that "lanhop" is free of malware. The installer downloads with `curl`, which sets no mark, so the lanhop it installs starts. If you download the archive with a browser, download `SHA256SUMS` too, check the archive against it, take the mark away from the unpacked app and move it to Applications:
 
   ```sh
   shasum -a 256 --ignore-missing -c SHA256SUMS
-  xattr -d com.apple.quarantine lanhop
+  xattr -dr com.apple.quarantine lanhop.app
+  mv lanhop.app /Applications/
   ```
 
-  Or try to run it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
+  Or try to open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
 
-- **macOS ties the Accessibility permission to the exact file it approved.** A signed program keeps its permission across updates. lanhop does not: after each update, remove it from the Accessibility list and add it again.
+- **macOS may take each new build for another program.** An ad hoc signature changes with every build, so a switch that is on for the old app may do nothing for the new one. A signed app keeps its permissions across updates. This has not been measured yet: if it happens, remove lanhop from the list with the **−** button and add it again.
 
 ## Letting another machine control the Mac
 
@@ -112,7 +130,7 @@ lanhop share
 
 While another machine has focus, lanhop hides the cursor of the Mac, and shows it again when focus comes back. To hide it, lanhop calls two functions of macOS that Apple does not document: [ADR 5](adr/0005-private-macos-functions-to-hide-the-cursor.md) says why. If a version of macOS stops honouring them, the cursor stays visible and still, and everything else works as before.
 
-`lanhop devices` shows whether the Mac allows lanhop to read and to control the keyboard and mouse.
+`lanhop devices` shows whether the Mac allows the terminal you type it in to read and to control the keyboard and mouse. For the lanhop that runs at login, use `lanhop status`.
 
 ### Switching through the screen edges
 
@@ -144,6 +162,6 @@ These are rules of macOS, not settings:
 - **Password fields hide the keyboard.** While a password field is active on a Mac that is sharing its keyboard, macOS hides the keys from every other program. The switching hotkey does not work until you leave the field.
 - **Login window and lock screen.** A Mac that is being controlled cannot be unlocked from another machine in the first release. Unlock it with its own keyboard.
 
-## Removing the permission
+## Removing the permissions
 
-Open **System Settings → Privacy & Security → Accessibility**, select the program and click **−**. lanhop stops working on that Mac at once.
+Open **System Settings → Privacy & Security → Accessibility**, select the program and click **−**. lanhop stops working on that Mac at once. Under **Local Network**, switch lanhop off.
