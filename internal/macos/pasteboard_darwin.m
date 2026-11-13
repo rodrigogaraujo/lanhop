@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static NSString *const lanhopConcealedType = @"org.nspasteboard.ConcealedType";
 
@@ -137,14 +138,16 @@ int64_t lanhop_pasteboard_write_files(const char *name, const char *paths, int64
 		const char *end = paths + length;
 		while (path < end) {
 			size_t size = strnlen(path, (size_t)(end - path));
-			if (size == 0) {
+			if (size == 0 || size == (size_t)(end - path)) {
 				return LANHOP_PASTEBOARD_REFUSED;
 			}
-			NSString *string = [[[NSString alloc] initWithBytes:path length:size encoding:NSUTF8StringEncoding] autorelease];
-			if (string == nil) {
+			struct stat info;
+			BOOL directory = stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+			NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path isDirectory:directory relativeToURL:nil];
+			if (url == nil) {
 				return LANHOP_PASTEBOARD_REFUSED;
 			}
-			[urls addObject:[NSURL fileURLWithPath:string]];
+			[urls addObject:url];
 			path += size + 1;
 		}
 		if ([urls count] == 0) {

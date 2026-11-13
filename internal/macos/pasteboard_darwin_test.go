@@ -198,6 +198,7 @@ func TestFilesWrittenToThePasteboardReadBackAsTheSamePathsInOrder(t *testing.T) 
 	paths := []string{
 		filepath.Join(dir, "a name with spaces.txt"),
 		filepath.Join(dir, "olá, ação.pdf"),
+		filepath.Join(dir, "decomposed ação.pdf"),
 		filepath.Join(dir, "🙂👍🏽 日本語.png"),
 		filepath.Join(dir, "50% off.txt"),
 		filepath.Join(dir, "not%20a space.txt"),
@@ -215,7 +216,7 @@ func TestFilesWrittenToThePasteboardReadBackAsTheSamePathsInOrder(t *testing.T) 
 		t.Fatalf("ReadFiles: %v", err)
 	}
 	if !slices.Equal(got, paths) {
-		t.Errorf("ReadFiles = %q, want %q", got, paths)
+		t.Errorf("ReadFiles = %+q, want %+q", got, paths)
 	}
 }
 
@@ -379,6 +380,11 @@ func TestAFileCopyWrittenByLanhopHoldsFileURLsAndIsNotText(t *testing.T) {
 	t.Logf("types after WriteFiles: %q", types)
 	if !slices.Contains(types, "public.file-url") {
 		t.Errorf("types = %q, want public.file-url among them", types)
+	}
+	for _, plain := range []string{"public.utf8-plain-text", "public.plain-text", "NSStringPboardType"} {
+		if slices.Contains(types, plain) {
+			t.Errorf("types = %q, want no %s among them", types, plain)
+		}
 	}
 	if !errors.Is(err, clipboard.ErrNotText) || text != "" {
 		t.Errorf("Read = %q, %v, want nothing and %v", text, err, clipboard.ErrNotText)
