@@ -37,7 +37,7 @@ lanhop add office-mac
 
 ## The pieces
 
-**`lanhop add NAME`** runs on the central, apart from `lanhop share`. It refuses a name that is invalid, taken, or the name of the central. Binding port 24746 keeps a second `lanhop add`, or a `lanhop pair` that waits, from running at the same time; the second one says so. It serves each connection on its own, with a deadline of 10 seconds from accept and at most eight at once (ADR 12). It prints the address of each wrong token and of each connection closed for silence.
+**`lanhop add NAME`** runs on the central, apart from `lanhop share`. It refuses a name that is invalid, taken, or the name of the central. It always listens on every interface, `:24746`; `--address` changes only the printed line. Binding that port keeps a second `lanhop add`, or a `lanhop pair` that waits on every interface, from running at the same time, and both commands say that another pairing is waiting when the port is taken. It serves each connection on its own, with a deadline of 10 seconds from accept and at most eight at once (ADR 12). It prints the address of each wrong token and of each connection closed for silence.
 
 **After the join**, `lanhop add` prints the name, the address and the hotkey of the new machine, opens the editor, and ends. Whether the new machine is connected shows in `lanhop status`, since a new Mac may still wait for its permissions. `lanhop share` reads peers from disk at each use (`peersOnDisk` in `cmd/lanhop/share.go`), so the new machine can take focus at once, and `lanhop add` does not talk to `lanhop share`.
 
@@ -45,7 +45,7 @@ lanhop add office-mac
 
 **The version in the line** is the release of the central, so that `install.sh`, which installs the latest release unless `LANHOP_VERSION` says otherwise, installs the same one. A central that is not a release prints a line without it.
 
-**`lanhop join ADDRESS CODE`** runs on the new machine. Before connecting, it looks in its own store, in the order of ADR 12: a machine already trusted whose key starts with the 80 bits of the code ends with status 0, so that the installer can be typed again (FR-010); another central refuses; its own key refuses. Then it does the exchange of ADR 12 and stores the central. It starts nothing: under the installer, the installer starts the service next. Run by hand, it ends by saying that a running side machine service should connect within about 10 seconds (deduced from `RestartSec=10` and the throttle of launchd), or, when there is no such service, by printing the installer line. When the central is not waiting, the connection is refused, and `lanhop join` says to run `lanhop add` again. When it cannot reach the central at all, it says that a VPN can block the local network.
+**`lanhop join ADDRESS CODE`** runs on the new machine. Before connecting, it looks in its own store, in the order of ADR 12: a machine already trusted whose key starts with the 80 bits of the code ends with status 0, so that the installer can be typed again (FR-010), and says that if the central no longer lists this machine, `lanhop forget` of the central here and the same line again start over; another central refuses; its own key refuses. Then it does the exchange of ADR 12 and stores the central. It starts nothing: under the installer, the installer starts the service next. Run by hand, it ends by saying that a running side machine service should connect within about 10 seconds (deduced from `RestartSec=10` and the throttle of launchd), or, when there is no such service, by printing the installer line. When the central is not waiting, the connection is refused, and `lanhop join` says to run `lanhop add` again. When it cannot reach the central at all, it says that a VPN can block the local network.
 
 **The hotkey** of a side machine is its place in `lanhop peers` plus one, as today (`firstReceiverNumber` in `internal/sharer/sharer.go`). `lanhop add` prints it. A ninth side machine joins without a hotkey, and `lanhop add` says so.
 
@@ -55,9 +55,10 @@ lanhop add office-mac
 
 ## The installer
 
-- `LANHOP_JOIN="ADDRESS CODE"` makes the role `receive`, counts as yes to the questions of the installer, as `LANHOP_YES=1` does, and runs `lanhop join` after installing and before it starts the service and checks the permissions (spec 008). The installer says what it did at each step.
+- `LANHOP_JOIN="ADDRESS CODE"` makes the role `receive`, answers yes to the questions of the installer without asking, skips the advice about `lanhop pair`, and runs `lanhop join` after installing and before it writes and starts the service. Unlike `LANHOP_YES=1`, it still opens the terminal, so that the installer waits for Accessibility and Local Network as spec 008 says. The installer says what it did at each step.
+- When the join fails, refused or unreachable, the installer stops before it writes or starts the service, ends with an error, and says to run `lanhop add` again on the central.
 - Typing the line again is safe: the steps that are done are done again or skipped, as today, and `lanhop join` ends with status 0 when the central is already trusted.
-- When the install folder is not on the `PATH`, the installer asks, unless `LANHOP_YES=1` or `LANHOP_JOIN` is set, and adds one line to a file the shell reads in a new terminal, and says which file:
+- When the install folder is not on the `PATH`, the installer asks, or goes ahead at once under `LANHOP_YES=1` or `LANHOP_JOIN`, adds one line to a file the shell reads in a new terminal, and says which file:
 
 | Shell | File |
 |---|---|
@@ -88,9 +89,9 @@ The messages of `lanhop pair` stay as they are.
 | How the two machines learn each other | A join code with 80 bits of the key of the central and a 40-bit token. [ADR 12](../../docs/adr/0012-joining-with-a-line-that-carries-the-key-of-the-central.md) | One line in one direction, no cryptography of our own, and the token never reaches a machine in the middle | A code of 24 characters to type when it cannot be copied |
 | Who listens for joins | `lanhop add`, only while it waits | Nothing listens for joins the rest of the time, and `lanhop share` does not change | A terminal on the central for the length of the join |
 | Who names the machine | The central, in `lanhop add NAME` | The person names it once, in the place where the names are used | The name of the host is no longer proposed for side machines |
-| Placing the machine | The tray of the layout editor | The layout file keeps its comments, and edge switching does not turn on by itself | One drag for the person |
+| Placing the machine | The tray of the layout editor | `lanhop add` does not rewrite the layout file, and edge switching does not turn on by itself | One drag for the person |
 | Role of a machine that joins | Side machine, without asking | The question about the keyboard made a laptop a central | A machine cannot become a central by joining |
-| `PATH` | One line in a file the shell reads, after asking | A new terminal finds `lanhop` | A file of the person is changed |
+| `PATH` | One line in a file the shell reads, after asking, or at once with a join line | A new terminal finds `lanhop` | A file of the person is changed |
 
 ## Tasks
 
@@ -109,15 +110,17 @@ One task, one pull request. Each verify list says what must be true before the t
   - A `lanhop pair` against a waiting `lanhop add` fails at the first message, and the wait goes on. A join against a waiting `lanhop pair` fails at the first message, and `lanhop pair` ends, as it does on any stray connection today (FR-012).
   - After a join, and when the wait ends (shortened in the test), the port takes no more connections.
 - [ ] **2. `lanhop add` and `lanhop join`.** The commands, the address, the version, the refusals, and the wait for the connection. → Verify with tests:
-  - `lanhop add` refuses a taken name, the name of the central, an invalid name, and a second `lanhop add`.
+  - `lanhop add` refuses a taken name, the name of the central, an invalid name, and a second `lanhop add`; `lanhop add` and `lanhop pair` each say that another pairing waits when the port is taken.
   - A machine stored by `lanhop add` takes focus in a running `lanhop share` with no restart, in an integration test.
   - `lanhop add` prints the name, address and hotkey of the new machine right after the join.
-  - With nothing listening: `lanhop join` on a machine that already trusts the central ends with status 0 and changes nothing; on a machine that trusts another central, or with its own key in the code, it refuses; otherwise it says to run `lanhop add` again. With an address that does not answer, it mentions a VPN.
+  - With nothing listening: `lanhop join` on a machine that already trusts the central ends with status 0, changes nothing, and prints how to start over; on a machine that trusts another central, or with its own key in the code, it refuses; otherwise it says to run `lanhop add` again. With an address that does not answer, it mentions a VPN.
   - The printed lines carry the address, the code, the version, and the installer at the tag of the release; the address skips tunnels, bridges and public addresses, and several candidates are all printed.
 - [ ] **3. The hotkey and the editor.** → Verify with tests: the hotkey printed is the one `lanhop share` uses; a ninth machine is told it has no hotkey; the editor opens with the new machine in the tray, and the layout file is not written.
 - [ ] **4. `lanhop status` lists the desk.** → Verify with tests on the status file, after connections and losses in an integration test: each side machine with its hotkey, and `connected`, `not connected since HH:MM`, with the date on another day, or `not connected since lanhop started`.
 - [ ] **5. The installer.** `LANHOP_JOIN`, the role without asking, going on from where it stopped, and the `PATH` line. → Verify in `install_test.go`:
-  - With `LANHOP_JOIN`, no question is asked, each step is said, and `lanhop join` runs before the service starts.
+  - With `LANHOP_JOIN`, no question is asked, each step is said, and `lanhop join` runs before the service is written.
+  - On macOS with `LANHOP_JOIN`, the installer waits for Accessibility and Local Network until it sees `connected`, as spec 008 does.
+  - A join that is refused, or a central that does not answer, ends the installer with an error before any service is written, with the advice to run `lanhop add` again.
   - Stopped after the join and typed again, it runs to the end, and the join ends with status 0.
-  - The `PATH` line goes in the file of the table for zsh, bash on Linux and bash on macOS, with an existing `~/.profile` and without, only once, and only after a yes or with `LANHOP_YES=1`; other shells get the printed advice.
+  - The `PATH` line goes in the file of the table for zsh, bash on Linux and bash on macOS, with an existing `~/.profile` and without, only once, only after a yes or with `LANHOP_YES=1` or `LANHOP_JOIN`, and the installer names the file; other shells get the printed advice.
 - [ ] **6. Documents, and the test on a real desk.** README and the setup guides lead with `lanhop add`, and keep `lanhop pair` as the other way. → Verify, with the owner present: a Mac that never had lanhop joins the central with one join line; SC-001 and SC-002 are timed and counted; and each step of the list in "Why" of the spec is checked off for SC-003.

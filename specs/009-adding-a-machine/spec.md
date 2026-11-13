@@ -82,9 +82,9 @@ On the central I run `lanhop add office-mac`. It prints a join line. On the new 
 
 - **FR-001**: `lanhop add NAME` on the central MUST print a join line and wait for one machine to join, for at most ten minutes or until Ctrl+C.
 - **FR-002**: The join line MUST be enough for a machine without lanhop to install it as a side machine, join and connect, with no other question than the permissions of its system. The installer says what it did instead of asking.
-- **FR-003**: The new machine MUST know the central by the join code before it sends anything that lets it join, so that a machine in the middle can neither join in its place nor learn the code.
-- **FR-004**: A join code MUST work once, and only within the time `lanhop add` waits. Three wrong codes MUST end the wait.
-- **FR-005**: A connection that sends no Join message MUST NOT end the wait, nor hold it.
+- **FR-003**: The new machine MUST know the central by the join code before it sends anything that lets it join, so that a machine in the middle can neither join in its place nor learn the token.
+- **FR-004**: A join code MUST work once, and only within the time `lanhop add` waits. Three wrong tokens MUST end the wait.
+- **FR-005**: A stray connection that sends no Join message MUST NOT end the wait, nor hold it for more than 10 seconds.
 - **FR-006**: The name of the new machine MUST be the one given on the central, and the new machine MUST store the central under the central's own name.
 - **FR-007**: A machine that joined MUST be able to take focus at once, without restarting `lanhop share`.
 - **FR-008**: `lanhop add` MUST print the hotkey of the new machine and open the layout editor, where the new machine waits in the tray, or print the address of the editor where no browser opens.

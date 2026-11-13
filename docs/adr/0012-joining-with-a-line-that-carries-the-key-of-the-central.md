@@ -31,7 +31,7 @@ A join is a second way to pair, next to the comparison of ADR 4, which stays.
 1. The new machine checks, during the TLS handshake (`VerifyConnection`, as `internal/transport` does), that the key of the central matches the first 80 bits of the code. If not, the handshake fails and the new machine sends nothing more.
 2. The central sends its name. The new machine refuses, before it sends the token, when it already trusts another machine under that name.
 3. The new machine sends the token. Its key is already known to the central, from the same TLS connection.
-4. Under one lock, the central checks the token in constant time, refuses its own key, a key it already trusts and a name taken in the meantime, spends the token, stores the new machine, and only then sends Welcome. The new machine stores the central with its name and the address it used, with the port of `lanhop share`, 24745, as `lanhop pair` does.
+4. Under one lock, the central checks the token in constant time, refuses its own key, a key it already trusts and a name taken in the meantime, spends the token, stores the new machine without an address, as a side machine is stored today, and only then sends Welcome. The new machine stores the central with its name and the address it used, with the port of `lanhop share`, 24745, as `lanhop pair` does.
 5. A wrong token counts as one attempt. At the third, after ten minutes, at Ctrl+C or after a join, `lanhop add` stops listening.
 
 If the central stored the new machine and the new machine never got Welcome, `lanhop forget NAME` on the central and a new `lanhop add` start over.
