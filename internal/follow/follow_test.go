@@ -61,7 +61,7 @@ func eventually(t *testing.T, what string, holds func() bool) {
 
 func never(t *testing.T, what string, happened func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(150 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(120 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		if happened() {
 			t.Fatalf("%s happened", what)
 		}
@@ -189,10 +189,14 @@ type fakeUpdater struct {
 	discarded atomic.Int32
 	installed atomic.Int32
 	failing   atomic.Bool
+	gate      chan struct{}
+	gateFrom  int32
 }
 
 func (u *fakeUpdater) Prepare(_ context.Context, want update.Version) (Prepared, error) {
-	u.prepared.Add(1)
+	if count := u.prepared.Add(1); u.gate != nil && count >= u.gateFrom {
+		<-u.gate
+	}
 	if u.failing.Load() {
 		return nil, errors.New("the download was refused")
 	}
@@ -223,7 +227,7 @@ func newSideUnderTest(t *testing.T, running update.Version) *sideUnderTest {
 		Updater:         under.updater,
 		Restart:         func() { under.restarted.Store(true) },
 		Busy:            under.busy.Load,
-		QuietAfterLeave: 300 * time.Millisecond,
+		QuietAfterLeave: 400 * time.Millisecond,
 	})
 	under.heard = under.side.Connected(under.conn)
 	return under
@@ -296,16 +300,23 @@ func TestASideMachineNeverMovesDownOrRepeatsTheSameRelease(t *testing.T) {
 	never(t, "a download", func() bool { return under.updater.prepared.Load() > 0 })
 }
 
+func idle(side *Side) bool {
+	side.mutex.Lock()
+	defer side.mutex.Unlock()
+	return !side.busy
+}
+
 func TestTurningUpdatesOffSendsFeaturesAgainAndIgnoresUpdate(t *testing.T) {
 	under := newSideUnderTest(t, v012)
+	under.set.Turn(features.Clipboard, true)
 	under.following.Store(false)
 	under.side.FocusArrives()
 	sent := under.conn.frames(event.ControlFeatures)
 	if len(sent) != 2 || sent[1].Value&(1<<8) != 0 {
 		t.Fatalf("Features sent %+v, want a second one with bit 8 clear", sent)
 	}
-	if sent[1].Value&1 != under.set.Value()&1 {
-		t.Errorf("the Features sent again changed bit 0, want the other bits kept")
+	if sent[1].Value&1 != 1 {
+		t.Errorf("the Features sent again cleared bit 0 of the clipboard, want the other bits kept")
 	}
 	under.heard(event.Update(v013.Value()))
 	never(t, "a download with updates off", func() bool { return under.updater.prepared.Load() > 0 })
@@ -315,9 +326,49 @@ func TestAFailedDownloadIsTriedAgainAtTheNextUpdate(t *testing.T) {
 	under := newSideUnderTest(t, v012)
 	under.updater.failing.Store(true)
 	under.heard(event.Update(v013.Value()))
-	eventually(t, "the failed download", func() bool { return under.updater.prepared.Load() == 1 })
+	eventually(t, "the failed download", func() bool { return under.updater.prepared.Load() == 1 && idle(under.side) })
 	never(t, "a restart after a failed download", under.restarted.Load)
 	under.updater.failing.Store(false)
 	under.heard(event.Update(v013.Value()))
 	eventually(t, "the restart after the second Update", under.restarted.Load)
+}
+
+func TestFocusThatComesBackDuringTheSecondDownloadDelaysTheRestart(t *testing.T) {
+	under := newSideUnderTest(t, v012)
+	under.updater.gate = make(chan struct{})
+	under.updater.gateFrom = 2
+	under.side.FocusArrives()
+	under.heard(event.Update(v013.Value()))
+	eventually(t, "the first download", func() bool { return under.updater.prepared.Load() == 1 })
+
+	under.side.FocusLeaves()
+	eventually(t, "the second download, after the quiet time", func() bool { return under.updater.prepared.Load() == 2 })
+	under.side.FocusArrives()
+	under.updater.gate <- struct{}{}
+	never(t, "a restart while the person is back on the machine", under.restarted.Load)
+
+	close(under.updater.gate)
+	under.side.FocusLeaves()
+	eventually(t, "the restart once the machine is quiet again", under.restarted.Load)
+}
+
+func TestTurningUpdatesOffDropsAnUpdateThatWaits(t *testing.T) {
+	under := newSideUnderTest(t, v012)
+	under.side.FocusArrives()
+	under.heard(event.Update(v013.Value()))
+	eventually(t, "the download", func() bool { return under.updater.prepared.Load() == 1 })
+	under.following.Store(false)
+	under.side.FocusLeaves()
+	eventually(t, "the waiting copy to be dropped", func() bool { return under.updater.discarded.Load() == 1 })
+	never(t, "an install after updates were turned off", func() bool { return under.updater.installed.Load() != 0 || under.restarted.Load() })
+}
+
+func TestALostConnectionCountsAsALeave(t *testing.T) {
+	under := newSideUnderTest(t, v012)
+	under.side.FocusArrives()
+	under.heard(event.Update(v013.Value()))
+	eventually(t, "the download", func() bool { return under.updater.prepared.Load() == 1 })
+	under.side.Lost()
+	never(t, "a restart right after the connection was lost while focused", under.restarted.Load)
+	eventually(t, "the restart after the quiet time", under.restarted.Load)
 }

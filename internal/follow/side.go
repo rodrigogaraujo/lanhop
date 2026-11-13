@@ -45,11 +45,11 @@ type Side struct {
 	focused   bool
 	lastLeave time.Time
 	wanted    update.Version
-	preparing bool
+	busy      bool
 	prepared  Prepared
-	waited    bool
+	fresh     bool
 	quietTry  *time.Timer
-	done      bool
+	ended     bool
 }
 
 func NewSide(ctx context.Context, config SideConfig) *Side {
@@ -76,6 +76,7 @@ func (s *Side) decides() bool {
 }
 
 func (s *Side) Connected(conn receiver.Connection) func(event.Event) {
+	s.followTheSwitch()
 	s.mutex.Lock()
 	s.conn = conn
 	s.mutex.Unlock()
@@ -91,19 +92,26 @@ func (s *Side) FocusArrives() {
 }
 
 func (s *Side) FocusLeaves() {
-	s.mutex.Lock()
-	s.focused = false
-	s.lastLeave = time.Now()
-	s.mutex.Unlock()
+	s.leaves()
 	s.followTheSwitch()
 	s.tryLater(s.config.QuietAfterLeave)
 }
 
 func (s *Side) Lost() {
+	s.leaves()
 	s.mutex.Lock()
 	s.conn = nil
-	s.focused = false
 	s.mutex.Unlock()
+	s.tryLater(s.config.QuietAfterLeave)
+}
+
+func (s *Side) leaves() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.focused || s.lastLeave.IsZero() {
+		s.lastLeave = time.Now()
+	}
+	s.focused = false
 }
 
 func (s *Side) followTheSwitch() {
@@ -129,30 +137,31 @@ func (s *Side) heard(frame event.Event) {
 	want, valid := update.VersionFromValue(frame.Value)
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if !valid || !s.following || s.done || want.Compare(s.config.Running) <= 0 || want == s.wanted {
+	if !valid || !s.following || s.ended || s.busy || s.prepared != nil || want.Compare(s.config.Running) <= 0 {
 		return
 	}
 	s.wanted = want
-	s.preparing = true
+	s.busy = true
 	go s.prepare(want)
 }
 
 func (s *Side) prepare(want update.Version) {
 	prepared, err := s.config.Updater.Prepare(s.ctx, want)
 	s.mutex.Lock()
-	s.preparing = false
+	s.busy = false
 	if err != nil {
 		s.wanted = update.Version{}
 		s.mutex.Unlock()
-		fmt.Fprintf(s.config.Log, "The machine with the keyboard asked for lanhop %s, and it was not installed: %v\n", want, err)
+		s.log(want, err)
 		return
 	}
-	if s.done || want != s.wanted {
+	if s.ended || want != s.wanted {
 		s.mutex.Unlock()
 		prepared.Discard()
 		return
 	}
 	s.prepared = prepared
+	s.fresh = true
 	s.mutex.Unlock()
 	s.tryNow()
 }
@@ -167,42 +176,53 @@ func (s *Side) tryLater(after time.Duration) {
 }
 
 func (s *Side) tryNow() {
+	following := s.decides()
+	busy := s.config.Busy()
 	s.mutex.Lock()
 	prepared, want := s.prepared, s.wanted
-	if prepared == nil || s.done {
+	if prepared == nil || s.ended || s.busy {
 		s.mutex.Unlock()
 		return
 	}
-	if wait := s.timeUntilQuiet(); wait > 0 {
-		s.waited = true
+	if s.ctx.Err() != nil || !following {
+		s.prepared = nil
+		s.wanted = update.Version{}
+		s.mutex.Unlock()
+		prepared.Discard()
+		return
+	}
+	if wait := s.timeUntilQuiet(busy); wait > 0 {
+		s.fresh = false
 		s.mutex.Unlock()
 		s.tryLater(wait)
 		return
 	}
-	waited := s.waited
+	if !s.fresh {
+		s.prepared = nil
+		s.busy = true
+		s.mutex.Unlock()
+		prepared.Discard()
+		go s.prepare(want)
+		return
+	}
 	s.prepared = nil
-	s.done = true
+	s.ended = true
 	s.mutex.Unlock()
 
-	if waited {
-		prepared.Discard()
-		fresh, err := s.config.Updater.Prepare(s.ctx, want)
-		if err != nil {
-			s.giveUp(want, err)
-			return
-		}
-		prepared = fresh
-	}
 	if err := prepared.Install(); err != nil {
-		s.giveUp(want, err)
+		s.mutex.Lock()
+		s.ended = false
+		s.wanted = update.Version{}
+		s.mutex.Unlock()
+		s.log(want, err)
 		return
 	}
 	fmt.Fprintf(s.config.Log, "lanhop %s is installed. lanhop ends now, and its service starts the new version.\n", want)
 	s.config.Restart()
 }
 
-func (s *Side) timeUntilQuiet() time.Duration {
-	if s.focused || s.config.Busy() {
+func (s *Side) timeUntilQuiet(busy bool) time.Duration {
+	if s.focused || busy {
 		return s.config.QuietAfterLeave
 	}
 	if s.lastLeave.IsZero() {
@@ -211,11 +231,6 @@ func (s *Side) timeUntilQuiet() time.Duration {
 	return time.Until(s.lastLeave.Add(s.config.QuietAfterLeave))
 }
 
-func (s *Side) giveUp(want update.Version, err error) {
-	s.mutex.Lock()
-	s.done = false
-	s.waited = false
-	s.wanted = update.Version{}
-	s.mutex.Unlock()
+func (s *Side) log(want update.Version, err error) {
 	fmt.Fprintf(s.config.Log, "The machine with the keyboard asked for lanhop %s, and it was not installed: %v\n", want, err)
 }

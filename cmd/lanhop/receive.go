@@ -162,7 +162,7 @@ func receive(args []string, stdout io.Writer) (err error) {
 		OnConnect: report.connected,
 		OnFailure: report.failed,
 	})
-	if err == nil && restarting.Load() {
+	if restarting.Load() {
 		return errRestartForTheUpdate
 	}
 	return err

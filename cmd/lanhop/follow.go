@@ -118,9 +118,9 @@ func switchUpdates(args []string, stdout io.Writer) error {
 			return err
 		}
 		if args[0] == "on" {
-			fmt.Fprintln(stdout, "This machine follows the version of the machine with the keyboard again.")
+			fmt.Fprintln(stdout, "This machine follows the version of the machine with the keyboard again. A running lanhop takes the change at its next focus change or connection.")
 		} else {
-			fmt.Fprintln(stdout, "This machine stays on its version, whatever the machine with the keyboard runs.")
+			fmt.Fprintln(stdout, "This machine stays on its version, whatever the machine with the keyboard runs. A running lanhop takes the change at its next focus change or connection.")
 		}
 		return nil
 	}

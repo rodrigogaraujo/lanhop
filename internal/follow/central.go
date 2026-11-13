@@ -48,9 +48,10 @@ type sideMachine struct {
 }
 
 type Central struct {
-	config   CentralConfig
-	mutex    sync.Mutex
-	machines map[sharer.Conn]*sideMachine
+	config    CentralConfig
+	mutex     sync.Mutex
+	reporting sync.Mutex
+	machines  map[sharer.Conn]*sideMachine
 }
 
 func NewCentral(config CentralConfig) *Central {
@@ -166,5 +167,7 @@ func (c *Central) Seats() []Seat {
 }
 
 func (c *Central) changed() {
+	c.reporting.Lock()
+	defer c.reporting.Unlock()
 	c.config.OnChange(c.Seats())
 }

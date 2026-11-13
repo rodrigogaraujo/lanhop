@@ -104,12 +104,16 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "lanhop %s → %s\n", target.Running, want)
-	restartTheService(stdout)
+	var switchFailed error
 	if comparison < 0 {
-		if err := writeUpdatesSwitch(directory, false); err != nil {
-			return fmt.Errorf("lanhop moved back to %s, but could not stop following the machine with the keyboard, which may move it up again: %w", want, err)
+		switchFailed = writeUpdatesSwitch(directory, false)
+		if switchFailed == nil {
+			fmt.Fprintln(stdout, "This machine no longer follows the version of the machine with the keyboard, so that it is not moved back up. lanhop updates on lets it follow again.")
 		}
-		fmt.Fprintln(stdout, "This machine no longer follows the version of the machine with the keyboard, so that it is not moved back up. lanhop updates on lets it follow again.")
+	}
+	restartTheService(stdout)
+	if switchFailed != nil {
+		return fmt.Errorf("lanhop moved back to %s, but could not stop following the machine with the keyboard, which may move it up again: %w", want, switchFailed)
 	}
 	return nil
 }

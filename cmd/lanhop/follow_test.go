@@ -121,3 +121,54 @@ func TestShareSendsUpdateToAnOlderSideMachineThatFollows(t *testing.T) {
 		t.Fatal("lanhop share never asked the older side machine to update")
 	}
 }
+
+func TestAnOldSideMachineThatSaysNothingKeepsItsInputAndGetsNoUpdate(t *testing.T) {
+	running := version
+	version = "v0.1.3"
+	t.Cleanup(func() { version = running })
+	directory := useConfigDirectory(t)
+	local := identityIn(t, directory)
+	old := identityIn(t, t.TempDir())
+	trustAlready(t, directory, trust.Peer{Name: "old", Fingerprint: old.Fingerprint})
+	share := startShare(t)
+
+	conn, err := dialShare(old, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	frames := make(chan event.Event, 64)
+	go func() {
+		for {
+			frame, err := conn.Receive()
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- frame
+		}
+	}()
+	share.input.pressesHotkeyUntilFocusLeaves(t, 2)
+
+	sawEnter := false
+	for deadline := time.After(time.Second); ; {
+		select {
+		case frame, open := <-frames:
+			if !open {
+				t.Fatal("the connection ended")
+			}
+			if frame.IsControl() && frame.Code == event.ControlUpdate {
+				t.Fatalf("an old side machine that sent no Version was asked to update")
+			}
+			if frame == event.Enter() {
+				sawEnter = true
+			}
+			continue
+		case <-deadline:
+		}
+		break
+	}
+	if !sawEnter {
+		t.Errorf("the old side machine never got focus")
+	}
+}

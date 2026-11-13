@@ -161,12 +161,13 @@ One task, one pull request. Each verify list says what must be true before the t
   - The program is found through the launch agent or the unit when `~/.local/bin/lanhop` is a link.
   - A server that never answers ends the run after the timeout, with the old program in place.
 - [x] **5. Side machines follow the central.** Version, Update and Features bit 8 in `lanhop share` and `lanhop receive`, `lanhop updates`, `LANHOP_SERVICE=1` in the installer, and exit status 3. A side machine replaces and restarts when it has had no focus for 6 seconds since the last leave, twice the silence limit after which the central has counted the answer or its absence (ADR 8), and when nothing reports itself busy: file transfers (spec 011) will. → Verify with unit tests of `internal/follow` on fake connections, and an integration test where `lanhop share` over TLS asks an older side machine to update:
-  - An older one that follows gets Update once. It restarts only after focus has left it for the quiet time, and not while something is busy; after waiting, it checks the release again before installing.
+  - An older one that follows gets Update once. It restarts only after focus has left it for the quiet time, and not while something is busy; after waiting, it checks the release again before installing, and it waits again if focus comes back during that check. A lost connection counts as a leave.
+  - Turning updates off drops an update that waits.
   - A newer one is not moved back.
   - One below the central's `from` gets nothing and is marked `needs the installer`.
   - One with updates off gets nothing and is marked `does not follow`, then gets Update when it turns updates on, and again after off and on.
-  - One that sends no Features and no Version, as 0.1.1 does, gets no Update and is marked `needs the installer`.
-  - A Features frame sent again for bit 8 keeps bit 0 as it was, because both features share one set.
+  - One that sends no Features and no Version, as 0.1.1 does, keeps getting focus and input from `lanhop share`, gets no Update, and is marked `needs the installer`.
+  - A Features frame sent again for bit 8 keeps bit 0 as it was, because both features share one set, and the clipboard reacts only to a change of bit 0 (`TestOnlyTheClipboardBitSaysWhetherTheOtherEndTakesCopies` in `internal/clipshare`).
   - A side machine without `LANHOP_SERVICE=1`, without a release key, with updates off, or that is not a release, never sets bit 8.
 - [ ] **6. Versions in the status, and `lanhop update` waits for the desk.** → Verify with tests on a fake status file that changes over time:
   - Machines are printed with their old and new versions as they come back.
