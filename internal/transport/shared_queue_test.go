@@ -32,7 +32,15 @@ type shapedLink struct {
 	packetsAtMost  int
 }
 
-var routerOf100Megabits = shapedLink{bytesPerSecond: 100_000_000 / 8, packetsAtMost: 1000}
+var (
+	routerOf100Megabits = shapedLink{bytesPerSecond: 100_000_000 / 8, packetsAtMost: 1000}
+	routerOf50Megabits  = shapedLink{bytesPerSecond: 50_000_000 / 8, packetsAtMost: 1000}
+)
+
+const (
+	sc001TransferBytes = 10 << 20
+	sc001AtMost        = 1300 * time.Millisecond
+)
 
 func (l shapedLink) timeToSend(payload int) time.Duration {
 	return time.Duration(float64(payload+headerBytesPerPacket) / l.bytesPerSecond * float64(time.Second))
@@ -362,10 +370,10 @@ func timeKeysBehindATransfer(t *testing.T, centralConfig Config, link shapedLink
 func TestKeysArriveAtMost50MillisecondsLaterWhile100MiBMoveThroughOneQueueOf100Megabits(t *testing.T) {
 	measuredWithoutTheRaceDetector(t)
 
-	measured := timeKeysBehindATransfer(t, Config{}, routerOf100Megabits, sc002TransferBytes)
+	measured := timeKeysBehindATransfer(t, Config{DataPace: newPaceThatFollowsTheDelay(defaultDataBytesPerSecond)}, routerOf100Megabits, sc002TransferBytes)
 
 	measured.mustHaveTypedEnough(t)
-	t.Logf("SC-002, paced: %s", measured)
+	t.Logf("SC-002, paced by the delay, 100 Mbit/s: %s", measured)
 	if late := measured.worstLaterThanUsual(); late > keyLateByAtMost {
 		t.Errorf("a key arrived %s later than usual while the transfer moved, want at most %s", late, keyLateByAtMost)
 	}
@@ -389,5 +397,49 @@ func TestKeysArriveMoreThan50MillisecondsLateBehindAnUnpacedTransferThroughTheSa
 	if late := measured.worstLaterThanUsual(); late <= keyLateByAtMost {
 		t.Errorf("behind an unpaced transfer the worst key was only %s late, want more than %s: the queue does not hold keys back, so the paced test proves nothing",
 			late, keyLateByAtMost)
+	}
+}
+
+func TestKeysArriveAtMost50MillisecondsLaterWhile100MiBMoveThroughOneQueueOf50Megabits(t *testing.T) {
+	measuredWithoutTheRaceDetector(t)
+
+	measured := timeKeysBehindATransfer(t, Config{DataPace: newPaceThatFollowsTheDelay(defaultDataBytesPerSecond)}, routerOf50Megabits, sc002TransferBytes)
+
+	measured.mustHaveTypedEnough(t)
+	carried := routerOf50Megabits.payloadBytesPerSecond()
+	t.Logf("SC-002, paced by the delay, 50 Mbit/s: %s; the link carries %.1f Mbit/s", measured, megabits(carried))
+	if late := measured.worstLaterThanUsual(); late > keyLateByAtMost {
+		t.Errorf("a key arrived %s later than usual while the transfer moved, want at most %s", late, keyLateByAtMost)
+	}
+	if moved := measured.payloadBytesPerSecond(); moved < 0.6*carried {
+		t.Errorf("the transfer moved at %.1f Mbit/s, want at least 60%% of the %.1f Mbit/s the link carries", megabits(moved), megabits(carried))
+	}
+}
+
+func TestTheFirst10MiBArriveWellWithin2SecondsBehindAQueueOf100Megabits(t *testing.T) {
+	measuredWithoutTheRaceDetector(t)
+
+	measured := timeKeysBehindATransfer(t, Config{DataPace: newPaceThatFollowsTheDelay(defaultDataBytesPerSecond)}, routerOf100Megabits, sc001TransferBytes)
+
+	t.Logf("SC-001, behind a queue of 100 Mbit/s: 10 MiB in %s", measured.transfer)
+	if measured.transfer > sc001AtMost {
+		t.Errorf("10 MiB took %s behind a queue of 100 Mbit/s, want at most %s", measured.transfer, sc001AtMost)
+	}
+}
+
+func TestTheFirst10MiBArriveWellWithin2SecondsWithoutAQueue(t *testing.T) {
+	measuredWithoutTheRaceDetector(t)
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience, DataPace: newPaceThatFollowsTheDelay(defaultDataBytesPerSecond)}, "laptop")
+	awaited := d.awaitDataFrom(context.Background(), "laptop")
+	sideData := d.mustDialData("laptop", awaited.transfer)
+	centralData := awaited.arrived()
+
+	started := time.Now()
+	sendAndReceive(t, centralData, sideData, make([]byte, sc001TransferBytes))
+	took := time.Since(started)
+
+	t.Logf("SC-001, without a queue: 10 MiB in %s", took)
+	if took > sc001AtMost {
+		t.Errorf("10 MiB took %s without a queue, want at most %s", took, sc001AtMost)
 	}
 }

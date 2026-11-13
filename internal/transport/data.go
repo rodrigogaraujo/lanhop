@@ -57,9 +57,18 @@ type DataConn struct {
 	told       bool
 
 	acknowledged atomic.Int32
+	sending      sync.Mutex
+	written      int64
+	blocksSent   int32
+	sentAt       []sentBlock
 	arrived      chan struct{}
 	ended        chan struct{}
 	endedBy      error
+}
+
+type sentBlock struct {
+	block int32
+	at    time.Time
 }
 
 func newDataConn(secured *tls.Conn, peer trust.Peer, transfer int32, pace *Pace, release func()) *DataConn {
@@ -144,7 +153,34 @@ func (d *DataConn) readAcks() {
 			return
 		}
 		d.acknowledged.Store(blocks)
+		if sent, found := d.sentWhen(blocks); found {
+			d.pace.observe(d, time.Since(sent))
+		}
 	}
+}
+
+func (d *DataConn) noteWritten(bytes int) {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	d.written += int64(bytes)
+	for d.written >= ackedBlock {
+		d.written -= ackedBlock
+		d.blocksSent = (d.blocksSent + 1) & event.TransferNumberMax
+		d.sentAt = append(d.sentAt, sentBlock{block: d.blocksSent, at: time.Now()})
+	}
+}
+
+func (d *DataConn) sentWhen(block int32) (time.Time, bool) {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	for len(d.sentAt) > 0 {
+		oldest := d.sentAt[0]
+		d.sentAt = d.sentAt[1:]
+		if oldest.block == block {
+			return oldest.at, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (d *DataConn) TellAllArrived() error {
@@ -185,6 +221,7 @@ func (d *DataConn) Write(data []byte) (int, error) {
 		slice := data[written:min(len(data), written+pacedSlice)]
 		d.pace.wait(len(slice))
 		n, err := d.secured.Write(slice)
+		d.noteWritten(n)
 		written += n
 		if err != nil {
 			return written, err
