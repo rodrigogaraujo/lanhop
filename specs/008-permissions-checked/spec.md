@@ -19,8 +19,9 @@ What was measured on that Mac (macOS 26.5.2, arm64):
 What Apple documents in [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy):
 
 - Programs started from Terminal or over SSH may use the local network without asking. That is why the same program connected from a terminal.
-- A launch agent is subject to the Local Network permission. A launchd daemon running as root is not.
+- A launch agent is subject to the Local Network permission. A daemon started by launchd is not.
 - macOS tracks a program by its code signature. Ad hoc signatures make that tracking unreliable.
+- macOS also uses the UUID of the main executable (`LC_UUID`), which must be there and must be unique.
 - A launch agent that is not installed with `SMAppService` should name its app in `AssociatedBundleIdentifiers`.
 - A process that ends right after a local network operation fails may never show the Local Network alert.
 
@@ -40,7 +41,7 @@ Sharer, receiver and pairing mean the same as in spec 001.
 
 ### Story 1 - lanhop is an app on a Mac (Priority: P1)
 
-On a Mac, lanhop is installed as `lanhop.app` in Applications, where the + button of System Settings opens, and it shows up as "lanhop" in every list of System Settings.
+On a Mac, lanhop is installed as `lanhop.app` in Applications, where the file chooser of the + button of System Settings starts, and it shows up as "lanhop" in every list of System Settings.
 
 **Why this priority**: without an identity of its own, macOS does not apply the Local Network permission to lanhop started at login, and lanhop cannot reach the other machines at all.
 
@@ -109,6 +110,7 @@ At any time, one command says what the service is doing.
 - The installer runs with nobody at the keyboard (`LANHOP_YES=1` or no terminal).
 - `/Applications` exists but the user is not an administrator.
 - An older lanhop is still allowed in System Settings under its old path or as "a.out".
+- lanhop is updated from one build of the app to the next. With an ad hoc signature, each build is a different program for macOS, so a setting that is switched on may stop applying.
 
 ## Requirements
 
@@ -116,7 +118,7 @@ At any time, one command says what the service is doing.
 
 - **FR-001**: The macOS archive of each release MUST hold `lanhop.app`, with an `Info.plist` that has the identifier `com.github.rodrigogaraujo.lanhop`, the version of the release and a reason for using the local network, signed with that identifier.
 - **FR-002**: On macOS the installer MUST put the app in `/Applications`, or in `~/Applications` when it cannot write `/Applications`, and MUST keep `lanhop` usable as a command.
-- **FR-003**: The launch agent MUST start the program inside the app and MUST name the app in `AssociatedBundleIdentifiers`.
+- **FR-003**: The service MUST start the program inside the app, and MUST tell macOS that the app is responsible for it.
 - **FR-004**: When a permission is missing, `lanhop share` and `lanhop receive` MUST wait for it and carry on when it is given, instead of ending.
 - **FR-005**: The service MUST keep its current status where `lanhop status` can read it, and `lanhop status` MUST say when the service is not running.
 - **FR-006**: The installer MUST check each permission against the running service, MUST open the pane of System Settings for each missing one, and MUST wait for it with a time limit.

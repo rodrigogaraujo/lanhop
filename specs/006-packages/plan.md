@@ -25,7 +25,7 @@ one binary each    4 archives   GitHub release with the
 | `lanhop-darwin-arm64.tar.gz` | macOS runner | cgo |
 | `lanhop-darwin-amd64.tar.gz` | macOS runner | cgo, cross-compiled with the same toolchain |
 
-- Each archive unpacks to one directory, `lanhop-SYSTEM-ARCHITECTURE`, with `lanhop`, `LICENSE` and `README.md`.
+- Each archive unpacks to one directory, `lanhop-SYSTEM-ARCHITECTURE`, with `lanhop`, `LICENSE` and `README.md`. Since [spec 008](../008-permissions-checked/plan.md), the macOS archives hold `lanhop.app` instead of `lanhop`.
 - The names carry no version, so the installer finds the latest release at a fixed address, `releases/latest/download/NAME`, with no call to the GitHub API.
 - The version goes into the binary with `-ldflags "-X main.version=..."`: the name of the tag on a tag, `dev-COMMIT` on a pull request.
 - Each build job checks what it built: the system and architecture of the file, that the Linux binary is static, the oldest macOS the binary accepts, and the version it reports.
