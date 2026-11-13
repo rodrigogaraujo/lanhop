@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
@@ -90,6 +91,9 @@ func pair(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 
 	listener, err := net.Listen("tcp", *listen)
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return errAnotherPairingWaits
+	}
 	if err != nil {
 		return err
 	}

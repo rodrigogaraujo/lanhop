@@ -37,7 +37,7 @@ lanhop add office-mac
 
 ## The pieces
 
-**`lanhop add NAME`** runs on the central, apart from `lanhop share`. It refuses a name that is invalid, taken, or the name of the central. It always listens on every interface, `:24746`; `--address` changes only the printed line. Binding that port keeps a second `lanhop add`, or a `lanhop pair` that waits on every interface, from running at the same time, and both commands say that another pairing is waiting when the port is taken. It serves each connection on its own, with a deadline of 10 seconds from accept and at most eight at once (ADR 12). It prints the address of each wrong token and of each connection closed for silence.
+**`lanhop add NAME`** runs on the central, apart from `lanhop share`. It refuses a name that is invalid, taken, or the name of the central. It listens on every interface, `:24746`, unless `--listen` says otherwise, as in `lanhop pair`; `--address` changes only the printed line. Binding that port keeps a second `lanhop add`, or a `lanhop pair` that waits on every interface, from running at the same time, and both commands say that another pairing is waiting when the port is taken. It serves each connection on its own, with a deadline of 10 seconds from accept and at most eight at once (ADR 12). It prints the address of each wrong token and of each connection closed for silence.
 
 **After the join**, `lanhop add` prints the name, the address and the hotkey of the new machine, opens the editor, and ends. Whether the new machine is connected shows in `lanhop status`, since a new Mac may still wait for its permissions. `lanhop share` reads peers from disk at each use (`peersOnDisk` in `cmd/lanhop/share.go`), so the new machine can take focus at once, and `lanhop add` does not talk to `lanhop share`.
 
@@ -109,7 +109,7 @@ One task, one pull request. Each verify list says what must be true before the t
   - Two right tokens at the same time: exactly one joins.
   - A `lanhop pair` against a waiting `lanhop add` fails at the first message, and the wait goes on. A join against a waiting `lanhop pair` fails at the first message, and `lanhop pair` ends, as it does on any stray connection today (FR-012).
   - After a join, and when the wait ends (shortened in the test), the port takes no more connections.
-- [ ] **2. `lanhop add` and `lanhop join`.** The commands, the address, the version, the refusals, and the wait for the connection. → Verify with tests:
+- [x] **2. `lanhop add` and `lanhop join`.** The commands, the address, the version, the refusals, and the wait for the connection. → Verify with tests:
   - `lanhop add` refuses a taken name, the name of the central, an invalid name, and a second `lanhop add`; `lanhop add` and `lanhop pair` each say that another pairing waits when the port is taken.
   - A machine stored by `lanhop add` takes focus in a running `lanhop share` with no restart, in an integration test.
   - `lanhop add` prints the name, address and hotkey of the new machine right after the join.
