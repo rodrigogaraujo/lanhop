@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -76,14 +78,58 @@ func TestStatusOfAServiceThatDiedWhileTryingDoesNotRepeatItsLastTry(t *testing.T
 	}
 }
 
+const holdsTheStatus = "LANHOP_TEST_HOLDS_THE_STATUS"
+
+func serviceInAnotherProcess(t *testing.T, directory string) func() {
+	t.Helper()
+	service := exec.Command(os.Args[0], "-test.run=^TestHelperHoldsTheStatusLikeAService$")
+	service.Env = append(os.Environ(), configDirectoryVariable+"="+directory, holdsTheStatus+"=1")
+	release, err := service.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !status.Running(directory); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the service never took the status")
+		}
+	}
+	return func() {
+		release.Close()
+		service.Wait()
+	}
+}
+
+func TestHelperHoldsTheStatusLikeAService(t *testing.T) {
+	if os.Getenv(holdsTheStatus) == "" {
+		t.Skip("only runs as the helper of another test")
+	}
+	openStatus().set(status.Report{State: status.Connected, Machines: []string{"iMac"}, Address: centralAddress})
+	io.ReadAll(os.Stdin)
+}
+
 func TestASecondLanhopLeavesTheStatusOfTheServiceAlone(t *testing.T) {
-	useConfigDirectory(t)
-	service := openStatus()
-	service.set(status.Report{State: status.Connected, Machines: []string{"iMac"}, Address: centralAddress})
+	release := serviceInAnotherProcess(t, useConfigDirectory(t))
+	defer release()
 	byHand := openStatus()
 	byHand.set(status.Report{State: status.Accessibility})
 	byHand.ended(errors.New("address already in use"))
 	expectState(t, lanhopStatus(t), "connected", `"iMac"`)
+}
+
+func TestShareKeepsOneStatusFromThePermissionToItsEnd(t *testing.T) {
+	useConfigDirectory(t)
+	record := openStatus()
+	record.set(status.Report{State: status.Accessibility})
+	changed := reportReceivers(openStatus())
+	changed(nil)
+	expectState(t, lanhopStatus(t), "waiting")
+	changed([]string{"desk"})
+	expectState(t, lanhopStatus(t), "sharing", `"desk"`)
+	record.ended(errors.New("the capture of the keyboard and mouse stopped"))
+	expectState(t, lanhopStatus(t), "stopped", "the capture of the keyboard and mouse stopped")
 }
 
 func TestEndingBeforeTheConfigurationDirectoryExistsCreatesNothing(t *testing.T) {

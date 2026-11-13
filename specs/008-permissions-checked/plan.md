@@ -87,7 +87,7 @@ The same check, without the panes: the installer waits for `connected`, `waiting
 
 ## Uninstall
 
-It also removes the app (from `/Applications` or `~/Applications`, only the one that the installer would have written), the link and the `status` file. The key and the trusted machines stay.
+It also removes the app (from `/Applications` or `~/Applications`, only the one that the installer would have written), the link, and the `status` and `status.lock` files. The key and the trusted machines stay.
 
 ## Decisions
 

@@ -3,15 +3,20 @@ package status
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
-	FileName     = "status"
-	lockFileName = "status.lock"
+	FileName       = "status"
+	lockFileName   = "status.lock"
+	lockAttempts   = 5
+	lockRetryPause = 10 * time.Millisecond
 )
 
 type State string
@@ -34,21 +39,38 @@ type Report struct {
 	Error    string
 }
 
+var errTakenByAnother = errors.New("status: another lanhop on this machine keeps the status")
+
 type Owner struct {
 	directory string
+	mutex     sync.Mutex
 	lock      *os.File
 }
 
-func NewOwner(directory string) *Owner {
-	return &Owner{directory: directory}
+var (
+	ownersMutex sync.Mutex
+	owners      = map[string]*Owner{}
+)
+
+func OwnerOf(directory string) *Owner {
+	ownersMutex.Lock()
+	defer ownersMutex.Unlock()
+	owner, found := owners[directory]
+	if !found {
+		owner = &Owner{directory: directory}
+		owners[directory] = owner
+	}
+	return owner
 }
 
 func (o *Owner) Write(report Report) error {
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
 	if o.lock == nil {
 		if err := os.MkdirAll(o.directory, 0o700); err != nil {
 			return fmt.Errorf("status: %w", err)
 		}
-		lock, err := takeLock(filepath.Join(o.directory, lockFileName))
+		lock, err := takeLockPatiently(filepath.Join(o.directory, lockFileName))
 		if err != nil {
 			return err
 		}
@@ -58,7 +80,19 @@ func (o *Owner) Write(report Report) error {
 }
 
 func (o *Owner) Owns() bool {
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
 	return o.lock != nil
+}
+
+func takeLockPatiently(path string) (*os.File, error) {
+	for attempt := 1; ; attempt++ {
+		lock, err := takeLock(path)
+		if !errors.Is(err, errTakenByAnother) || attempt == lockAttempts {
+			return lock, err
+		}
+		time.Sleep(lockRetryPause)
+	}
 }
 
 func Running(directory string) bool {

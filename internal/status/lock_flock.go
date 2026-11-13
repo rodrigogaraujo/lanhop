@@ -9,8 +9,6 @@ import (
 	"syscall"
 )
 
-var errTakenByAnother = errors.New("status: another lanhop on this machine keeps the status")
-
 func takeLock(path string) (*os.File, error) {
 	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {

@@ -26,7 +26,7 @@ func openStatus() statusFile {
 	if err != nil {
 		return statusFile{}
 	}
-	return statusFile{owner: status.NewOwner(directory), directory: directory}
+	return statusFile{owner: status.OwnerOf(directory), directory: directory}
 }
 
 func (f statusFile) set(report status.Report) {
