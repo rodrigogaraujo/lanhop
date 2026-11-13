@@ -22,7 +22,7 @@ read the clipboard           │
 ```
 
 - **Only machines that take part.** A machine takes part while its own switch is on and the other end's last Features has bit 0 set. A side machine on 0.1.0, or switched off, is never read, never waited for and never sent a copy frame. A side machine under a central on 0.1.0, or switched off, reads nothing.
-- **A copy is read when focus leaves the machine where it was made**, and only if the clipboard of that machine changed since lanhop last read it or wrote it, since lanhop started, or since its switch was turned on. The central reads its own clipboard when focus leaves it.
+- **A copy is read when focus leaves the machine where it was made**, and only if the clipboard of that machine changed since lanhop last read it or wrote it, or since the machine started to take part: at start, when its switch was turned on, or when the other end announced bit 0 again. The central reads its own clipboard when focus leaves it.
 - **A side machine answers every leave**: with the copy it read, with a withdrawal when the change is empty, not text or over 1 MiB, or with "unchanged". A Features frame with bit 0 clear also counts as its answer.
 - **The central keeps the desk's last copy in memory**, with a number that grows with each copy, and remembers which number each machine holds. A withdrawal, or a change on the central that lanhop does not carry, empties it, and the other clipboards stay as they are.
 - **The machine that has focus gets the desk's last copy if it does not hold it yet**: when focus arrives, when it starts to take part while it has focus, and at once when a new copy reaches the central while it has focus. The central hands out only once every side machine that focus left has answered and the central has read its own clipboard when focus left it. That is true for the central as well as for the side machines.
@@ -56,7 +56,7 @@ Five new control frames, in the 8-byte format of [ADR 2](../../docs/adr/0002-lin
 
 ## Reading and writing the clipboard
 
-Each system provides three operations: a mark that changes with every copy and can be taken without reading the content, read the text, and write the text. lanhop keeps two marks per machine: the one after its last read or write, at start, or when the switch was turned on, which tells whether there is something to read when focus leaves, and the later of the one when focus arrived and the one after its last write, which tells whether the person copied something since.
+Each system provides three operations: a mark that changes with every copy and can be taken without reading the content, read the text, and write the text. lanhop keeps two marks per machine: the one after its last read or write, or from when the machine started to take part, which tells whether there is something to read when focus leaves, and the later of the one when focus arrived and the one after its last write, which tells whether the person copied something since.
 
 ### macOS
 
@@ -86,7 +86,7 @@ Where no way works, for example a session with no Xwayland or a machine at its l
 
 `lanhop clipboard off` writes a file named `clipboard`, with the word `off`, in the configuration directory, next to the key. `lanhop clipboard on` removes it. `lanhop clipboard` with nothing after it prints `on` or `off`.
 
-`lanhop share` and `lanhop receive` read that file when they connect and at each focus change, so the switch applies without a restart. A machine that switches sends Features again, before it answers the leave, and a machine that switches on takes a fresh mark without reading, so a copy made while it was off never leaves. A side machine that is off writes nothing that arrives and reads nothing when focus leaves it, and still counts and acknowledges every copy frame that reaches it, so the window of the central keeps working.
+`lanhop share` and `lanhop receive` read that file when they connect and at each focus change, so the switch applies without a restart. A machine that switches sends Features again, before it answers the leave. A machine takes a fresh mark without reading each time it starts to take part, when its own switch turns on or when the other end announces bit 0 again, so a copy made while sharing was off on either end never leaves. A side machine that is off writes nothing that arrives and reads nothing when focus leaves it, and still counts and acknowledges every copy frame that reaches it, so the window of the central keeps working.
 
 ## Decisions
 
