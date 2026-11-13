@@ -27,7 +27,7 @@ func DialData(ctx context.Context, config Config, central trust.Peer, transfer i
 	if err != nil {
 		return nil, err
 	}
-	return newDataConn(secured, central, transfer, config), nil
+	return newDataConn(secured, central, transfer, config.DataPace, nil), nil
 }
 
 func dialAndGreet(ctx context.Context, config Config, peer trust.Peer, greeting func(*tls.Conn) error) (*tls.Conn, error) {

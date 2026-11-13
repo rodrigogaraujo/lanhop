@@ -21,8 +21,8 @@ type Listener struct {
 	closing   sync.Once
 	closed    chan struct{}
 
-	awaitingMutex sync.Mutex
-	awaiting      map[int32]*awaitedData
+	heldMutex sync.Mutex
+	held      map[int32]*heldTransfer
 }
 
 func Listen(address string, config Config, trusted Trusted) (*Listener, error) {
@@ -39,7 +39,7 @@ func Listen(address string, config Config, trusted Trusted) (*Listener, error) {
 		ready:     make(chan *Conn),
 		pending:   make(chan struct{}, pendingHandshakes),
 		closed:    make(chan struct{}),
-		awaiting:  map[int32]*awaitedData{},
+		held:      map[int32]*heldTransfer{},
 	}
 	go l.acceptLoop()
 	return l, nil

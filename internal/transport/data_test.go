@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,7 +42,9 @@ func newDeskWithDataConnections(t *testing.T, data Config, sideNames ...string) 
 	}
 	config := configFor(d.central)
 	config.DataWindow = data.DataWindow
-	config.DataBytesPerSecond = data.DataBytesPerSecond
+	config.DataPace = data.DataPace
+	config.now = data.now
+	config.drawTransferNumber = data.drawTransferNumber
 	config.OnReject = d.rejected.record
 	listener, err := Listen("127.0.0.1:0", config, paired)
 	if err != nil {
@@ -487,33 +492,227 @@ func TestFileBytesCannotBeReadOnTheNetwork(t *testing.T) {
 	}
 }
 
+func timeToMove(t *testing.T, conns map[*DataConn]*DataConn, eachWrites int) time.Duration {
+	t.Helper()
+	started := time.Now()
+	failures := make(chan error, 2*len(conns))
+	for writer, reader := range conns {
+		go func() {
+			_, err := writer.Write(make([]byte, eachWrites))
+			failures <- err
+		}()
+		go func() {
+			_, err := io.CopyN(io.Discard, reader, int64(eachWrites))
+			failures <- err
+		}()
+	}
+	for range 2 * len(conns) {
+		if err := <-failures; err != nil {
+			t.Fatalf("moving the bytes failed: %v", err)
+		}
+	}
+	return time.Since(started)
+}
+
+func leastTimeAtThePace(bytes, bytesPerSecond int) time.Duration {
+	return time.Duration(float64(bytes-paceBurst) / float64(bytesPerSecond) * float64(time.Second))
+}
+
 func TestADataConnectionWritesNoFasterThanItsPace(t *testing.T) {
 	const (
 		bytesPerSecond = 2_000_000
 		written        = 1_000_000
 	)
-	d := newDeskWithDataConnections(t, Config{DataBytesPerSecond: bytesPerSecond}, "laptop")
+	d := newDeskWithDataConnections(t, Config{DataPace: NewPace(bytesPerSecond)}, "laptop")
 
 	awaited := d.awaitDataFrom(context.Background(), "laptop")
 	sideData := d.mustDialData("laptop", awaited.transfer)
-	centralData := awaited.arrived()
+	took := timeToMove(t, map[*DataConn]*DataConn{awaited.arrived(): sideData}, written)
 
-	started := time.Now()
-	sendAndReceive(t, centralData, sideData, make([]byte, written))
-	took := time.Since(started)
-
-	slowest := time.Duration(float64(written-paceBurst) / bytesPerSecond * float64(time.Second))
-	if took < slowest {
-		t.Errorf("%d bytes took %s at a pace of %d bytes per second, want at least %s", written, took, bytesPerSecond, slowest)
+	if least := leastTimeAtThePace(written, bytesPerSecond); took < least {
+		t.Errorf("%d bytes took %s at a pace of %d bytes per second, want at least %s", written, took, bytesPerSecond, least)
 	}
 }
 
-func TestDataConnectionsWaitTenSecondsAndArePacedAt80MegabitsUnlessConfigured(t *testing.T) {
+func TestTwoDataConnectionsOfOneMachineShareItsPace(t *testing.T) {
+	const (
+		bytesPerSecond = 4_000_000
+		eachWrites     = 1_000_000
+	)
+	d := newDeskWithDataConnections(t, Config{DataPace: NewPace(bytesPerSecond)}, "laptop", "tablet")
+
+	toTheLaptop := d.awaitDataFrom(context.Background(), "laptop")
+	laptopData := d.mustDialData("laptop", toTheLaptop.transfer)
+	toTheTablet := d.awaitDataFrom(context.Background(), "tablet")
+	tabletData := d.mustDialData("tablet", toTheTablet.transfer)
+	took := timeToMove(t, map[*DataConn]*DataConn{toTheLaptop.arrived(): laptopData, toTheTablet.arrived(): tabletData}, eachWrites)
+
+	if least := leastTimeAtThePace(2*eachWrites, bytesPerSecond); took < least {
+		t.Errorf("two connections wrote %d bytes each in %s, want at least %s for both together at %d bytes per second",
+			eachWrites, took, least, bytesPerSecond)
+	}
+}
+
+func TestEveryDataConnectionWithoutAPaceOfItsOwnSharesThePaceOfThisMachine(t *testing.T) {
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience}, "laptop")
+
+	first := d.awaitDataFrom(context.Background(), "laptop")
+	firstOnTheSide := d.mustDialData("laptop", first.transfer)
+	second := d.awaitDataFrom(context.Background(), "laptop")
+	secondOnTheSide := d.mustDialData("laptop", second.transfer)
+
+	for name, conn := range map[string]*DataConn{
+		"the first on the central":       first.arrived(),
+		"the second on the central":      second.arrived(),
+		"the first on the side machine":  firstOnTheSide,
+		"the second on the side machine": secondOnTheSide,
+	} {
+		if conn.pace != paceOfThisMachine {
+			t.Errorf("%s has a pace of its own, want the pace of this machine", name)
+		}
+	}
+}
+
+func TestDataConnectionsWaitTenSecondsAndThisMachineGoesAt80MegabitsUnlessConfigured(t *testing.T) {
 	defaults := Config{}.withDefaults()
 	if defaults.DataWindow != 10*time.Second {
 		t.Errorf("DataWindow = %s, want 10s", defaults.DataWindow)
 	}
-	if defaults.DataBytesPerSecond != 10_000_000 {
-		t.Errorf("DataBytesPerSecond = %d, want 10000000", defaults.DataBytesPerSecond)
+	if defaults.DataPace != paceOfThisMachine {
+		t.Error("a Config without a pace does not use the pace of this machine")
 	}
+	if paceOfThisMachine.bytesPerSecond != 10_000_000 || paceOfThisMachine.unpaced {
+		t.Errorf("this machine goes at %.0f bytes per second, unpaced %t, want 10000000", paceOfThisMachine.bytesPerSecond, paceOfThisMachine.unpaced)
+	}
+	if zero := NewPace(0); zero.bytesPerSecond != 10_000_000 || zero.unpaced {
+		t.Errorf("a pace of 0 goes at %.0f bytes per second, unpaced %t, want the default of 10000000", zero.bytesPerSecond, zero.unpaced)
+	}
+}
+
+func TestADataConnectionGivesUpAtItsDeadlines(t *testing.T) {
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience}, "laptop")
+	awaited := d.awaitDataFrom(context.Background(), "laptop")
+	sideData := d.mustDialData("laptop", awaited.transfer)
+	centralData := awaited.arrived()
+	buffer := make([]byte, 1)
+
+	if err := sideData.SetReadDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, err := sideData.Read(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("Read after the read deadline = %v, want os.ErrDeadlineExceeded", err)
+	}
+	if err := centralData.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetWriteDeadline: %v", err)
+	}
+	if _, err := centralData.Write(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("Write after the write deadline = %v, want os.ErrDeadlineExceeded", err)
+	}
+	if err := centralData.SetDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+	if _, err := centralData.Read(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("Read after the deadline = %v, want os.ErrDeadlineExceeded", err)
+	}
+}
+
+func TestAwaitingDataAnnouncesNothingWhenItsContextHasEnded(t *testing.T) {
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience}, "laptop")
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	conn, err := d.listener.AwaitData(ended, d.sides["laptop"].Fingerprint, func(transfer int32) error {
+		t.Errorf("transfer %d was announced after the context ended", transfer)
+		return nil
+	})
+	if err == nil {
+		conn.Close()
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("AwaitData = %v, want context.Canceled", err)
+	}
+}
+
+func TestAwaitingDataAnnouncesNothingOnceTheListenerIsClosed(t *testing.T) {
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience}, "laptop")
+	d.listener.Close()
+
+	conn, err := d.listener.AwaitData(context.Background(), d.sides["laptop"].Fingerprint, func(transfer int32) error {
+		t.Errorf("transfer %d was announced by a closed listener", transfer)
+		return nil
+	})
+	if err == nil {
+		conn.Close()
+	}
+	if !errors.Is(err, net.ErrClosed) {
+		t.Errorf("AwaitData = %v, want net.ErrClosed", err)
+	}
+}
+
+func (d *deskWithDataConnections) waitUntilTheWindowStarts(transfer int32) {
+	d.t.Helper()
+	deadline := time.Now().Add(testPatience)
+	for {
+		d.listener.heldMutex.Lock()
+		held, found := d.listener.held[transfer]
+		started := found && !held.deadline.IsZero()
+		d.listener.heldMutex.Unlock()
+		if started {
+			return
+		}
+		if time.Now().After(deadline) {
+			d.t.Fatalf("the window of transfer %d never started", transfer)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestADataConnectionThatArrivesAfterTheWindowIsRefusedBeforeTheCentralGivesUp(t *testing.T) {
+	var ahead atomic.Int64
+	clockThatJumps := func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience, now: clockThatJumps}, "laptop")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	awaited := d.awaitDataFrom(ctx, "laptop")
+	d.waitUntilTheWindowStarts(awaited.transfer)
+	ahead.Store(int64(testPatience + time.Second))
+
+	d.expectRefused("laptop", awaited.transfer, ErrDataNotAwaited)
+	awaited.stillWaiting()
+}
+
+func scriptedNumbers(numbers ...int32) func() (int32, error) {
+	var mutex sync.Mutex
+	drawn := 0
+	return func() (int32, error) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		number := numbers[drawn%len(numbers)]
+		drawn++
+		return number, nil
+	}
+}
+
+func TestATransferNumberNamesOneTransferUntilItsDataConnectionCloses(t *testing.T) {
+	d := newDeskWithDataConnections(t, Config{DataWindow: testPatience, drawTransferNumber: scriptedNumbers(5, 0, 5, 7, 5)}, "laptop", "tablet")
+
+	first := d.awaitDataFrom(context.Background(), "laptop")
+	d.mustDialData("laptop", first.transfer)
+	open := first.arrived()
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	second := d.awaitDataFrom(secondCtx, "tablet")
+	if first.transfer != 5 || second.transfer != 7 {
+		t.Fatalf("transfers %d and %d, want 5, then 7 because 0 is never used and 5 is open", first.transfer, second.transfer)
+	}
+
+	open.Close()
+	cancelSecond()
+	second.failed()
+	third := d.awaitDataFrom(context.Background(), "tablet")
+	if third.transfer != 5 {
+		t.Errorf("after its data connection closed, transfer number 5 was skipped for %d", third.transfer)
+	}
+	d.mustDialData("tablet", third.transfer)
+	third.arrived()
 }

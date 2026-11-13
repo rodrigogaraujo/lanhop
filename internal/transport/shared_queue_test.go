@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -14,18 +15,36 @@ import (
 )
 
 const (
-	linkBytesPerSecond     = 100_000_000 / 8
-	routerQueuePackets     = 1000
 	packetPayloadBytes     = 1460
 	headerBytesPerPacket   = 78
 	linkCatchUp            = time.Millisecond
-	transferBytes          = 100 << 20
+	sc002TransferBytes     = 100 << 20
+	unpacedTransferBytes   = 20 << 20
 	keyLateByAtMost        = 50 * time.Millisecond
 	betweenKeys            = 10 * time.Millisecond
 	keysWithoutTheTransfer = 30
 	keysDuringTheTransfer  = 100
 	transferPatience       = time.Minute
 )
+
+type shapedLink struct {
+	bytesPerSecond float64
+	packetsAtMost  int
+}
+
+var routerOf100Megabits = shapedLink{bytesPerSecond: 100_000_000 / 8, packetsAtMost: 1000}
+
+func (l shapedLink) timeToSend(payload int) time.Duration {
+	return time.Duration(float64(payload+headerBytesPerPacket) / l.bytesPerSecond * float64(time.Second))
+}
+
+func (l shapedLink) payloadBytesPerSecond() float64 {
+	return l.bytesPerSecond * packetPayloadBytes / (packetPayloadBytes + headerBytesPerPacket)
+}
+
+func (l shapedLink) timeToDrainAFullQueue() time.Duration {
+	return time.Duration(l.packetsAtMost) * l.timeToSend(packetPayloadBytes)
+}
 
 func measuredWithoutTheRaceDetector(t *testing.T) {
 	t.Helper()
@@ -41,12 +60,13 @@ type packet struct {
 }
 
 type sharedQueue struct {
+	link    shapedLink
 	packets chan packet
 	done    <-chan struct{}
 }
 
-func newSharedQueue(packetsAtMost int, done <-chan struct{}) *sharedQueue {
-	q := &sharedQueue{packets: make(chan packet, packetsAtMost), done: done}
+func newSharedQueue(link shapedLink, done <-chan struct{}) *sharedQueue {
+	q := &sharedQueue{link: link, packets: make(chan packet, link.packetsAtMost), done: done}
 	go q.transmit()
 	return q
 }
@@ -87,16 +107,12 @@ func (q *sharedQueue) transmit() {
 			p.to.Close()
 			continue
 		}
-		free = later(free, time.Now().Add(-linkCatchUp)).Add(timeOnTheLink(len(p.payload)))
+		free = later(free, time.Now().Add(-linkCatchUp)).Add(q.link.timeToSend(len(p.payload)))
 		if wait := time.Until(free); wait > 0 {
 			time.Sleep(wait)
 		}
 		p.to.Write(p.payload)
 	}
-}
-
-func timeOnTheLink(payload int) time.Duration {
-	return time.Duration(float64(payload+headerBytesPerPacket) / linkBytesPerSecond * float64(time.Second))
 }
 
 func later(a, b time.Time) time.Time {
@@ -106,15 +122,15 @@ func later(a, b time.Time) time.Time {
 	return b
 }
 
-func linkThroughOneQueue(t *testing.T, target string, packetsAtMost int) string {
+func linkThroughOneQueue(t *testing.T, target string, link shapedLink) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
 	done := make(chan struct{})
-	toTheCentral := newSharedQueue(packetsAtMost, done)
-	toTheSide := newSharedQueue(packetsAtMost, done)
+	toTheCentral := newSharedQueue(link, done)
+	toTheSide := newSharedQueue(link, done)
 	var open sync.Map
 	t.Cleanup(func() {
 		close(done)
@@ -209,6 +225,9 @@ func typeKey(t *testing.T, control *Conn) time.Time {
 }
 
 func median(durations []time.Duration) time.Duration {
+	if len(durations) == 0 {
+		return 0
+	}
 	sorted := slices.Clone(durations)
 	slices.Sort(sorted)
 	return sorted[len(sorted)/2]
@@ -231,7 +250,35 @@ type keysBehindATransfer struct {
 	bytesMoved int64
 }
 
-func timeKeysBehindATransfer(t *testing.T, centralConfig Config, packetsAtMost int) keysBehindATransfer {
+func (k keysBehindATransfer) mustHaveTypedEnough(t *testing.T) {
+	t.Helper()
+	if len(k.during) < keysDuringTheTransfer {
+		t.Fatalf("only %d keys were typed while the transfer moved, want at least %d", len(k.during), keysDuringTheTransfer)
+	}
+}
+
+func (k keysBehindATransfer) worstLaterThanUsual() time.Duration {
+	if len(k.during) == 0 {
+		return 0
+	}
+	return slices.Max(k.during) - k.usual
+}
+
+func (k keysBehindATransfer) payloadBytesPerSecond() float64 {
+	return float64(k.bytesMoved) / k.transfer.Seconds()
+}
+
+func (k keysBehindATransfer) String() string {
+	return fmt.Sprintf("usual key delay %s; while %d MiB moved in %s (%.1f Mbit/s), %d keys, median %s, worst %s later than usual",
+		k.usual, k.bytesMoved>>20, k.transfer.Round(time.Millisecond), megabits(k.payloadBytesPerSecond()),
+		len(k.during), median(k.during), k.worstLaterThanUsual())
+}
+
+func megabits(bytesPerSecond float64) float64 {
+	return bytesPerSecond * 8 / 1e6
+}
+
+func timeKeysBehindATransfer(t *testing.T, centralConfig Config, link shapedLink, transferBytes int) keysBehindATransfer {
 	t.Helper()
 	central, side := newIdentity(t), newIdentity(t)
 	centralConfig.Identity = central
@@ -240,8 +287,7 @@ func timeKeysBehindATransfer(t *testing.T, centralConfig Config, packetsAtMost i
 		t.Fatalf("Listen: %v", err)
 	}
 	t.Cleanup(func() { listener.Close() })
-	link := linkThroughOneQueue(t, listener.Addr().String(), packetsAtMost)
-	centralBehindTheLink := trust.Peer{Name: "desk", Fingerprint: central.Fingerprint, Address: link}
+	centralBehindTheLink := trust.Peer{Name: "desk", Fingerprint: central.Fingerprint, Address: linkThroughOneQueue(t, listener.Addr().String(), link)}
 	sideConfig := Config{Identity: side}
 
 	sideControl, err := Dial(context.Background(), sideConfig, centralBehindTheLink)
@@ -285,7 +331,7 @@ func timeKeysBehindATransfer(t *testing.T, centralConfig Config, packetsAtMost i
 	}
 	arrived := make(chan arrival, 1)
 	go func() {
-		moved, err := io.CopyN(io.Discard, sideData, transferBytes)
+		moved, err := io.CopyN(io.Discard, sideData, int64(transferBytes))
 		arrived <- arrival{moved, time.Now(), err}
 	}()
 
@@ -297,7 +343,7 @@ func timeKeysBehindATransfer(t *testing.T, centralConfig Config, packetsAtMost i
 			waiting = false
 		default:
 			if time.Since(started) > transferPatience {
-				t.Fatalf("100 MiB did not arrive within %s", transferPatience)
+				t.Fatalf("%d bytes did not arrive within %s", transferBytes, transferPatience)
 			}
 			typedDuring = append(typedDuring, typeKey(t, centralControl))
 			time.Sleep(betweenKeys)
@@ -316,20 +362,32 @@ func timeKeysBehindATransfer(t *testing.T, centralConfig Config, packetsAtMost i
 func TestKeysArriveAtMost50MillisecondsLaterWhile100MiBMoveThroughOneQueueOf100Megabits(t *testing.T) {
 	measuredWithoutTheRaceDetector(t)
 
-	measured := timeKeysBehindATransfer(t, Config{}, routerQueuePackets)
+	measured := timeKeysBehindATransfer(t, Config{}, routerOf100Megabits, sc002TransferBytes)
 
-	fastestTheLinkAllows := time.Duration(float64(transferBytes) / linkBytesPerSecond * float64(time.Second))
-	if measured.transfer < fastestTheLinkAllows {
-		t.Fatalf("100 MiB moved in %s, faster than %s at 100 Mbit/s: the queue did not shape the link", measured.transfer, fastestTheLinkAllows)
+	measured.mustHaveTypedEnough(t)
+	t.Logf("SC-002, paced: %s", measured)
+	if late := measured.worstLaterThanUsual(); late > keyLateByAtMost {
+		t.Errorf("a key arrived %s later than usual while the transfer moved, want at most %s", late, keyLateByAtMost)
 	}
-	if len(measured.during) < keysDuringTheTransfer {
-		t.Fatalf("only %d keys were typed while the transfer moved, want at least %d", len(measured.during), keysDuringTheTransfer)
+	if moved := measured.payloadBytesPerSecond(); moved < 0.9*defaultDataBytesPerSecond {
+		t.Errorf("the transfer moved at %.1f Mbit/s, want at least 90%% of the pace of %.0f Mbit/s", megabits(moved), megabits(defaultDataBytesPerSecond))
 	}
-	worst := slices.Max(measured.during)
-	t.Logf("SC-002: usual key delay %s; while 100 MiB moved in %s (%.1f Mbit/s), %d keys, median %s, worst %s, %s later than usual",
-		measured.usual, measured.transfer.Round(time.Millisecond), float64(measured.bytesMoved)*8/measured.transfer.Seconds()/1e6,
-		len(measured.during), median(measured.during), worst, worst-measured.usual)
-	if worst-measured.usual > keyLateByAtMost {
-		t.Errorf("a key arrived %s later than usual while the transfer moved, want at most %s", worst-measured.usual, keyLateByAtMost)
+}
+
+func TestKeysArriveMoreThan50MillisecondsLateBehindAnUnpacedTransferThroughTheSameQueue(t *testing.T) {
+	measuredWithoutTheRaceDetector(t)
+
+	measured := timeKeysBehindATransfer(t, Config{DataPace: NewPace(Unpaced)}, routerOf100Megabits, unpacedTransferBytes)
+
+	carried := routerOf100Megabits.payloadBytesPerSecond()
+	t.Logf("SC-002, unpaced: %s; the link carries %.1f Mbit/s and drains a full queue in %s",
+		measured, megabits(carried), routerOf100Megabits.timeToDrainAFullQueue())
+	if moved := measured.payloadBytesPerSecond(); moved > 1.01*carried || moved < 0.9*carried {
+		t.Fatalf("an unpaced transfer moved at %.1f Mbit/s, want the %.1f Mbit/s the link carries", megabits(moved), megabits(carried))
+	}
+	measured.mustHaveTypedEnough(t)
+	if late := measured.worstLaterThanUsual(); late <= keyLateByAtMost {
+		t.Errorf("behind an unpaced transfer the worst key was only %s late, want more than %s: the queue does not hold keys back, so the paced test proves nothing",
+			late, keyLateByAtMost)
 	}
 }
