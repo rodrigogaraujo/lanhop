@@ -34,7 +34,6 @@ func NewPace(bytesPerSecond int) *Pace {
 		bytesPerSecond: float64(bytesPerSecond),
 		now:            time.Now,
 		sleep:          time.Sleep,
-		allowance:      paceBurst,
 	}
 }
 
@@ -43,21 +42,45 @@ func (p *Pace) wait(bytes int) {
 		return
 	}
 	if behind := p.reserve(bytes); behind > 0 {
-		p.sleep(behind)
+		p.pause(behind)
 	}
 }
 
 func (p *Pace) reserve(bytes int) time.Duration {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	now := p.now()
-	if !p.refilled.IsZero() {
-		p.allowance = min(paceBurst, p.allowance+now.Sub(p.refilled).Seconds()*p.bytesPerSecond)
+	now := p.clock()
+	if p.refilled.IsZero() {
+		p.allowance = paceBurst
+	} else {
+		p.allowance = min(paceBurst, p.allowance+now.Sub(p.refilled).Seconds()*p.rate())
 	}
 	p.refilled = now
 	p.allowance -= float64(bytes)
 	if p.allowance >= 0 {
 		return 0
 	}
-	return time.Duration(-p.allowance / p.bytesPerSecond * float64(time.Second))
+	return time.Duration(-p.allowance / p.rate() * float64(time.Second))
+}
+
+func (p *Pace) rate() float64 {
+	if p.bytesPerSecond > 0 {
+		return p.bytesPerSecond
+	}
+	return defaultDataBytesPerSecond
+}
+
+func (p *Pace) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+func (p *Pace) pause(behind time.Duration) {
+	if p.sleep != nil {
+		p.sleep(behind)
+		return
+	}
+	time.Sleep(behind)
 }

@@ -84,3 +84,20 @@ func TestAnUnpacedPaceNeverWaits(t *testing.T) {
 		t.Errorf("an unpaced pace waited %d times", clock.sleeps)
 	}
 }
+
+func TestAPaceThatWasNeverSetUpActsAsTheDefaultPace(t *testing.T) {
+	var zero Pace
+	const beyondTheBurst = defaultDataBytesPerSecond / 10
+
+	start := time.Now()
+	zero.wait(paceBurst)
+	zero.wait(beyondTheBurst)
+	took := time.Since(start)
+
+	if least := 90 * time.Millisecond; took < least {
+		t.Errorf("a pace that was never set up let %d bytes past the burst go in %v, want at least %v, as the default pace", beyondTheBurst, took, least)
+	}
+	if most := time.Second; took > most {
+		t.Errorf("a pace that was never set up took %v, want under %v", took, most)
+	}
+}
