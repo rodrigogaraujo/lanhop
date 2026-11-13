@@ -405,6 +405,7 @@ func TestASideMachineThatReconnectsGetsTheLastCopyAgain(t *testing.T) {
 	d := deskWith(t, "A")
 	copyOnTheCentralGoesTo(t, d, "A", "x")
 	d.FocusOnCentral()
+	d.UnchangedOn("A")
 	d.Lost("A")
 	expect(t, "A connects again", d.Connected("A"), announce("A", true))
 	expect(t, "A says it takes copies", d.Says("A", true))
