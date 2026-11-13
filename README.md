@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: first release, v0.1.0.** One person has used it on one desk: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On another night, an x86-64 machine running macOS ran the 0.1.0 build for x86-64 as the machine with the keyboard, and three Macs and a Linux machine each connected to it; the three Macs ran a `lanhop.app` made by hand. The installer of 0.1.0 ran on Macs that night and did not get them connected; the installer that checks every permission has not run on a real machine yet. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: v0.1.1.** On macOS, lanhop is now an app with an identity of its own, so that macOS can apply the Local Network permission to it, and the installer checks every permission on the lanhop that starts at login and says what is missing before it ends. The `lanhop.app` and the installer of this version have been tried only by automated tests, not yet by a person on a real machine. What one person has done so far: shared the keyboard and trackpad of a Mac with a Linux machine, by hotkey and through the screen edge; and, on another night, used an x86-64 machine running macOS, with the 0.1.0 build, as the machine with the keyboard, while three Macs and a Linux machine each connected to it, the three Macs with a `lanhop.app` made by hand. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -86,7 +86,7 @@ Each release also has the archives themselves, one per system and architecture, 
     - [ ] A hotkey that locks focus, and settings for the push time, the corner size and the cursor speed
 - [ ] Windows
 - [ ] Automatic discovery on the local network
-- [ ] Clipboard sharing
+- [ ] Clipboard sharing ([spec 005](specs/005-clipboard-sharing/spec.md)): the messages that carry a copy, and which machine gets which copy, are built; nothing copies yet
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
   - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 is meant to fix
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
