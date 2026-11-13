@@ -193,10 +193,16 @@ jobs:
           mkdir -p served/latest/download root/Applications
           cp release/* served/latest/download/
           home=$(mktemp -d)
-          HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" LANHOP_SYSTEM_ROOT="$PWD/root" sh install.sh </dev/null
+          HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" LANHOP_SYSTEM_ROOT="$PWD/root" \
+            LANHOP_ROLE=share LANHOP_YES=1 LANHOP_PRINT_COMMANDS=1 sh install.sh </dev/null
+          program="$PWD/root/Applications/lanhop.app/Contents/MacOS/lanhop"
           test "$("$home/.local/bin/lanhop" version)" = "lanhop $VERSION"
-          test "$(readlink "$home/.local/bin/lanhop")" = "$PWD/root/Applications/lanhop.app/Contents/MacOS/lanhop"
+          test "$(readlink "$home/.local/bin/lanhop")" = "$program"
           codesign --verify --strict --verbose=2 root/Applications/lanhop.app
+          agent="$home/Library/LaunchAgents/com.github.rodrigogaraujo.lanhop.plist"
+          plutil -lint "$agent"
+          test "$(plutil -extract AssociatedBundleIdentifiers.0 raw "$agent")" = com.github.rodrigogaraujo.lanhop
+          test "$(plutil -extract ProgramArguments.0 raw "$agent")" = "$program"
 
   publish:
     name: Publish the release

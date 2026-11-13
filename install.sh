@@ -24,8 +24,8 @@ Installs lanhop for the current user. Nothing is installed as root.
   $install_command -s -- --uninstall
 
 Options:
-  --uninstall   stop lanhop and remove its service and its binary. The key of this
-                machine and its trusted machines are kept
+  --uninstall   stop lanhop and remove its service, its binary and, on macOS,
+                lanhop.app. The key of this machine and its trusted machines are kept
   --help        show this text
 
 Environment:
@@ -257,19 +257,32 @@ install_app() {
   app=$app_directory/lanhop.app
   binary=$app/Contents/MacOS/lanhop
   if [ -e "$command_link" ] || [ -L "$command_link" ]; then
-    if [ "$(readlink "$command_link" 2>/dev/null || true)" != "$binary" ]; then
-      earlier_program=$command_link
-    fi
+    case $(readlink "$command_link" 2>/dev/null || true) in
+      */lanhop.app/Contents/MacOS/lanhop) ;;
+      *) earlier_program=$command_link ;;
+    esac
   fi
   mkdir -p "$app_directory" "$install_directory"
-  rm -rf "$app.new"
+  rm -rf "$app.new" "$app.old"
   cp -R "$unpacked" "$app.new"
   chmod 755 "$app.new/Contents/MacOS/lanhop"
-  rm -rf "$app"
+  if [ -e "$app" ]; then
+    mv "$app" "$app.old"
+  fi
   mv "$app.new" "$app"
+  rm -rf "$app.old"
   rm -f "$command_link.new"
   ln -s "$binary" "$command_link.new"
   mv -f "$command_link.new" "$command_link"
+  remove_the_other_copy
+}
+
+remove_the_other_copy() {
+  for candidate in "$system_root/Applications/lanhop.app" "$HOME/Applications/lanhop.app"; do
+    if [ "$candidate" != "$app" ] && is_the_app "$candidate" && [ -w "$(dirname "$candidate")" ]; then
+      rm -rf "$candidate" || problem "could not remove the copy of an earlier install in $candidate"
+    fi
+  done
 }
 
 advise_about_path() {
@@ -327,6 +340,10 @@ fits_in_a_service_file() {
 }
 
 explain_no_service() {
+  if [ -n "$app" ]; then
+    problem "lanhop cannot be started at login from $binary, because a service file cannot hold a path with \" \\ \$ % < > or &."
+    return 0
+  fi
   problem "lanhop cannot be started at login from $binary, because a service file cannot hold a path with \" \\ \$ % < > or &. Install it in another directory with LANHOP_INSTALL_DIR."
 }
 
@@ -528,12 +545,22 @@ under Accessibility. Started at login, the program to allow is the lanhop app, n
 terminal. In System Settings > Privacy & Security > Accessibility:
 
   1. Click the + button under the list. macOS asks for your password or Touch ID.
-  2. Choose lanhop in $app_directory and click Open.
+  2. $(how_to_choose_the_app)
   3. Make sure the switch next to lanhop is on.
 
+If lanhop is already in the list from an earlier install, select it, remove it with the
+- button and add it again: macOS ties the permission to the exact program it approved.
 $guides_url/setup-macos.md says more.
 
 EOF
+}
+
+how_to_choose_the_app() {
+  if [ "$app_directory" = "$system_root/Applications" ]; then
+    printf 'Choose lanhop in %s and click Open.' "$app_directory"
+  else
+    printf 'Press Command+Shift+G, type %s and press Return,\n     then choose lanhop and click Open.' "$app_directory"
+  fi
 }
 
 explain_earlier_program() {
@@ -578,7 +605,6 @@ EOF
   fi
   write_agent
   say "Wrote $agent_path"
-  explain_earlier_program
   explain_accessibility
   system open "$accessibility_pane" || problem "System Settings did not open. Open that pane by hand."
   if [ "$someone_answers" = yes ]; then
@@ -652,6 +678,7 @@ install_lanhop() {
   check_role
   install_binary
   advise_about_path
+  explain_earlier_program
   choose_role
   if [ -z "$role" ]; then
     explain_what_is_left
@@ -720,14 +747,20 @@ remove_agent() {
 }
 
 is_the_app() {
-  [ -f "$1/Contents/Info.plist" ] && grep -q "<string>$app_identifier</string>" "$1/Contents/Info.plist"
+  [ -f "$1/Contents/Info.plist" ] && grep -qF "<string>$app_identifier</string>" "$1/Contents/Info.plist"
 }
 
 remove_apps() {
   for candidate in "$system_root/Applications/lanhop.app" "$HOME/Applications/lanhop.app"; do
-    if is_the_app "$candidate"; then
-      rm -rf "$candidate"
+    if ! is_the_app "$candidate"; then
+      continue
+    fi
+    if [ ! -w "$(dirname "$candidate")" ]; then
+      say "Left $candidate, which this user cannot remove."
+    elif rm -rf "$candidate"; then
       say "Removed $candidate"
+    else
+      problem "could not remove $candidate"
     fi
   done
 }

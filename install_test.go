@@ -1475,7 +1475,7 @@ func TestTheAppGoesToTheApplicationsOfTheHomeWhenTheSystemOnesCannotBeWritten(t 
 		if !strings.Contains(m.read(agentFile), "<string>"+m.path(appProgram)+"</string>") {
 			t.Errorf("the launch agent does not run the app in the home directory:\n%s", m.read(agentFile))
 		}
-		expectMention(t, output, "Choose lanhop in "+m.path("Applications")+" and click Open")
+		expectMention(t, output, "Press Command+Shift+G, type "+m.path("Applications")+" and press Return")
 
 		m.mustRun("--uninstall")
 		expectSame(t, "files in the home directory after uninstall", m.files(), []string{})
@@ -1531,6 +1531,72 @@ func TestUninstallLeavesALanhopAppThatIsNotThisOne(t *testing.T) {
 		m.mustRun("--uninstall")
 		if _, err := os.Stat(m.inRoot(other)); err != nil {
 			t.Errorf("uninstall removed a lanhop.app that is not this one: %v", err)
+		}
+	})
+}
+
+func TestAnAppInTheHomeMovesToTheSystemApplicationsOnceTheyCanBeWritten(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		if err := os.Remove(m.inRoot("Applications")); err != nil {
+			t.Fatal(err)
+		}
+		m.mustRun()
+		if err := os.MkdirAll(m.inRoot("Applications"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		output := m.mustRun()
+		expectSame(t, "entries in the system Applications", entriesOf(t, m.inRoot("Applications")), []string{"lanhop.app"})
+		expectSame(t, "files in the home directory", m.files(), []string{binaryFile})
+		if target := m.linkTarget(binaryFile); target != m.inRoot(appProgram) {
+			t.Errorf("%s links to %s, want %s", binaryFile, target, m.inRoot(appProgram))
+		}
+		if strings.Contains(output, "now runs the lanhop app") {
+			t.Errorf("moving the app is described as replacing an earlier program:\n%s", output)
+		}
+	})
+}
+
+func TestAProgramOfAnEarlierInstallIsNamedEvenWhenNoServiceIsSetUp(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		writeFile(t, m.path(binaryFile), []byte("#!/bin/sh\necho 'lanhop v0.1.0'\n"), 0o755)
+		output := m.mustRun()
+		expectMention(t, output, m.path(binaryFile)+" now runs the lanhop app", `"a.out"`)
+	})
+}
+
+func TestUninstallLeavesAnAppThatThisUserCannotRemoveAndRemovesTheRest(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a directory without write permission")
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.mustRun()
+		if err := os.Chmod(m.inRoot("Applications"), 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(m.inRoot("Applications"), 0o755) })
+		output := m.mustRun("--uninstall")
+		expectMention(t, output, "Left "+m.inRoot(appDirectory)+", which this user cannot remove.", "Removed "+m.path(binaryFile))
+		expectSame(t, "files in the home directory", m.files(), []string{})
+		if _, err := os.Stat(m.inRoot(appProgram)); err != nil {
+			t.Errorf("the app that could not be removed was emptied: %v", err)
+		}
+	})
+}
+
+func TestTheAppGetsALaunchAgentWhateverTheDirectoryOfTheCommand(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.settings["LANHOP_INSTALL_DIR"] = m.path("R&D")
+		m.settings["LANHOP_ROLE"] = "share"
+		m.settings["LANHOP_YES"] = "1"
+		output := m.mustRun()
+		expectSame(t, "files in the home directory", m.files(), []string{agentFile, "R&D/lanhop"})
+		expectSame(t, "system commands", commandsIn(output), m.named(openAccessibility, stopTheAgent, startTheAgent))
+		if target := m.linkTarget("R&D/lanhop"); target != m.inRoot(appProgram) {
+			t.Errorf("R&D/lanhop links to %s, want %s", target, m.inRoot(appProgram))
 		}
 	})
 }
