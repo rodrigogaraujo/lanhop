@@ -109,7 +109,7 @@ One task, one pull request. Each verify list says what must be true before the t
   - Two right tokens at the same time: exactly one joins.
   - A `lanhop pair` against a waiting `lanhop add` fails at the first message, and the wait goes on. A join against a waiting `lanhop pair` fails at the first message, and `lanhop pair` ends, as it does on any stray connection today (FR-012).
   - After a join, and when the wait ends (shortened in the test), the port takes no more connections.
-- [ ] **2. `lanhop add` and `lanhop join`.** The commands, the address, the version, the refusals, and the wait for the connection. → Verify with tests:
+- [x] **2. `lanhop add` and `lanhop join`.** The commands, the address, the version, the refusals, and the wait for the connection. → Verify with tests:
   - `lanhop add` refuses a taken name, the name of the central, an invalid name, and a second `lanhop add`; `lanhop add` and `lanhop pair` each say that another pairing waits when the port is taken.
   - A machine stored by `lanhop add` takes focus in a running `lanhop share` with no restart, in an integration test.
   - `lanhop add` prints the name, address and hotkey of the new machine right after the join.

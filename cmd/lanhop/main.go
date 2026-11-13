@@ -12,6 +12,9 @@ var version = "dev"
 const usage = `lanhop shares one keyboard and mouse across computers on the same network.
 
 Usage:
+  lanhop add NAME        on the machine with the keyboard: print a line that adds a new machine as NAME, and wait for it
+  lanhop join ADDRESS CODE
+                         on the new machine: join the machine with the keyboard, with the line that lanhop add printed
   lanhop pair            on the machine with the keyboard: wait for another machine and pair with it
   lanhop pair ADDRESS    on the other machine: pair with the machine that waits at ADDRESS
   lanhop share           on the machine with the keyboard: share it and the mouse with the paired machines
@@ -26,6 +29,10 @@ Usage:
   lanhop clipboard on    let copies of text move again, as after a new install
   lanhop devices         list the input devices this machine can read
   lanhop version         print the version
+
+Options of add, before NAME:
+  --address ADDRESS   put ADDRESS in the line, when the new machine cannot reach the one lanhop add picks
+  --listen ADDRESS    wait on ADDRESS instead of port 24746 of every network interface
 
 Options of pair, before ADDRESS:
   --as NAME           call the other machine NAME here, when the name it proposes is taken
@@ -91,6 +98,10 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return receive(args, stdout)
 	case "pair":
 		return pair(args, stdin, stdout)
+	case "add":
+		return add(args, stdout)
+	case "join":
+		return join(args, stdout)
 	case "share":
 		return share(args, stdout)
 	case "status":

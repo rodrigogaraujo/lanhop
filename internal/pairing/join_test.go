@@ -78,8 +78,8 @@ func waitingForJoin(t *testing.T, central machine, name string, adjust ...func(*
 	t.Cleanup(stop)
 	finished := make(chan outcome, 1)
 	go func() {
-		peer, err := WaitForJoin(ctx, listener, config)
-		finished <- outcome{peer, err}
+		joined, err := WaitForJoin(ctx, listener, config)
+		finished <- outcome{joined.Peer, err}
 	}()
 	return openWait{address: listener.Addr().String(), code: code, rejected: rejected, finished: finished, stop: stop}
 }
@@ -513,6 +513,19 @@ func TestTheWaitEndsByItselfAtItsLimit(t *testing.T) {
 		t.Fatalf("the wait ended with %v, want ErrWaitOver", got.err)
 	}
 	expectRefusedConnection(t, wait.address)
+}
+
+func TestAnAddressThatDoesNotAnswerIsUnreachable(t *testing.T) {
+	central, newcomer := newMachine(t, "imac"), newMachine(t, "office")
+	code, err := NewJoinCode(central.identity.Fingerprint)
+	if err != nil {
+		t.Fatalf("NewJoinCode: %v", err)
+	}
+	config := newcomer.joinConfig()
+	config.Timeout = shortTimeout
+	if _, err := Join("192.0.2.1", code, config); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("join with an address that does not answer = %v, want ErrUnreachable", err)
+	}
 }
 
 func TestJoinLooksInItsOwnStoreBeforeConnecting(t *testing.T) {

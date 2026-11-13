@@ -45,6 +45,7 @@ var (
 	ErrAlreadyJoined   = errors.New("pairing: this machine already trusts the central of this join code")
 	ErrOtherCentral    = errors.New("pairing: this machine already trusts another central")
 	ErrNotWaiting      = errors.New("pairing: the central is not waiting for a machine to join")
+	ErrUnreachable     = errors.New("pairing: cannot reach the central")
 	ErrWrongToken      = errors.New("pairing: wrong join code")
 	ErrTooManyAttempts = fmt.Errorf("pairing: %d wrong join codes ended the wait", JoinAttempts)
 	ErrWaitOver        = errors.New("pairing: the wait for a machine to join is over")
@@ -71,9 +72,14 @@ type JoinConfig struct {
 	Timeout  time.Duration
 }
 
+type Joined struct {
+	Peer trust.Peer
+	From string
+}
+
 type joinResult struct {
-	peer trust.Peer
-	err  error
+	joined Joined
+	err    error
 }
 
 type joinWait struct {
@@ -88,10 +94,10 @@ type joinWait struct {
 	speaking sync.Mutex
 }
 
-func WaitForJoin(ctx context.Context, listener net.Listener, config WaitConfig) (trust.Peer, error) {
+func WaitForJoin(ctx context.Context, listener net.Listener, config WaitConfig) (Joined, error) {
 	if !trust.ValidName(config.Name) || !trust.ValidName(config.OwnName) {
 		listener.Close()
-		return trust.Peer{}, fmt.Errorf("%w: %q, %q", ErrBadJoinName, config.Name, config.OwnName)
+		return Joined{}, fmt.Errorf("%w: %q, %q", ErrBadJoinName, config.Name, config.OwnName)
 	}
 	wait := &joinWait{
 		config: config,
@@ -121,7 +127,7 @@ func WaitForJoin(ctx context.Context, listener net.Listener, config WaitConfig) 
 	if late, ended := wait.lateResult(); ended {
 		result = late
 	}
-	return result.peer, result.err
+	return result.joined, result.err
 }
 
 func (w *joinWait) lateResult() (joinResult, bool) {
@@ -219,12 +225,12 @@ func (w *joinWait) serve(raw net.Conn) {
 		w.reportWhileWaiting(raw, ErrMalformed)
 		return
 	}
-	if wrong := w.decide(secured, identity.FingerprintOf(presented[0]), message[1:]); wrong != nil {
+	if wrong := w.decide(secured, hostOf(raw), identity.FingerprintOf(presented[0]), message[1:]); wrong != nil {
 		w.report(raw, wrong)
 	}
 }
 
-func (w *joinWait) decide(secured *tls.Conn, fingerprint identity.Fingerprint, token []byte) error {
+func (w *joinWait) decide(secured *tls.Conn, from string, fingerprint identity.Fingerprint, token []byte) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 	if w.finished {
@@ -254,10 +260,10 @@ func (w *joinWait) decide(secured *tls.Conn, fingerprint identity.Fingerprint, t
 		return nil
 	}
 	if err := writeMessage(secured, []byte{tagWelcome}); err != nil {
-		w.end(joinResult{peer: candidate, err: fmt.Errorf("pairing: %q is stored here, but the welcome did not reach it. To start over, run: lanhop forget %s: %w", candidate.Name, candidate.Name, err)})
+		w.end(joinResult{joined: Joined{Peer: candidate, From: from}, err: fmt.Errorf("pairing: %q is stored here, but the welcome did not reach it. To start over, run: lanhop forget %s: %w", candidate.Name, candidate.Name, err)})
 		return nil
 	}
-	w.end(joinResult{peer: candidate})
+	w.end(joinResult{joined: Joined{Peer: candidate, From: from}})
 	return nil
 }
 
@@ -294,11 +300,15 @@ func (w *joinWait) report(conn net.Conn, reason error) {
 	}
 	w.speaking.Lock()
 	defer w.speaking.Unlock()
+	w.config.Rejected(hostOf(conn), reason)
+}
+
+func hostOf(conn net.Conn) string {
 	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {
-		host = conn.RemoteAddr().String()
+		return conn.RemoteAddr().String()
 	}
-	w.config.Rejected(host, reason)
+	return host
 }
 
 func (c WaitConfig) waitLimit() time.Duration {
@@ -348,7 +358,7 @@ func exchange(address string, code JoinCode, config JoinConfig) (trust.Peer, err
 		return trust.Peer{}, ErrNotWaiting
 	}
 	if err != nil {
-		return trust.Peer{}, fmt.Errorf("pairing: cannot connect to %s: %w", address, err)
+		return trust.Peer{}, fmt.Errorf("%w at %s: %w", ErrUnreachable, address, err)
 	}
 	settings := anyCertificate(config.Identity)
 	settings.VerifyConnection = func(state tls.ConnectionState) error {
