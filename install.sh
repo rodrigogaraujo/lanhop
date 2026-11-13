@@ -887,6 +887,7 @@ is_the_app() {
 
 remove_apps() {
   for candidate in "$system_root/Applications/lanhop.app" "$HOME/Applications/lanhop.app"; do
+    rm -rf "$candidate".new.* "$candidate".old.* 2>/dev/null || true
     if ! is_the_app "$candidate"; then
       continue
     fi

@@ -1883,3 +1883,14 @@ func TestUninstallRemovesTheStatusOfTheServiceAndKeepsTheKey(t *testing.T) {
 		expectSame(t, "files in the home directory", m.files(), []string{macPeersFile})
 	})
 }
+
+func TestUninstallAlsoRemovesCopiesThatAnInterruptedUpdateLeft(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
+		m.mustRun()
+		writeFile(t, m.inRoot(appDirectory+".old.4242/Contents/Info.plist"), []byte(infoOfTheApp), 0o644)
+		writeFile(t, m.inRoot(appDirectory+".new.4243/Contents/Info.plist"), []byte(infoOfTheApp), 0o644)
+		m.mustRun("--uninstall")
+		expectSame(t, "entries in Applications", entriesOf(t, m.inRoot("Applications")), []string{})
+	})
+}
