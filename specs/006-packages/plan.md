@@ -110,5 +110,5 @@ The archives of the tests hold a shell script named `lanhop` that records how it
 - **Nothing here ran on a real machine.** The tests cover what the script decides and which commands it runs, not what systemd, launchd and macOS do with them. Task 5 exists for that.
 - **`launchctl bootout` followed at once by `bootstrap`** may fail while the old lanhop is still ending. The installer then says that lanhop starts at the next login.
 - **Adding a bare program to Accessibility** goes through a file chooser that hides `~/.local`. The installer tells the user to type the path. If that proves too hard, the program can move into an application bundle.
-- **The x86-64 build for macOS is cross-compiled and never run** by the workflow. Someone with an Intel Mac has to try it. On 2026-11-13 the 0.1.0 build for Intel ran on an Intel Mac that shared its keyboard and mouse with four other machines.
+- **The x86-64 build for macOS is cross-compiled and never run** by the workflow. Someone with an Intel Mac has to try it. On 2026-11-13 the 0.1.0 build for x86-64 ran on an x86-64 machine running macOS, as the machine with the keyboard, and four other machines each connected to it during the night.
 - **`curl | sh`** runs whatever the main branch holds at that moment. The README says how to read the script first.
