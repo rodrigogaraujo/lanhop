@@ -178,6 +178,11 @@ func (c *conn) call(request []byte) ([]byte, error) {
 func (c *conn) write(request []byte, wantsReply bool) (chan response, error) {
 	c.writing.Lock()
 	defer c.writing.Unlock()
+	select {
+	case <-c.closed:
+		return nil, c.err()
+	default:
+	}
 	sequence := c.sequence + 1
 	var answer chan response
 	if wantsReply {
@@ -186,11 +191,16 @@ func (c *conn) write(request []byte, wantsReply bool) (chan response, error) {
 		c.pending[sequence] = answer
 		c.waiting.Unlock()
 	}
-	if _, err := c.socket.Write(request); err != nil {
+	err := c.socket.SetWriteDeadline(time.Now().Add(replyTimeout))
+	if err == nil {
+		_, err = c.socket.Write(request)
+	}
+	if err != nil {
 		c.waiting.Lock()
 		delete(c.pending, sequence)
 		c.waiting.Unlock()
-		return nil, fmt.Errorf("x11: cannot send to the X server: %w", err)
+		c.fail(err)
+		return nil, c.err()
 	}
 	c.sequence = sequence
 	return answer, nil

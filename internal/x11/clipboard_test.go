@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,12 @@ import (
 )
 
 func startXvfb(t *testing.T) string {
+	t.Helper()
+	display, _ := startXvfbThatCanStop(t)
+	return display
+}
+
+func startXvfbThatCanStop(t *testing.T) (string, func()) {
 	t.Helper()
 	server, err := exec.LookPath("Xvfb")
 	if err != nil {
@@ -33,10 +40,14 @@ func startXvfb(t *testing.T) string {
 		t.Fatalf("start Xvfb: %v", err)
 	}
 	writer.Close()
-	t.Cleanup(func() {
-		command.Process.Kill()
-		command.Wait()
-	})
+	var stopping sync.Once
+	stop := func() {
+		stopping.Do(func() {
+			command.Process.Kill()
+			command.Wait()
+		})
+	}
+	t.Cleanup(stop)
 	number := make(chan string, 1)
 	go func() {
 		line, _ := bufio.NewReader(reader).ReadString('\n')
@@ -44,10 +55,10 @@ func startXvfb(t *testing.T) string {
 	}()
 	select {
 	case n := <-number:
-		return ":" + n
+		return ":" + n, stop
 	case <-time.After(10 * time.Second):
 		t.Fatal("Xvfb did not say which display it took")
-		return ""
+		return "", stop
 	}
 }
 
@@ -170,12 +181,39 @@ func TestAnOwnerThatGoesAwayEmptiesTheClipboardAndMovesTheMark(t *testing.T) {
 
 func TestACopyMarkedPrivateIsNotRead(t *testing.T) {
 	writer, reader := twoPrograms(t)
-	if _, err := writer.write("a password", true); err != nil {
+	if _, err := writer.write("a password", secretHint); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
 	if got, err := reader.Read(); !errors.Is(err, clipboard.ErrPrivate) || got != "" {
 		t.Errorf("Read = %q, %v, want nothing and %v", got, err, clipboard.ErrPrivate)
+	}
+}
+
+func TestACopyWhosePrivacyHintCannotBeReadIsTreatedAsPrivate(t *testing.T) {
+	writer, reader := twoPrograms(t)
+	if _, err := writer.write("hunter2", refusedHint); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if got, err := reader.Read(); !errors.Is(err, clipboard.ErrPrivate) || got != "" {
+		t.Errorf("Read = %q, %v, want nothing and %v", got, err, clipboard.ErrPrivate)
+	}
+}
+
+func TestLosingTheXServerClosesDone(t *testing.T) {
+	display, stop := startXvfbThatCanStop(t)
+	board := openOn(t, display)
+
+	stop()
+
+	select {
+	case <-board.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("Done did not close when the X server went away")
+	}
+	if _, err := board.Read(); !errors.Is(err, ErrClosed) {
+		t.Errorf("Read after the X server went away: error = %v, want %v", err, ErrClosed)
 	}
 }
 
@@ -244,22 +282,26 @@ func TestAnotherX11ProgramReadsWhatLanhopWroteAndTheReverse(t *testing.T) {
 	board := openOn(t, display)
 	environment := append(os.Environ(), "DISPLAY="+display)
 
-	board.Write("from lanhop, olá 🙂")
-	read := exec.Command(tool, "-selection", "clipboard", "-o")
-	read.Env = environment
-	got, err := read.Output()
-	if err != nil || string(got) != "from lanhop, olá 🙂" {
-		t.Errorf("xclip read %q, %v", got, err)
+	for _, text := range []string{"from lanhop, olá 🙂", strings.Repeat("l", clipboard.Limit)} {
+		board.Write(text)
+		read := exec.Command(tool, "-selection", "clipboard", "-o")
+		read.Env = environment
+		got, err := read.Output()
+		if err != nil || string(got) != text {
+			t.Errorf("xclip read %d bytes, %v, want the %d bytes lanhop wrote", len(got), err, len(text))
+		}
 	}
 
-	write := exec.Command(tool, "-selection", "clipboard", "-i")
-	write.Env = environment
-	write.Stdin = strings.NewReader("from xclip")
-	if err := write.Run(); err != nil {
-		t.Fatalf("xclip -i: %v", err)
-	}
-	if text, err := board.Read(); err != nil || text != "from xclip" {
-		t.Errorf("lanhop read %q, %v, want %q", text, err, "from xclip")
+	for _, text := range []string{"from xclip", strings.Repeat("c", clipboard.Limit)} {
+		write := exec.Command(tool, "-selection", "clipboard", "-i")
+		write.Env = environment
+		write.Stdin = strings.NewReader(text)
+		if err := write.Run(); err != nil {
+			t.Fatalf("xclip -i: %v", err)
+		}
+		if got, err := board.Read(); err != nil || got != text {
+			t.Errorf("lanhop read %d bytes, %v, want the %d bytes xclip wrote", len(got), err, len(text))
+		}
 	}
 }
 
@@ -345,16 +387,21 @@ func TestTheCookieOfADisplayIsTheOneForItsNumber(t *testing.T) {
 		authorityEntry(familyLocal, "desk", "0", "XDM-AUTHORIZATION-1", []byte("other kind"))...)
 	file = append(file, authorityEntry(familyWild, "", "0", cookieName, []byte("zero"))...)
 
-	if got, err := cookieFor("0", file); err != nil || string(got) != "zero" {
+	file = append(file, authorityEntry(familyLocal, "another-machine", "3", cookieName, []byte("theirs"))...)
+
+	if got, err := cookieFor("0", "desk", file); err != nil || string(got) != "zero" {
 		t.Errorf("cookie of display 0 = %q, %v", got, err)
 	}
-	if got, err := cookieFor("1", file); err != nil || string(got) != "one" {
+	if got, err := cookieFor("1", "desk", file); err != nil || string(got) != "one" {
 		t.Errorf("cookie of display 1 = %q, %v", got, err)
 	}
-	if _, err := cookieFor("2", file); err == nil {
+	if _, err := cookieFor("2", "desk", file); err == nil {
 		t.Error("display 2 got a cookie that belongs to another display")
 	}
-	if _, err := cookieFor("0", file[:5]); err == nil {
+	if _, err := cookieFor("3", "desk", file); err == nil {
+		t.Error("display 3 got the cookie of another machine with a shared home directory")
+	}
+	if _, err := cookieFor("0", "desk", file[:5]); err == nil {
 		t.Error("a cut file gave a cookie")
 	}
 }
