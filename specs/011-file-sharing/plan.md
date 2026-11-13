@@ -75,11 +75,12 @@ Each task is one pull request with its tests. Stage A comes first, and stage B s
 
   Measure on the Linux machine what Nautilus offers and accepts. Writing to the clipboard of a session in use needs the OK of the person who uses it. → Verify: ADR 14 records the formats and the permissions, with the measurements.
 - [x] **2. Data connections.** ADR 13 in `internal/transport`. → Verify: tests over TLS on loopback, including a data connection refused for an unknown or expired number, from the wrong machine, and twice. Keys on the control connection are timed while 100 MiB move on the data connection, with both connections behind one queue shaped to 100 Mbit/s, against SC-002; a loopback at full speed would hide the delay.
+- [ ] **2b. Pace that follows the delay.** The data connection lowers its rate when the delay of the control connection grows, or by acknowledgements on the data connection, instead of keeping to the fixed 80 Mbit/s of task 2, which leaves keys 245 ms late behind a queue drained at 50 Mbit/s. → Verify: keys timed while 100 MiB move behind one queue shaped to 50 Mbit/s, and to 100 Mbit/s, against SC-002; at the desk on Wi-Fi in task 7.
 - [ ] **3. File copies in the state machines.** A copy is text or files, in `internal/clipboard`, with the switch for files apart from text. → Verify: the table tests of spec 005 again with file copies; a machine that takes text but not files; the limit; and a transfer stopped when focus leaves.
 - [ ] **4. macOS file pasteboard.** Read and write file URLs in `internal/macos`. → Verify: the macOS job of CI, on a pasteboard of its own.
 - [ ] **5. Linux file clipboard.** `x-special/gnome-copied-files` and `text/uri-list` in `internal/x11`. → Verify: tests against Xvfb.
 - [ ] **6. Files in share and receive, and the switch.** Arrival folder, safe paths, checks, renames, quarantine, room, clean-up, and `lanhop files on|off`. → Verify: an integration test over TLS on loopback with fake clipboards; paths with `..`, absolute paths and links refused; a file cut short by a lost connection leaving nothing behind; SC-001 timed.
-- [ ] **7. Test at the desk, stage A.** With the person: Mac to Mac, Mac to Linux, Linux to Mac (SC-003).
+- [ ] **7. Test at the desk, stage A.** With the person: Mac to Mac, Mac to Linux, Linux to Mac (SC-003), and keys timed on Wi-Fi while a large file moves (SC-002, task 2b).
 
 **Stage B: drag across the edge**
 
@@ -102,7 +103,7 @@ Each task is one pull request with its tests. Stage A comes first, and stage B s
 - **macOS permissions for files.** Reading files from protected folders may need a permission per folder, or Full Disk Access, for lanhop.app. The question appears on the machine the person just left, as the pasteboard alert of spec 005 may. macOS ties these grants to the signature of the app (ADR 6), so an update may ask again. The installer of spec 008 may have to ask for them.
 - **The cache can be emptied.** macOS may empty `~/Library/Caches` when the disk is short of room. A file copy that arrived is then gone, and has to travel again.
 - **Large files right after a move.** A paste of a large file right after moving gives the previous clipboard until the file has arrived.
-- **A shared queue.** On a busy Wi-Fi link, file bytes and keys share the air even in separate streams. Task 2 measures it, and the data connection is paced if needed.
+- **A shared queue.** On a busy Wi-Fi link, file bytes and keys share the air even in separate streams. Task 2 measured it behind one queue: the fixed pace of 80 Mbit/s keeps keys within SC-002 on a link of 100 Mbit/s, and leaves them 245 ms late on a link of 50 Mbit/s. Task 2b makes the pace follow the delay, and task 7 measures it on Wi-Fi.
 - **Wayland.** Dragging from or to a Wayland application on Linux is deduced to be impossible. The central says so once per run and per machine in its log and in `lanhop status`, and points to copy and paste of the file (story 2 scenario 4, FR-010).
 - **Linux to Linux at the desk.** There is one Linux machine, so that direction is tested in containers, between lanhop and test programs, not with a real file manager, and not with the virtual devices and the pointer grab of a real session, which only task 8 measures on the one machine.
 - **XDND on Linux.** A pointer grab may change how the virtual devices move the cursor, some programs ignore XDND, and a target may never answer. Task 8 measures the first, and task 11 gives up on a target after a time limit.

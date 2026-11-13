@@ -32,7 +32,7 @@ Side machines open their connection to the central, and the central does not ope
 
 **Second connection.** File bytes travel on a second TLS connection to the same port of the central, with the pinned keys of [ADR 4](0004-pinned-tls-and-pairing-by-comparison.md), and always opened by the side machine.
 
-- When the central needs files from a side machine, or has files for one, it sends Open data with a new random transfer number. The side machine opens the data connection and starts it with Data hello and that number. The central answers with the same frame when it accepts the connection, so the side machine knows before any file byte moves.
+- When the central needs files from a side machine, or has files for one, it sends Open data with a new random transfer number. The side machine opens the data connection and starts it with Data hello and that number. The central answers with the same frame when it accepts the connection, so the side machine knows before any file byte moves. The answer does not promise that the central still waits: if it stopped waiting at that moment, the connection ends right after the answer, and the side machine takes that end as a stop of the transfer.
 - The central accepts a data connection only from the machine it sent that number to, within 10 seconds of sending it, and only once. Anything else closes the connection.
 - A central on 0.1.x sees an unknown first frame and closes the connection. No machine opens one toward it, because it never sets bit 1.
 
@@ -40,13 +40,13 @@ Side machines open their connection to the central, and the central does not ope
 
 **Receiving safely.** The receiving side refuses absolute paths, `..`, links and special files; creates every file without following links, under a temporary name in the arrival folder; refuses a total size over the limit or over the free space; checks size and digest; and renames only when a file is whole. When the transfer stops, at a Data stop, at a lost connection on either the data or the control connection, or at any error, what arrived of that transfer is removed. Focus leaving the receiving machine stops a transfer too, except one that serves a drop already accepted there. A stopped transfer starts again from the beginning when it is needed again.
 
-**Pace.** TCP sets the pace of the data connection, and the machine that writes on it keeps to 80 Mbit/s at most. Keys never wait behind file bytes in the same stream. They can still wait behind them in a queue shared by both streams, such as a Wi-Fi link or a router. Measured on Linux over TLS for task 2, with both connections behind one first-in first-out queue of 1000 packets drained at 100 Mbit/s: without the limit, 100 MiB kept the queue full and keys arrived 123 ms late; with it, keys arrived at most 1.4 ms late, and the 100 MiB took 10.5 s instead of 8.9 s. The limit helps only on a link faster than itself.
+**Pace.** TCP sets the pace of the data connection, and each machine keeps what it writes on all its data connections together to 80 Mbit/s of TLS content, about 84 Mbit/s on the wire, in bursts of at most 128 KiB. Keys never wait behind file bytes in the same stream. They can still wait behind them in a queue shared by both streams, such as a Wi-Fi link or a router. Measured on Linux over TLS for task 2, with both connections behind one first-in first-out queue of 1000 packets drained at 100 Mbit/s: without the limit, 100 MiB kept the queue full and keys arrived 123 ms late; with it, keys arrived at most 8 ms late, and the 100 MiB took 10.5 s instead of 8.9 s. The limit helps only on a link faster than itself: behind the same queue drained at 50 Mbit/s, keys arrived 245 ms late. Task 2b of the plan makes the pace follow the delay.
 
 **Side machine to side machine.** Through the central, which streams from one data connection to the other without waiting for whole files, and keeps a copy only when it has focus itself and will paste it.
 
 ## Consequences
 
-- Files move without doubling, at the speed of the network up to 80 Mbit/s. A copy of 4 GiB takes about 7 minutes even on a faster network.
+- Files move without doubling, at the speed of the network up to 80 Mbit/s per machine. A copy of 4 GiB takes about 7 minutes even on a faster network.
 - `internal/transport` learns a second kind of connection, and the listener tells the two apart by their first frame.
 - A peer can only write inside the arrival folder of the other, and only as much as the limits allow.
 - The work on `lanhop update` uses codes from 16 up on the existing connection, and does not touch the listener.
