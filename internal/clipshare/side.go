@@ -7,6 +7,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 )
 
@@ -172,7 +173,7 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			s.send(s.config.announcement(action.Takes.Has(clipboard.Text)))
+			s.announce(s.config.turnTheClipboard(action.Takes.Has(clipboard.Text)))
 		case clipboard.Unchanged:
 			s.send(event.ClipboardUnchanged())
 		case clipboard.Withdraw:
@@ -189,6 +190,12 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 		case clipboard.Mark:
 			s.keeper.takeReadMark()
 		}
+	}
+}
+
+func (s *Side) announce(announced *features.Set) {
+	if s.current != nil {
+		s.current.announce(announced)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 	"github.com/rodrigogaraujo/lanhop/internal/wire"
 )
@@ -43,6 +44,15 @@ func (c *Conn) Send(events ...event.Event) error {
 		return err
 	}
 	return wire.Write(c.secured, events...)
+}
+
+func (c *Conn) SendFeatures(announced *features.Set) error {
+	c.sending.Lock()
+	defer c.sending.Unlock()
+	if err := c.secured.SetWriteDeadline(time.Now().Add(c.silenceLimit)); err != nil {
+		return err
+	}
+	return wire.Write(c.secured, event.Features(announced.Value()))
 }
 
 func (c *Conn) Receive() (event.Event, error) {
