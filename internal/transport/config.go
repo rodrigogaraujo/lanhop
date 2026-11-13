@@ -13,7 +13,7 @@ import (
 const (
 	DefaultPort             = 24745
 	defaultPingInterval     = time.Second
-	defaultSilenceLimit     = 3 * time.Second
+	DefaultSilenceLimit     = 3 * time.Second
 	defaultHandshakeTimeout = 5 * time.Second
 	pendingHandshakes       = 16
 )
@@ -41,7 +41,7 @@ func (c Config) withDefaults() Config {
 		c.PingInterval = defaultPingInterval
 	}
 	if c.SilenceLimit == 0 {
-		c.SilenceLimit = defaultSilenceLimit
+		c.SilenceLimit = DefaultSilenceLimit
 	}
 	if c.HandshakeTimeout == 0 {
 		c.HandshakeTimeout = defaultHandshakeTimeout
