@@ -94,7 +94,7 @@ func TestTheClipboardCommandSwitchesSharingOffAndOnWithAFileInTheConfigurationDi
 	switchFile := filepath.Join(directory, clipboardSwitchFileName)
 
 	said, _ := clipboardCommand(t, "off")
-	if !strings.Contains(said, "Clipboard sharing is off on this machine") {
+	if !strings.Contains(said, "Copies of text no longer move to or from this machine") {
 		t.Errorf("lanhop clipboard off printed %q", said)
 	}
 	if contents, err := os.ReadFile(switchFile); err != nil || string(contents) != "off\n" {
@@ -105,13 +105,13 @@ func TestTheClipboardCommandSwitchesSharingOffAndOnWithAFileInTheConfigurationDi
 	}
 
 	said, _ = clipboardCommand(t, "on")
-	if !strings.Contains(said, "Clipboard sharing is on on this machine") {
+	if !strings.Contains(said, "Copies of text move to and from this machine") {
 		t.Errorf("lanhop clipboard on printed %q", said)
 	}
 	if _, err := os.Stat(switchFile); !os.IsNotExist(err) {
 		t.Errorf("the switch file is still there after on: %v", err)
 	}
-	if said, _ := clipboardCommand(t, "on"); !strings.Contains(said, "is on") {
+	if said, _ := clipboardCommand(t, "on"); !strings.Contains(said, "Copies of text move to and from this machine") {
 		t.Errorf("lanhop clipboard on, when already on, printed %q", said)
 	}
 }

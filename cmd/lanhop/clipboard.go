@@ -49,7 +49,11 @@ func switchClipboard(args []string, stdout io.Writer) error {
 	default:
 		return usageError(fmt.Sprintf("clipboard takes on or off, not %q", args[0]))
 	}
-	fmt.Fprintf(stdout, "Clipboard sharing is %s on this machine. lanhop share and lanhop receive follow it the next time focus moves.\n", clipboardSwitchWord(path))
+	if clipboardSwitchedOn(path) {
+		fmt.Fprintln(stdout, "Copies of text move to and from this machine. lanhop share and lanhop receive follow this the next time focus moves.")
+	} else {
+		fmt.Fprintln(stdout, "Copies of text no longer move to or from this machine. lanhop share and lanhop receive follow this the next time focus moves.")
+	}
 	return nil
 }
 
