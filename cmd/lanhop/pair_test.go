@@ -15,6 +15,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
+	"github.com/rodrigogaraujo/lanhop/internal/porttest"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
@@ -356,12 +357,7 @@ func TestPairAsGivesTheOtherMachineANameWhenItsOwnIsTaken(t *testing.T) {
 
 func TestPairFailsWhenNoMachineWaitsAtTheAddress(t *testing.T) {
 	directory := useConfigDirectory(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	address := listener.Addr().String()
-	listener.Close()
+	address := porttest.RefusingAddress(t)
 
 	finished := await(t, startCommand("yes\n", &screen{}, "pair", address))
 

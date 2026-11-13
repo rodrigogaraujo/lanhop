@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/porttest"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
@@ -220,13 +221,7 @@ func TestAConnectionThatCouldNotOpenIsNotReached(t *testing.T) {
 	if state := stateOfFailure(noRoute); state != status.NotReached {
 		t.Errorf("stateOfFailure(%v) = %q, want %q", noRoute, state, status.NotReached)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	listener.Close()
-	refused := dialFailure(t, trust.Peer{Name: "iMac", Address: closed})
+	refused := dialFailure(t, trust.Peer{Name: "iMac", Address: porttest.RefusingAddress(t)})
 	if state := stateOfFailure(refused); state != status.NotReached {
 		t.Errorf("stateOfFailure(%v) = %q, want %q", refused, state, status.NotReached)
 	}
@@ -254,12 +249,13 @@ func TestTryingAnAddressFromHereSucceedsOnlyWhereSomethingListens(t *testing.T) 
 		t.Fatal(err)
 	}
 	address := listener.Addr().String()
+	defer listener.Close()
 	if err := reach(address); err != nil {
 		t.Errorf("reach(%s) = %v while a listener is there", address, err)
 	}
-	listener.Close()
-	if err := reach(address); err == nil {
-		t.Errorf("reach(%s) = nil after the listener closed", address)
+	refusing := porttest.RefusingAddress(t)
+	if err := reach(refusing); err == nil {
+		t.Errorf("reach(%s) = nil where nothing listens", refusing)
 	}
 }
 
