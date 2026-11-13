@@ -33,8 +33,8 @@ lanhop.app/
 | `accessibility` | both, macOS | waiting for the Accessibility permission |
 | `connecting` | receive | trying the central for the first time |
 | `connected` | receive | connected to the central |
-| `no-route` | receive | the last try found no route to the central (`EHOSTUNREACH`), the service keeps trying |
-| `failing` | receive | the last try failed for another reason, the service keeps trying |
+| `not-reached` | receive | the last try could not open a connection to the central, the service keeps trying |
+| `failing` | receive | the connection opened and then failed (TLS, pairing), the service keeps trying |
 | `waiting` | share | ready, no side machine connected |
 | `sharing` | share | one or more side machines connected |
 
@@ -42,7 +42,7 @@ lanhop.app/
 
 - `stopped:` when there is no status file, or its process is not running. The last error of the service follows, when the file has one.
 - the state of the file otherwise, with a sentence.
-- for `no-route`, it tries the same address itself, for 3 seconds, and prints `blocked:` when it gets through, or `unreachable:` when it does not. It is the error the service got on 2026-11-12 while macOS kept it off the local network. Run from a terminal, this try has the permissions of the terminal, which macOS lets use the local network. So `blocked` means that macOS blocks the service and not the network.
+- for `not-reached`, it tries the same address itself, for 3 seconds, and prints `blocked:` when it gets through, or `unreachable:` when it does not. While macOS kept the service off the local network on 2026-11-12, its connections failed this way, with `no route to host`. A central that is off, or that runs no lanhop, fails this way too, and the try from the terminal fails as well. Run from a terminal, this try has the permissions of the terminal, which macOS lets use the local network. So `blocked` means that macOS blocks the service and not the network.
 
 The installer reads only the first word. People read the sentence.
 
@@ -66,6 +66,7 @@ check, polling "lanhop status" every second:
   connecting    ─► say that macOS asks about the local network, and that the answer is Allow
   blocked       ─► say that macOS blocks lanhop, open the Local Network pane, wait
   unreachable   ─► say the address cannot be reached and what to check on the central, end
+  failing       ─► print the line, keep waiting, end with it when the limit runs out
   connected     ─► "Connected to NAME", end
   share: firewall on ─► show the two socketfilterfw commands, run them with sudo if agreed
          waiting ─► wait up to 60 seconds for a side machine
@@ -106,7 +107,7 @@ It also removes the app (from `/Applications` or `~/Applications`, only the one 
 - [x] **0. Measure the identity on a real Mac.** The program of 0.1.0, unchanged, inside a hand-made `lanhop.app` with the `Info.plist` above, signed ad hoc with the identifier, started by the launch agent with `AssociatedBundleIdentifiers`. → Verify: after Accessibility and Local Network are given to the app, the log of the service says `Connected to`. Done on 2026-11-13 on a MacBook with macOS 26.5.2 (arm64): once the app was added under Accessibility, the service started by launchd connected to the central, and macOS keeps a Local Network setting for `com.github.rodrigogaraujo.lanhop`, switched on. Whether that setting came from the alert or was switched on by hand was not recorded. Not tried yet: after a restart, on an Intel Mac, on a Mac central, and after an update to a new build.
 - [ ] **1. The app in the release.** `packaging/macos/Info.plist`, the bundle and its signature in `release.yml`, and the ADR. → Verify: on a pull request, both macOS jobs pass the `codesign` checks and the archives hold `lanhop.app`.
 - [ ] **2. Status.** The `status` file, `lanhop status`, and the wait for Accessibility. → Verify: unit tests for each state, for a dead process and for the `blocked` and `unreachable` cases against a local listener; the macOS job runs the tests that do not need a permission.
-- [ ] **3. Installer: the app.** The app in Applications, the link, the agent with `AssociatedBundleIdentifiers`, the move from 0.1.0, uninstall. → Verify: `install_test.go` with a fake app archive, with `/Applications` writable and not, with a 0.1.0 install in place, and with an archive without the app.
+- [ ] **3. Installer: the app.** The app in Applications, the link, the agent with `AssociatedBundleIdentifiers`, the move from 0.1.0, uninstall. The install step of `release.yml` on a Mac stops being only for tags and runs on every pull request, with `LANHOP_SYSTEM_ROOT` set to a temporary directory. → Verify: `install_test.go` with a fake app archive, with `/Applications` writable and not, with a 0.1.0 install in place, and with an archive without the app; on a pull request, the Mac install step puts the app where the installer says.
 - [ ] **4. Installer: the check.** The loop over `lanhop status`, the panes, the firewall of a central, Linux, and nobody at the keyboard. → Verify: `install_test.go` with a fake `lanhop` whose `status` walks through each sequence of states, and a fake `sleep`.
 - [ ] **5. Documentation.** `docs/setup-macos.md` gets Local Network and the app, and its steps for a browser download become `xattr -dr com.apple.quarantine lanhop.app`; the README gets `lanhop status`; the plan of spec 006 points here for the macOS archives. → Verify: the guide still describes every step by hand.
 - [ ] **6. Real machines.** The installer on two Macs and on the Linux machine, as central and as side machines, then a restart, then an update to a newer build of the app. → Verify: SC-001 to SC-003 of the spec, after the restart and after the update.
