@@ -1706,7 +1706,7 @@ func TestACentralThatCannotBeReachedYetIsSaidOnceAndTheWaitGoesOn(t *testing.T) 
 		output := m.mustRun()
 		expectMention(t, output, centralCannotBeFound+"\nWaiting until lanhop connects.\n", connectedToTheCentral)
 		if strings.Count(output, centralCannotBeFound) != 1 || strings.Count(output, "Waiting until lanhop connects.") != 1 {
-			t.Errorf("the central that cannot be reached is said more than once:\n%s", output)
+			t.Errorf("the central that cannot be reached, or the wait after it, is said more than once:\n%s", output)
 		}
 		expectLastLine(t, output, connectedToTheCentral)
 	})
@@ -1961,8 +1961,9 @@ func TestAFailureIsSaidOnceAndTheWaitGoesOn(t *testing.T) {
 		m := newMachine(t, shell, "Darwin", "arm64", published)
 		m.typing("n", "y", "")
 		output := m.mustRun()
-		if strings.Count(output, failing) != 1 {
-			t.Errorf("the failure is not said exactly once:\n%s", output)
+		expectMention(t, output, failing+"\nWaiting until lanhop connects.\n")
+		if strings.Count(output, failing) != 1 || strings.Count(output, "Waiting until lanhop connects.") != 1 {
+			t.Errorf("the failure, or the wait after it, is not said exactly once:\n%s", output)
 		}
 		expectLastLine(t, output, connectedToTheCentral)
 	})
@@ -1986,7 +1987,8 @@ func TestABlockedServiceOnLinuxIsSaidWithoutASettingOfMacOS(t *testing.T) {
 				t.Errorf("Linux ran %q", command)
 			}
 		}
-		if strings.Count(output, blocked) != 1 || strings.Contains(output, "System Settings") || strings.Contains(output, "Click Allow") {
+		expectMention(t, output, blocked+"\nWaiting until lanhop connects.\n")
+		if strings.Count(output, blocked) != 1 || strings.Count(output, "Waiting until lanhop connects.") != 1 || strings.Contains(output, "System Settings") || strings.Contains(output, "Click Allow") {
 			t.Errorf("Linux got a setting of macOS, or the line not exactly once:\n%s", output)
 		}
 		expectLastLine(t, output, connectedToTheCentral)
@@ -2015,8 +2017,8 @@ func TestStatesThatKeepChangingStillEndAtTheLimit(t *testing.T) {
 		m := newMachine(t, shell, "Darwin", "arm64", published)
 		m.typing("n", "y", "")
 		output := m.mustRun()
-		expectMention(t, output, `lanhop is not connected yet. "lanhop status" says at any time what lanhop is doing. Now:`)
-		expectLastLine(t, output, triesTheCentral)
+		expectMention(t, output, `lanhop is not connected yet. "lanhop status" says at any time what lanhop is doing. Now:`+"\n"+notRunningYet+"\n")
+		expectLastLine(t, output, notRunningYet)
 		if runs := len(published.lanhopWasRunWith()); runs > 620 {
 			t.Errorf("lanhop status ran %d times, want the check to end at its limit of 600 seconds", runs)
 		}
