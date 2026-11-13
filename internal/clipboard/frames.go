@@ -20,6 +20,7 @@ var (
 	ErrEmpty       = errors.New("clipboard: the copy is empty")
 	ErrTooLarge    = errors.New("clipboard: the copy is larger than 1 MiB")
 	ErrNotText     = errors.New("clipboard: the copy is not UTF-8 text")
+	ErrPrivate     = errors.New("clipboard: the program that made the copy marked it private")
 	ErrLength      = errors.New("clipboard: a copy was announced with a negative length or one over 1 MiB")
 	ErrUnannounced = errors.New("clipboard: copy data arrived outside a copy")
 	ErrAck         = errors.New("clipboard: the other machine acknowledged frames that were never sent")
