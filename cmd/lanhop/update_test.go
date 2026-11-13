@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,12 +26,14 @@ import (
 )
 
 type releaseServer struct {
-	mutex     sync.Mutex
-	files     map[string][]byte
-	latest    string
-	archives  atomic.Int32
-	hangs     bool
-	signature ed25519.PrivateKey
+	mutex        sync.Mutex
+	files        map[string][]byte
+	latest       string
+	archives     atomic.Int32
+	hangs        bool
+	signature    ed25519.PrivateKey
+	archiveAsked chan struct{}
+	holdArchive  chan struct{}
 }
 
 func (r *releaseServer) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -50,6 +53,10 @@ func (r *releaseServer) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 	if strings.HasSuffix(request.URL.Path, ".tar.gz") {
 		r.archives.Add(1)
+		if r.holdArchive != nil {
+			r.archiveAsked <- struct{}{}
+			<-r.holdArchive
+		}
 	}
 	response.Write(content)
 }
@@ -123,7 +130,8 @@ func machineWithLanhop(t *testing.T, version string) installedMachine {
 	machine := installedMachine{home: home, commands: filepath.Join(home, "commands"), config: useConfigDirectory(t)}
 	fakes := filepath.Join(home, "fakes")
 	for _, command := range []string{"launchctl", "systemctl"} {
-		writeExecutable(t, filepath.Join(fakes, command), "#!/bin/sh\necho \"$(basename \"$0\") $*\" >>'"+machine.commands+"'\n")
+		fake := "#!/bin/sh\nif [ \"$2\" = is-active ]; then\n  [ ! -e '" + filepath.Join(home, "inactive") + "' ]\n  exit\nfi\necho \"$(basename \"$0\") $*\" >>'" + machine.commands + "'\n"
+		writeExecutable(t, filepath.Join(fakes, command), fake)
 	}
 	t.Setenv("PATH", fakes+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if runtime.GOOS == "darwin" {
@@ -277,10 +285,18 @@ func TestTwoUpdatesAtTheSameTimeUpdateOnce(t *testing.T) {
 	releases.publish(t, "v0.1.3", "v0.1.2")
 	machine := machineWithLanhop(t, "v0.1.2")
 
+	releases.archiveAsked = make(chan struct{}, 2)
+	releases.holdArchive = make(chan struct{})
 	results := make(chan error, 2)
-	for range 2 {
-		go func() { results <- updateThisMachine(nil, &screen{}) }()
+	go func() { results <- updateThisMachine(nil, &screen{}) }()
+	<-releases.archiveAsked
+	go func() { results <- updateThisMachine(nil, &screen{}) }()
+	select {
+	case <-releases.archiveAsked:
+		t.Errorf("the second update asked for the archive while the first one was still downloading it")
+	case <-time.After(300 * time.Millisecond):
 	}
+	close(releases.holdArchive)
 	for range 2 {
 		if err := <-results; err != nil {
 			t.Errorf("lanhop update: %v", err)
@@ -330,8 +346,10 @@ func TestUpdateGivesUpWhenGitHubDoesNotAnswer(t *testing.T) {
 	answerPatience = 200 * time.Millisecond
 	machine := machineWithLanhop(t, "v0.1.2")
 	started := time.Now()
-	if err := updateThisMachine(nil, &screen{}); err == nil {
-		t.Fatalf("lanhop update succeeded although GitHub did not answer")
+	err := updateThisMachine(nil, &screen{})
+	var timeout net.Error
+	if !errors.As(err, &timeout) || !timeout.Timeout() {
+		t.Fatalf("lanhop update with GitHub silent = %v, want a timeout", err)
 	}
 	if took := time.Since(started); took > 1500*time.Millisecond {
 		t.Errorf("lanhop update waited %v, want it to give up after its patience", took)
@@ -360,5 +378,82 @@ func TestUpdateRefusesAProgramOutsideALanhopApp(t *testing.T) {
 	}
 	if releases.archives.Load() != 0 {
 		t.Errorf("lanhop update downloaded an archive for a program it cannot replace")
+	}
+}
+
+func TestUpdateLeavesAServiceThatIsNotRunningAlone(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("launchctl kickstart fails by itself on an agent that is not loaded")
+	}
+	releases := servingReleases(t)
+	releases.latest = "v0.1.3"
+	releases.publish(t, "v0.1.3", "v0.1.2")
+	machine := machineWithLanhop(t, "v0.1.2")
+	writeExecutable(t, filepath.Join(machine.home, "inactive"), "")
+	output := &screen{}
+
+	if err := updateThisMachine(nil, output); err != nil {
+		t.Fatalf("lanhop update: %v", err)
+	}
+	if got := machine.restarts(); len(got) != 0 {
+		t.Errorf("a service that was not running was restarted: %q", got)
+	}
+	if !strings.Contains(output.String(), "Start lanhop again") {
+		t.Errorf("lanhop update printed %q, want it to say to start lanhop again", output.String())
+	}
+}
+
+func TestALatestReleaseOlderThanThisOneNamesTheWayBack(t *testing.T) {
+	releases := servingReleases(t)
+	releases.latest = "v0.1.1"
+	releases.publish(t, "v0.1.1", "v0.1.1")
+	machine := machineWithLanhop(t, "v0.1.2")
+	err := updateThisMachine(nil, &screen{})
+	if err == nil || !strings.Contains(err.Error(), "lanhop update --version v0.1.1 --older") {
+		t.Fatalf("lanhop update with an older latest = %v, want the command that moves back", err)
+	}
+	if said := machine.says(t); said != "lanhop v0.1.2" {
+		t.Errorf("the installed lanhop says %q, want it untouched", said)
+	}
+}
+
+func TestAFailedMoveBackKeepsFollowingTheCentral(t *testing.T) {
+	releases := servingReleases(t)
+	releases.publish(t, "v0.1.1", "v0.1.3")
+	machine := machineWithLanhop(t, "v0.1.2")
+	if err := updateThisMachine([]string{"--version", "v0.1.1", "--older"}, &screen{}); err == nil {
+		t.Fatalf("lanhop update --older succeeded with a release that needs the installer")
+	}
+	if _, err := os.Stat(filepath.Join(machine.config, updatesFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the updates switch was written after a failed move back: %v", err)
+	}
+}
+
+func TestUpdateRefusesAProgramThatIsNotNamedLanhop(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("on macOS the program is checked through lanhop.app")
+	}
+	releases := servingReleases(t)
+	releases.latest = "v0.1.3"
+	releases.publish(t, "v0.1.3", "v0.1.2")
+	machine := machineWithLanhop(t, "v0.1.2")
+	wrapper := filepath.Join(machine.home, "bin", "start-lanhop")
+	writeExecutable(t, wrapper, programSaying("v0.1.2"))
+	writeExecutable(t, filepath.Join(machine.home, ".config", "systemd", "user", unitName), "[Service]\nExecStart=\""+wrapper+"\" receive\n")
+
+	err := updateThisMachine(nil, &screen{})
+	if err == nil || !strings.Contains(err.Error(), "not named lanhop") {
+		t.Fatalf("lanhop update of %s = %v, want a refusal", wrapper, err)
+	}
+}
+
+func TestUpdateSaysWhenTheServiceStartsAProgramThatIsGone(t *testing.T) {
+	releases := servingReleases(t)
+	releases.latest = "v0.1.3"
+	machine := machineWithLanhop(t, "v0.1.2")
+	os.Remove(machine.program)
+	err := updateThisMachine(nil, &screen{})
+	if err == nil || !strings.Contains(err.Error(), "not there any more") {
+		t.Fatalf("lanhop update with the program gone = %v, want it to say so", err)
 	}
 }

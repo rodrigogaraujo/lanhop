@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,12 +84,13 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	switch comparison := want.Compare(target.Running); {
+	comparison := want.Compare(target.Running)
+	switch {
 	case comparison == 0:
 		fmt.Fprintf(stdout, "lanhop %s is the release asked for already. Nothing changed.\n", target.Running)
 		return nil
 	case comparison < 0 && !*older:
-		return fmt.Errorf("%s is older than lanhop %s here. To move back to it, add --older", want, target.Running)
+		return fmt.Errorf("%s is older than lanhop %s here. To move back to it, run: lanhop update --version %s --older", want, target.Running, want)
 	}
 
 	staged, err := source.Prepare(ctx, target, want, *older)
@@ -102,13 +104,13 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "lanhop %s → %s\n", target.Running, want)
-	if *older {
+	restartTheService(stdout)
+	if comparison < 0 {
 		if err := writeUpdatesSwitch(directory, false); err != nil {
-			return err
+			return fmt.Errorf("lanhop moved back to %s, but could not stop following the machine with the keyboard, which may move it up again: %w", want, err)
 		}
 		fmt.Fprintln(stdout, "This machine no longer follows the version of the machine with the keyboard, so that it is not moved back up. lanhop updates on lets it follow again.")
 	}
-	restartTheService(stdout)
 	return nil
 }
 
@@ -140,13 +142,15 @@ func installedTarget() (update.Target, error) {
 	runnable := program
 	if runtime.GOOS == "darwin" {
 		app := filepath.Dir(filepath.Dir(filepath.Dir(program)))
-		if !strings.HasSuffix(app, appSuffix) || filepath.Join(app, appProgram) != program {
-			return update.Target{}, fmt.Errorf("lanhop runs from %s, which is not inside a lanhop.app, so it is not replaced. Update it with the installer line:\n\n  %s", program, installerLine(version, ""))
+		if filepath.Base(app) != "lanhop"+appSuffix || filepath.Join(app, appProgram) != program {
+			return update.Target{}, fmt.Errorf("lanhop runs from %s, which is not inside a lanhop.app, so it is not replaced. Update it with the installer line:\n\n  %s", program, installerLine("", ""))
 		}
 		target.Program = app
+	} else if filepath.Base(program) != "lanhop" {
+		return update.Target{}, fmt.Errorf("lanhop runs from %s, which is not named lanhop, so it is not replaced. Update it with the installer line:\n\n  %s", program, installerLine("", ""))
 	}
 	if err := writableFolder(filepath.Dir(target.Program)); err != nil {
-		return update.Target{}, fmt.Errorf("lanhop sits in %s, which this user cannot write, so it is not replaced. Update it with the installer line:\n\n  %s", filepath.Dir(target.Program), installerLine(version, ""))
+		return update.Target{}, fmt.Errorf("lanhop sits in %s, which this user cannot write, so it is not replaced. Update it with the installer line:\n\n  %s", filepath.Dir(target.Program), installerLine("", ""))
 	}
 	running, err := versionOfInstalled(runnable)
 	if err != nil {
@@ -158,7 +162,11 @@ func installedTarget() (update.Target, error) {
 
 func installedProgram() (string, error) {
 	if program, found := programOfTheService(); found {
-		return filepath.EvalSymlinks(program)
+		resolved, err := filepath.EvalSymlinks(program)
+		if err != nil {
+			return "", fmt.Errorf("the lanhop service starts %s, which is not there any more. Type the installer line again:\n\n  %s", program, installerLine("", ""))
+		}
+		return resolved, nil
 	}
 	running, err := os.Executable()
 	if err != nil {
@@ -190,7 +198,7 @@ func programOfTheService() (string, bool) {
 		if !found {
 			continue
 		}
-		if quoted, rest, closed := strings.Cut(strings.TrimPrefix(command, `"`), `"`); strings.HasPrefix(command, `"`) && closed && rest != "" {
+		if quoted, _, closed := strings.Cut(strings.TrimPrefix(command, `"`), `"`); strings.HasPrefix(command, `"`) && closed {
 			return quoted, true
 		}
 		if fields := strings.Fields(command); len(fields) > 0 {
@@ -201,7 +209,11 @@ func programOfTheService() (string, bool) {
 }
 
 func versionOfInstalled(program string) (update.Version, error) {
-	said, err := exec.Command(program, "version").Output()
+	patient, stop := context.WithTimeout(context.Background(), answerPatience)
+	defer stop()
+	asked := exec.CommandContext(patient, program, "version")
+	asked.Env = slices.DeleteFunc(os.Environ(), func(variable string) bool { return strings.HasPrefix(variable, "LANHOP_") })
+	said, err := asked.Output()
 	if err != nil {
 		return update.Version{}, fmt.Errorf("the installed lanhop, %s, did not run: %w", program, err)
 	}
@@ -241,7 +253,7 @@ func restartTheService(stdout io.Writer) {
 	switch {
 	case runtime.GOOS == "darwin" && serviceDefinitionExists(true):
 		restart = exec.Command("launchctl", "kickstart", "-k", "gui/"+strconv.Itoa(os.Getuid())+"/"+agentLabel)
-	case runtime.GOOS != "darwin" && serviceDefinitionExists(false):
+	case runtime.GOOS != "darwin" && serviceDefinitionExists(false) && exec.Command("systemctl", "--user", "is-active", "--quiet", unitName).Run() == nil:
 		restart = exec.Command("systemctl", "--user", "restart", unitName)
 	}
 	if restart == nil {
@@ -250,7 +262,7 @@ func restartTheService(stdout io.Writer) {
 	}
 	output, err := restart.CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(stdout, "The lanhop service did not restart: %s\nStart lanhop again to use the new version.\n", strings.TrimSpace(string(output)))
+		fmt.Fprintf(stdout, "The lanhop service did not restart (%v): %s\nStart lanhop again to use the new version.\n", err, strings.TrimSpace(string(output)))
 		return
 	}
 	fmt.Fprintln(stdout, "The lanhop service restarted on the new version. lanhop status says what it does.")
