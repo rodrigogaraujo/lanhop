@@ -561,6 +561,13 @@ func (b *Clipboard) answer(event []byte) {
 
 func (b *Clipboard) provide(requestor, property, target, since uint32, text []byte, offered hint) bool {
 	latin1, fitsLatin1 := utf8ToLatin1(text)
+	b.state.Lock()
+	extra, isExtra := b.extraOffers[target]
+	b.state.Unlock()
+	if isExtra {
+		b.changeProperty(requestor, property, target, 8, extra)
+		return true
+	}
 	switch target {
 	case b.atoms.targets:
 		targets := []uint32{b.atoms.targets, b.atoms.timestamp, b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain}
@@ -580,12 +587,6 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, text []by
 			data = binary.LittleEndian.AppendUint32(data, atom)
 		}
 		b.changeProperty(requestor, property, atomAtom, 32, data)
-		return true
-	case b.extraOffer(target):
-		b.state.Lock()
-		data := b.extraOffers[target]
-		b.state.Unlock()
-		b.changeProperty(requestor, property, target, 8, data)
 		return true
 	case b.atoms.timestamp:
 		b.changeProperty(requestor, property, atomInteger, 32, binary.LittleEndian.AppendUint32(nil, since))
@@ -609,15 +610,6 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, text []by
 		return b.give(requestor, property, kind, text)
 	}
 	return false
-}
-
-func (b *Clipboard) extraOffer(target uint32) uint32 {
-	b.state.Lock()
-	defer b.state.Unlock()
-	if _, offered := b.extraOffers[target]; offered {
-		return target
-	}
-	return atomNone
 }
 
 func (b *Clipboard) give(requestor, property, kind uint32, data []byte) bool {
