@@ -119,7 +119,10 @@ func add(args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "%s joined from %s. %s\n", joined.Peer.Name, joined.From, hotkeyOf(trusted, joined.Peer.Name))
-	fmt.Fprintln(stdout, "Place it on the desk with: lanhop layout --edit")
+	fmt.Fprintf(stdout, "In the layout editor, %s waits in the tray: drag it to its place on the desk, save, and press Done.\n\n", joined.Peer.Name)
+	if err := editLayoutUntil(interrupted, stdout); err != nil {
+		fmt.Fprintf(stdout, "The layout editor did not open: %v\nPlace %s later with: lanhop layout --edit\n", err, joined.Peer.Name)
+	}
 	return nil
 }
 

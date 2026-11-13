@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -48,14 +51,41 @@ func (s *screen) joinLineShown(t *testing.T) (string, pairing.JoinCode) {
 	return "", pairing.JoinCode{}
 }
 
-func runningAdd(t *testing.T, args ...string) (*screen, <-chan error) {
+type addRun struct {
+	output   *screen
+	finished chan error
+	opened   chan string
+	editor   *string
+}
+
+func runningAdd(t *testing.T, args ...string) addRun {
 	t.Helper()
-	output := &screen{}
-	finished := make(chan error, 1)
+	run := addRun{output: &screen{}, finished: make(chan error, 1), opened: browserThat(t, nil), editor: new(string)}
 	go func() {
-		finished <- add(append([]string{"--listen", "127.0.0.1:0", "--address", "127.0.0.1"}, args...), output)
+		run.finished <- add(append([]string{"--listen", "127.0.0.1:0", "--address", "127.0.0.1"}, args...), run.output)
 	}()
-	return output, finished
+	return run
+}
+
+func (r addRun) editorAt(t *testing.T, path string) string {
+	t.Helper()
+	if *r.editor == "" {
+		*r.editor = addressOpenedIn(t, r.opened)
+	}
+	opened, err := url.Parse(*r.editor)
+	if err != nil {
+		t.Fatalf("the editor opened at an address that cannot be read: %v", err)
+	}
+	opened.Path = path
+	return opened.String()
+}
+
+func (r addRun) finishInTheEditor(t *testing.T) error {
+	t.Helper()
+	if status := post(t, r.editorAt(t, "/done"), struct{}{}); status != http.StatusOK {
+		t.Errorf("POST /done: status %d, want %d", status, http.StatusOK)
+	}
+	return ended(t, r.finished)
 }
 
 func ended(t *testing.T, finished <-chan error) error {
@@ -133,16 +163,27 @@ func TestTheJoinLinesNameTheReleaseOfTheCentral(t *testing.T) {
 func TestAddPrintsAJoinLineAndStoresTheMachineThatJoins(t *testing.T) {
 	central := useConfigDirectory(t)
 	trustAlready(t, central, trust.Peer{Name: "server", Fingerprint: someFingerprint(1)})
-	output, finished := runningAdd(t, "office-mac")
+	run := runningAdd(t, "office-mac")
 
-	if err := joinAs(t, newJoiningMachine(t), output); err != nil {
+	if err := joinAs(t, newJoiningMachine(t), run.output); err != nil {
 		t.Fatalf("join: %v", err)
 	}
-	if err := ended(t, finished); err != nil {
+	status, body := get(t, run.editorAt(t, "/desk"))
+	var desk struct {
+		Rows     [][]string `json:"rows"`
+		Machines []string   `json:"machines"`
+	}
+	if err := json.Unmarshal([]byte(body), &desk); status != http.StatusOK || err != nil {
+		t.Fatalf("GET /desk = %d %s, %v", status, body, err)
+	}
+	if !slices.Contains(desk.Machines, "office-mac") || slices.ContainsFunc(desk.Rows, func(row []string) bool { return slices.Contains(row, "office-mac") }) {
+		t.Errorf("the editor shows %+v, want office-mac among the machines and in no row, so in the tray", desk)
+	}
+	if err := run.finishInTheEditor(t); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	shown := output.String()
-	for _, part := range []string{"LANHOP_JOIN=", "office-mac joined from 127.0.0.1. Ctrl+Alt+3 moves to it.", "lanhop layout --edit"} {
+	shown := run.output.String()
+	for _, part := range []string{"LANHOP_JOIN=", "office-mac joined from 127.0.0.1. Ctrl+Alt+3 moves to it.", "waits in the tray"} {
 		if !strings.Contains(shown, part) {
 			t.Errorf("lanhop add printed %q, want it to hold %q", shown, part)
 		}
@@ -164,15 +205,15 @@ func TestAMachineAddedBeyondTheHotkeysIsToldItHasNone(t *testing.T) {
 		}
 		trustAlready(t, central, trust.Peer{Name: fmt.Sprintf("side-%d", position), Fingerprint: someFingerprint(byte(position + 1))})
 	}
-	output, finished := runningAdd(t, "ninth")
-	if err := joinAs(t, newJoiningMachine(t), output); err != nil {
+	run := runningAdd(t, "ninth")
+	if err := joinAs(t, newJoiningMachine(t), run.output); err != nil {
 		t.Fatalf("join: %v", err)
 	}
-	if err := ended(t, finished); err != nil {
+	if err := run.finishInTheEditor(t); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if !strings.Contains(output.String(), "It has no hotkey") {
-		t.Errorf("lanhop add printed %q, want it to say the ninth machine has no hotkey", output.String())
+	if !strings.Contains(run.output.String(), "It has no hotkey") {
+		t.Errorf("lanhop add printed %q, want it to say the ninth machine has no hotkey", run.output.String())
 	}
 }
 
@@ -221,11 +262,11 @@ func TestAMachineAddedWhileShareListensConnectsWithoutARestart(t *testing.T) {
 	defer listener.Close()
 
 	newcomer := newJoiningMachine(t)
-	output, finished := runningAdd(t, "office-mac")
-	if err := joinAs(t, newcomer, output); err != nil {
+	run := runningAdd(t, "office-mac")
+	if err := joinAs(t, newcomer, run.output); err != nil {
 		t.Fatalf("join: %v", err)
 	}
-	if err := ended(t, finished); err != nil {
+	if err := run.finishInTheEditor(t); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 
