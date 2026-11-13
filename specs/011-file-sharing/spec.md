@@ -49,7 +49,7 @@ I start dragging a file on one screen, push it through the edge toward the machi
 2. **Given** I hold the mouse button to move a window or select text, **When** I push against an edge, **Then** nothing crosses, as spec 002 says.
 3. **Given** I drag a file across and change my mind, **When** I drag it back across the edge or press Escape, **Then** nothing is dropped and nothing is left behind.
 4. **Given** the neighbour cannot take a dragged file, **When** I push a dragged file against that edge, **Then** nothing crosses, and lanhop's log says why.
-5. **Given** I drag a file to the Trash or to a sidebar near an edge, **When** the cursor touches that edge on the way, **Then** nothing crosses. A file drag crosses only after a longer push than the cursor alone, never in a corner, and never through the edge where the Dock of macOS sits.
+5. **Given** I drag a file to the Trash or to a sidebar near an edge, **When** the cursor touches that edge on the way, **Then** nothing crosses. A file drag crosses only after a longer push than the cursor alone, never in a corner, and never through the edge where a dock sits.
 
 ### Story 3 - Keep control of what arrives (Priority: P2)
 

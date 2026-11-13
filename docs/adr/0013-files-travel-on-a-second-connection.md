@@ -28,7 +28,7 @@ Side machines open their connection to the central, and the central does not ope
 | 14 | Data stop | Control connection, either way | The transfer number to stop |
 | 15 | | Reserved | |
 
-**The answer to a leave stays light.** A side machine that holds a file copy answers with File copy and File copy size, worked out within the time an answer has (ADR 8). It reads no content and computes no digest at that moment. Larger lists are refused as over the limit.
+**The answer to a leave stays light.** A side machine that holds a file copy answers with File copy and File copy size, worked out within the time an answer has (ADR 8). It reads no content and computes no digest at that moment. A list that cannot be counted in that time is not sent, and the log says that it was too slow to list, apart from a list over the limit.
 
 **Second connection.** File bytes travel on a second TLS connection to the same port of the central, with the pinned keys of [ADR 4](0004-pinned-tls-and-pairing-by-comparison.md), and always opened by the side machine.
 
@@ -38,7 +38,7 @@ Side machines open their connection to the central, and the central does not ope
 
 **Content.** The machine that has the files sends, for each file or folder, its relative path, its kind and its size, then the content, then a SHA-256 of the content worked out while sending it. It compares the size and modification time of each file before and after reading it, and stops the transfer if the file changed.
 
-**Receiving safely.** The receiving side refuses absolute paths, `..`, links and special files; creates every file without following links, under a temporary name in the arrival folder; refuses a total size over the limit or over the free space; checks size and digest; and renames only when a file is whole. When the transfer stops, at a Data stop, at a lost connection on either the data or the control connection, or at any error, what arrived of that transfer is removed. A stopped transfer starts again from the beginning when it is needed again.
+**Receiving safely.** The receiving side refuses absolute paths, `..`, links and special files; creates every file without following links, under a temporary name in the arrival folder; refuses a total size over the limit or over the free space; checks size and digest; and renames only when a file is whole. When the transfer stops, at a Data stop, at a lost connection on either the data or the control connection, or at any error, what arrived of that transfer is removed. Focus leaving the receiving machine stops a transfer too, except one that serves a drop already accepted there. A stopped transfer starts again from the beginning when it is needed again.
 
 **Pace.** TCP sets the pace of the data connection. Keys never wait behind file bytes in the same stream. They can still wait behind them in a queue shared by both streams, such as a Wi-Fi link or a router. Task 2 of the plan measures that behind one shaped queue that carries both connections, and the data connection is paced below the link if keys wait longer than SC-002 allows.
 

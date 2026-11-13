@@ -27,7 +27,7 @@ The rules of who gets which copy are those of spec 005 and ADR 8, with these add
 
 1. **A copy is text or files.** When the clipboard offers both, the files win (FR-012). A machine that takes text but not files gets a withdrawal instead of the names or paths.
 2. **The answer to a leave stays light**: the number of files and their total size, worked out within the time an answer has. No content is read and no digest is computed at that moment (ADR 13).
-3. **Files move to the machine that has focus, while it has focus.** When a machine that takes files gets focus and does not hold the copy, the central opens the transfer. If focus leaves before every file has arrived, the transfer stops and what arrived is removed, so a machine the person only passes through keeps nothing. The next visit starts it again.
+3. **Files move to the machine that has focus, while it has focus.** When a machine that takes files gets focus and does not hold the copy, the central opens the transfer. If focus leaves before every file has arrived, the transfer stops and what arrived is removed, so a machine the person only passes through keeps nothing. The next visit starts it again. A transfer that serves a drop already accepted on that machine (stage B) carries on after focus leaves.
 4. **Side machine to side machine** streams through the central (ADR 13), which keeps a copy only when it has focus.
 5. **Arriving.** Each file is written under a temporary name in the arrival folder, checked by size and SHA-256, given the quarantine mark on macOS (FR-014), and renamed. Only when every file has arrived does lanhop put them on the clipboard. A paste before that gives what the clipboard held before (FR-002).
 6. **Room.** A transfer starts only if it fits in the free space and in the room lanhop allows itself, 8 GiB for the whole arrival folder, removing the oldest arrivals first (FR-013). Arrivals are removed after a day (FR-009).
@@ -42,7 +42,7 @@ The rules of who gets which copy are those of spec 005 and ADR 8, with these add
 ## How a drag crosses (stage B)
 
 1. **Seeing a drag.** On the machine with the keyboard and mouse, lanhop watches for a file drag (table above).
-2. **Crossing.** During a file drag, an edge with a neighbour that takes dragged files crosses with the button held, after a push of 600 ms instead of the usual push time, never in a corner, and never through the edge where the Dock of macOS sits. Every other held button keeps blocking crossings (FR-008, and FR-008 of spec 002).
+2. **Crossing.** During a file drag, an edge with a neighbour that takes dragged files crosses with the button held, after a push of 600 ms or of the configured push time plus 300 ms, whichever is longer, never in a corner, and never through the edge where a dock sits: the Dock of macOS, or the dock of Ubuntu. Every other held button keeps blocking crossings (FR-008, and FR-008 of spec 002).
 3. **Leaving the source.** At the crossing, lanhop posts Escape to the source, so that its drag ends without a drop, then a release of the button. The press is never replayed on the neighbour.
 4. **On the neighbour.** lanhop starts a drag of its own with the files, and the replayed mouse carries it. The files start to travel at the crossing. A drop waits for them as the table says.
 5. **Changing one's mind.** Dragging back across the edge, or Escape, ends the drag on the neighbour without a drop and stops the transfer.
@@ -72,6 +72,7 @@ Each task is one pull request with its tests. Stage A comes first, and stage B s
 
   Measure on the Linux machine what Nautilus offers and accepts. Writing to the clipboard of a session in use needs the OK of the person who uses it. → Verify: ADR 14 records the formats and the permissions, with the measurements.
 - [ ] **2. Data connections.** ADR 13 in `internal/transport`. → Verify: tests over TLS on loopback, including a data connection refused for an unknown or expired number, from the wrong machine, and twice. Keys on the control connection are timed while 100 MiB move on the data connection, with both connections behind one queue shaped to 100 Mbit/s, against SC-002; a loopback at full speed would hide the delay.
+- [ ] **0. A file copy is not text.** The text readers of spec 005 in `internal/macos` and `internal/x11` report a copy of files as not text, so its names or paths never travel as text (FR-012). This lands before spec 005 is wired, whatever happens to the rest of this plan. → Verify: the macOS job of CI and Xvfb, with a copy that offers both files and text.
 - [ ] **3. File copies in the state machines.** A copy is text or files, in `internal/clipboard`, with the switch for files apart from text. → Verify: the table tests of spec 005 again with file copies; a machine that takes text but not files; the limit; and a transfer stopped when focus leaves.
 - [ ] **4. macOS file pasteboard.** Read and write file URLs in `internal/macos`. → Verify: the macOS job of CI, on a pasteboard of its own.
 - [ ] **5. Linux file clipboard.** `x-special/gnome-copied-files` and `text/uri-list` in `internal/x11`. → Verify: tests against Xvfb.
