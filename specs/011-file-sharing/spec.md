@@ -100,7 +100,7 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 
 ### Out of scope for this feature
 
-- Dragging between machines where the plan finds it cannot work. From or to a Wayland application on Linux is the likely case, deduced and to be measured in task 8.
+- Dragging between machines where the plan finds it cannot work, apart from the notice of story 2 scenario 4. From or to a Wayland application on Linux is the likely case, deduced and to be measured in task 8.
 - Syncing folders, or keeping a copy up to date when the original changes.
 - Images and other content copied as data rather than as a file.
 - Windows. It is spec 003.

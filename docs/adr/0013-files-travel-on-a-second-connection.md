@@ -15,7 +15,7 @@ Side machines open their connection to the central, and the central does not ope
 
 ## Decision
 
-**Features.** The value of Features is a set of bits, and a reader ignores the bits it does not know. Bit 0 is text (ADR 7). Bit 1 says that a machine takes and gives files. Only machines that set bit 1 on both ends take part.
+**Features.** The value of Features is a set of bits, and a reader ignores the bits it does not know. Bit 0 is text (ADR 7). Bit 1 says that a machine takes and gives files. Only machines that set bit 1 on both ends take part. Bit 2 says that a machine can receive a dragged file: it is set only where lanhop can start a drag, on macOS or on Linux in an X11 session, and only while file sharing is on.
 
 **Control codes 10 to 15**, all of type `0xFF00`:
 
