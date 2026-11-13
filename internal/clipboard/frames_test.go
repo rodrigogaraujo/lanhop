@@ -3,6 +3,7 @@ package clipboard
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -117,7 +118,7 @@ func TestCopiesThatCannotBeSentAreRefused(t *testing.T) {
 	}
 }
 
-func TestACopyComesInSlicesSoThatInputWaitsAtMostOneSlice(t *testing.T) {
+func TestACopyIsSplitIntoSlicesOfAtMost512Frames(t *testing.T) {
 	tests := []struct {
 		name       string
 		text       string
@@ -140,6 +141,13 @@ func TestACopyComesInSlicesSoThatInputWaitsAtMostOneSlice(t *testing.T) {
 			for i, part := range parts {
 				if len(part) == 0 || len(part) > SliceFrames {
 					t.Errorf("slice %d has %d frames, want 1 to %d", i, len(part), SliceFrames)
+				}
+			}
+			for i := 0; i+1 < len(parts); i++ {
+				next := parts[i+1][0]
+				_ = append(parts[i], event.Ping())
+				if parts[i+1][0] != next {
+					t.Errorf("appending to slice %d changed slice %d", i, i+1)
 				}
 			}
 		})
@@ -195,7 +203,7 @@ func TestDataOutsideACopyIsRefusedAndTheNextCopyStillArrives(t *testing.T) {
 }
 
 func TestAnnouncedLengthsOutsideTheLimitAreRefused(t *testing.T) {
-	for _, length := range []int32{0, -1, Limit + 1, -Limit} {
+	for _, length := range []int32{-1, Limit + 1, -Limit, math.MinInt32, math.MaxInt32} {
 		var a Assembler
 		if _, _, err := a.Take(event.Clipboard(length)); !errors.Is(err, ErrLength) {
 			t.Errorf("length %d: error = %v, want %v", length, err, ErrLength)
@@ -224,6 +232,8 @@ func TestOnlyTheTwoCopyFramesAreCopyFrames(t *testing.T) {
 	}{
 		{event.Clipboard(1), true},
 		{event.ClipboardData(0), true},
+		{Withdrawal(), true},
+		{event.ClipboardAck(1), false},
 		{event.Features(event.FeatureClipboard), false},
 		{event.Hello(), false},
 		{event.Ping(), false},
@@ -236,5 +246,220 @@ func TestOnlyTheTwoCopyFramesAreCopyFrames(t *testing.T) {
 		if got := IsCopyFrame(test.frame); got != test.want {
 			t.Errorf("IsCopyFrame(%+v) = %v, want %v", test.frame, got, test.want)
 		}
+	}
+}
+
+func TestAWithdrawalArrivesAsACompleteCopyWithNoText(t *testing.T) {
+	var a Assembler
+
+	text, complete, err := a.Take(Withdrawal())
+
+	if err != nil || !complete || text != "" {
+		t.Errorf("Take(Withdrawal()) = %q, %v, %v, want a complete copy with no text", text, complete, err)
+	}
+}
+
+func TestAWithdrawalDropsACopyThatHasNotFinished(t *testing.T) {
+	frames := append(slices.Clone(framesOf(t, "unfinished copy")[:2]), Withdrawal())
+
+	if got := assemble(t, frames); !slices.Equal(got, []string{""}) {
+		t.Errorf("copies = %q, want only the withdrawal", got)
+	}
+}
+
+func TestALengthOutsideTheLimitDropsTheCopyThatWasOpen(t *testing.T) {
+	var a Assembler
+	open := framesOf(t, "abcdefgh")
+	a.Take(open[0])
+	a.Take(open[1])
+
+	if _, _, err := a.Take(event.Clipboard(Limit + 1)); !errors.Is(err, ErrLength) {
+		t.Fatalf("error = %v, want %v", err, ErrLength)
+	}
+	if _, _, err := a.Take(open[2]); !errors.Is(err, ErrUnannounced) {
+		t.Errorf("the rest of the open copy: error = %v, want %v", err, ErrUnannounced)
+	}
+}
+
+func TestTheNextCopyArrivesAfterOneThatWasNotUTF8(t *testing.T) {
+	var a Assembler
+	a.Take(event.Clipboard(1))
+	if _, _, err := a.Take(event.ClipboardData(int32(binary.BigEndian.Uint32([]byte{0xff, 0, 0, 0})))); !errors.Is(err, ErrNotText) {
+		t.Fatalf("error = %v, want %v", err, ErrNotText)
+	}
+
+	var got []string
+	for _, frame := range framesOf(t, "fine") {
+		if text, complete, err := a.Take(frame); err != nil {
+			t.Fatalf("Take: %v", err)
+		} else if complete {
+			got = append(got, text)
+		}
+	}
+	if !slices.Equal(got, []string{"fine"}) {
+		t.Errorf("copies = %q, want %q", got, "fine")
+	}
+}
+
+func TestPaddingAfterTheAnnouncedLengthIsIgnored(t *testing.T) {
+	frames := []event.Event{event.Clipboard(1), event.ClipboardData(0x61626364)}
+
+	if got := assemble(t, frames); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("copies = %q, want %q", got, "a")
+	}
+}
+
+func TestAnAnnouncementAloneDoesNotReserveTheWholeLimit(t *testing.T) {
+	var a Assembler
+	a.Take(event.Clipboard(Limit))
+
+	if got := cap(a.text); got > SliceFrames*bytesPerFrame {
+		t.Errorf("an announcement of 1 MiB reserved %d bytes, want at most %d", got, SliceFrames*bytesPerFrame)
+	}
+}
+
+func acksWhileTaking(t *testing.T, frames []event.Event) []event.Event {
+	t.Helper()
+	var a Assembler
+	var acks []event.Event
+	for _, frame := range frames {
+		a.Take(frame)
+		if ack, due := a.Ack(); due {
+			acks = append(acks, ack)
+		}
+	}
+	return acks
+}
+
+func TestTheReadingSideAcknowledgesEach512FramesAndTheEndOfACopy(t *testing.T) {
+	frames := framesOf(t, strings.Repeat("x", 3000*4))
+
+	acks := acksWhileTaking(t, frames)
+
+	want := []event.Event{
+		event.ClipboardAck(512),
+		event.ClipboardAck(1024),
+		event.ClipboardAck(1536),
+		event.ClipboardAck(2048),
+		event.ClipboardAck(2560),
+		event.ClipboardAck(3001),
+	}
+	if !slices.Equal(acks, want) {
+		t.Errorf("acks = %+v, want %+v", acks, want)
+	}
+}
+
+func TestEveryCopyFrameIsAcknowledgedEvenWhenItIsRefused(t *testing.T) {
+	frames := []event.Event{
+		event.ClipboardData(1),
+		event.Ping(),
+		event.Clipboard(-1),
+		Withdrawal(),
+		event.Key(event.KeyA, event.KeyPressed),
+	}
+	frames = append(frames, framesOf(t, "abc")...)
+
+	acks := acksWhileTaking(t, frames)
+
+	want := []event.Event{event.ClipboardAck(1), event.ClipboardAck(2), event.ClipboardAck(3), event.ClipboardAck(5)}
+	if !slices.Equal(acks, want) {
+		t.Errorf("acks = %+v, want %+v", acks, want)
+	}
+}
+
+func TestAWindowHoldsAtMostEightSlicesThatWereNotAcknowledged(t *testing.T) {
+	var w Window
+	if got := w.Room(); got != 8*SliceFrames {
+		t.Fatalf("room of a new window = %d, want %d", got, 8*SliceFrames)
+	}
+
+	w.Sent(WindowFrames)
+	if got := w.Room(); got != 0 {
+		t.Errorf("room after sending a whole window = %d, want 0", got)
+	}
+
+	if err := w.Acked(SliceFrames); err != nil {
+		t.Fatalf("Acked: %v", err)
+	}
+	if got := w.Room(); got != SliceFrames {
+		t.Errorf("room after one slice was acknowledged = %d, want %d", got, SliceFrames)
+	}
+}
+
+func TestAnAcknowledgementOfFramesNeverSentIsRefused(t *testing.T) {
+	var w Window
+	w.Sent(10)
+
+	if err := w.Acked(11); !errors.Is(err, ErrAck) {
+		t.Errorf("Acked(11) after 10 sent: error = %v, want %v", err, ErrAck)
+	}
+	if got := w.Room(); got != WindowFrames-10 {
+		t.Errorf("room = %d, want %d", got, WindowFrames-10)
+	}
+}
+
+func TestWindowCountsKeepWorkingWhenTheyWrapAround(t *testing.T) {
+	start := uint32(math.MaxUint32 - 10)
+	w := Window{sent: start, acked: start}
+
+	w.Sent(100)
+	if got := w.Room(); got != WindowFrames-100 {
+		t.Fatalf("room = %d, want %d", got, WindowFrames-100)
+	}
+	if err := w.Acked(int32(start + 100)); err != nil {
+		t.Fatalf("Acked across the wrap: %v", err)
+	}
+	if got := w.Room(); got != WindowFrames {
+		t.Errorf("room = %d, want %d", got, WindowFrames)
+	}
+}
+
+func TestASenderThatWaitsForAcknowledgementsDeliversTheLimitWithinTheWindow(t *testing.T) {
+	text := strings.Repeat("y", Limit)
+	parts, err := Slices(text)
+	if err != nil {
+		t.Fatalf("Slices: %v", err)
+	}
+	var (
+		w        Window
+		a        Assembler
+		onTheWay []event.Event
+		got      []string
+	)
+	deliverOneSlice := func() {
+		for _, frame := range onTheWay[:min(SliceFrames, len(onTheWay))] {
+			if text, complete, err := a.Take(frame); err != nil {
+				t.Fatalf("Take: %v", err)
+			} else if complete {
+				got = append(got, text)
+			}
+			if ack, due := a.Ack(); due {
+				if err := w.Acked(ack.Value); err != nil {
+					t.Fatalf("Acked: %v", err)
+				}
+			}
+		}
+		onTheWay = onTheWay[min(SliceFrames, len(onTheWay)):]
+	}
+
+	for _, part := range parts {
+		for w.Room() < len(part) {
+			deliverOneSlice()
+		}
+		w.Sent(len(part))
+		onTheWay = append(onTheWay, part...)
+		if len(onTheWay) > WindowFrames {
+			t.Fatalf("%d frames on the way, more than the window of %d", len(onTheWay), WindowFrames)
+		}
+	}
+	for len(onTheWay) > 0 {
+		deliverOneSlice()
+	}
+
+	if len(got) != 1 || got[0] != text {
+		t.Errorf("got %d copies, want the 1 MiB copy once", len(got))
+	}
+	if w.Room() != WindowFrames {
+		t.Errorf("room at the end = %d, want the whole window", w.Room())
 	}
 }

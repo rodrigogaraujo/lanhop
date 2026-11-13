@@ -33,7 +33,7 @@ I copy a line on the central, move to a side machine and paste it. Then I copy s
 
 1. **Given** focus is on the central, **When** I copy text and move to a side machine, **Then** pasting on the side machine gives that text.
 2. **Given** focus is on a side machine, **When** I copy text and move to the central, **Then** pasting on the central gives that text.
-3. **Given** I copied on a machine, **When** I move to another machine and paste right away, **Then** the text is already there. I do not have to wait for it.
+3. **Given** I copied on a machine, **When** I move to another machine and paste, **Then** the text is there, with no step from me in between. It arrives within the time that SC-001 sets.
 4. **Given** I copy text with formatting, such as part of a web page, **When** I paste on another machine, **Then** I get the same text without the formatting.
 5. **Given** text in any language, with emoji, tabs or several lines, **When** I paste it on another machine, **Then** it is the same text, character for character.
 
@@ -109,11 +109,15 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 1. **Given** I copy an image or a file, **When** I move to another machine and paste, **Then** I get what that machine's clipboard held before, and lanhop's log says that the copy was not text.
 2. **Given** I copy a text larger than 1 MiB, **When** I move to another machine, **Then** the copy is not sent, and lanhop's log says that it was over the limit.
 3. **Given** a large text is on its way to another machine, **When** I type or move the mouse, **Then** the keyboard and mouse respond as usual.
+4. **Given** I copied text on the central, took it to side machine A and came back, **When** I copy an image on the central and move to side machine B, **Then** B keeps what its clipboard held. The text from before the image is not handed out anymore.
+5. **Given** a password manager empties the clipboard of the machine where I copied a password, **When** I then move away from that machine, **Then** the machines I move to from then on do not get the password.
 
 ## Edge cases
 
 - I copy and move away at once, before the application I copied from has handed the text over.
 - I move through two or three machines faster than a large copy can travel.
+- I press paste in the same instant that focus arrives, before the copy has arrived.
+- I copy something on a machine while a copy from another machine is on its way to it.
 - I copy the same text twice in a row, or copy on a machine the same text that lanhop has just put there.
 - A program changes the clipboard of a machine that does not have focus.
 - The connection to a machine is lost while a copy is on its way to it.
@@ -121,7 +125,7 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - A side machine has no graphical session, such as a Linux machine still at its login screen.
 - A Linux machine runs a Wayland session or an X11 session.
 - On a Mac, macOS asks whether lanhop may read what other applications copied.
-- A password manager empties the clipboard of the machine where I copied after a while. The copies that lanhop made on other machines stay.
+- A password manager empties the clipboard of the machine where I copied after I moved away from it. The copies that lanhop already made on other machines stay.
 
 ## Requirements
 
@@ -129,16 +133,17 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 
 - **FR-001**: Text copied on a machine MUST be ready to paste on the next machine that gets focus, in every direction between the central and the side machines.
 - **FR-002**: A copy made on a side machine MUST reach other side machines through the central.
-- **FR-003**: The clipboard of a machine MUST change only when that machine gets focus after a copy was made elsewhere. The central MUST keep the copies that pass through it in memory until focus comes back to it.
+- **FR-003**: lanhop MUST write a copy only to the clipboard of the machine that has focus. A machine MUST NOT get a copy while I am not on it. The central MUST keep only the desk's last copy, in memory.
 - **FR-004**: lanhop MUST carry plain text only, encoded as UTF-8, up to 1 MiB. Formatted text MUST arrive as its plain text.
-- **FR-005**: When a copy is not text, or is larger than the limit, lanhop MUST NOT send it, MUST leave the clipboards of the other machines as they were, and MUST say why in its log.
+- **FR-005**: When a copy is not text, is empty, or is larger than the limit, lanhop MUST NOT send it, MUST leave the clipboards of the other machines as they were, MUST stop handing out the copy that came before it, and MUST say why in its log.
 - **FR-006**: Copies MUST travel only over the encrypted connection between paired machines of spec 001. lanhop MUST NOT write them to disk.
 - **FR-007**: Keyboard and mouse MUST keep responding while a copy is on its way.
 - **FR-008**: A machine on lanhop 0.1.0 MUST keep working with keyboard and mouse when it connects to a machine with clipboard sharing, in either role.
 - **FR-009**: A person MUST be able to switch clipboard sharing off and on for each machine, without restarting lanhop. It MUST be on after a new install.
 - **FR-010**: lanhop MUST NOT send a copy back to the machine it came from, and MUST NOT treat the text it writes to a clipboard as a new copy.
 - **FR-011**: On a machine where lanhop cannot reach the clipboard, it MUST say so in its log once, and the keyboard and mouse MUST keep working.
-- **FR-012**: Clipboard sharing MUST work with macOS and Linux in every combination of central and side machine. On Linux it MUST work in X11 sessions and in Wayland sessions of GNOME.
+- **FR-012**: Clipboard sharing MUST work on macOS and on Linux, each as central and as side machine. On Linux it MUST work in X11 sessions and in Wayland sessions of GNOME.
+- **FR-013**: lanhop MUST NOT overwrite a copy that I made on a machine while a copy from another machine was on its way to it.
 
 ### Out of scope for this feature
 
@@ -147,13 +152,14 @@ When I copy an image, a file, or a very long text, lanhop does not send it, and 
 - Images and formatted text.
 - The Linux primary selection: selecting text and pasting it with the middle button.
 - Emptying the copies on other machines when the clipboard of the machine where I copied is emptied.
+- Leaving out copies that password managers mark as private.
 - A clipboard history.
 - Windows. It is spec 003.
 
 ## Success criteria
 
 - **SC-001**: A text of up to 64 KiB copied on one machine can be pasted on the next machine less than 300 ms after focus arrives there, on a wired local network.
-- **SC-002**: While a 1 MiB copy travels, no key or mouse movement arrives more than 50 ms later than it would without the copy.
+- **SC-002**: While a 1 MiB copy travels over a link of 20 Mbit/s, no key or mouse movement arrives more than 50 ms later than it would without the copy.
 - **SC-003**: A side machine on 0.1.0 connected to a central with clipboard sharing passes every acceptance scenario of spec 001.
 - **SC-004**: Every acceptance scenario of stories 1, 2 and 3 passes from a Mac to a Mac, from a Mac to Linux and from Linux to a Mac.
 

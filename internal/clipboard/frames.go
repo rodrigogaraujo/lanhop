@@ -12,6 +12,7 @@ import (
 const (
 	Limit         = 1 << 20
 	SliceFrames   = 512
+	WindowFrames  = 8 * SliceFrames
 	bytesPerFrame = 4
 )
 
@@ -19,8 +20,9 @@ var (
 	ErrEmpty       = errors.New("clipboard: the copy is empty")
 	ErrTooLarge    = errors.New("clipboard: the copy is larger than 1 MiB")
 	ErrNotText     = errors.New("clipboard: the copy is not UTF-8 text")
-	ErrLength      = errors.New("clipboard: a copy was announced with a length outside 1 byte to 1 MiB")
+	ErrLength      = errors.New("clipboard: a copy was announced with a negative length or one over 1 MiB")
 	ErrUnannounced = errors.New("clipboard: copy data arrived outside a copy")
+	ErrAck         = errors.New("clipboard: the other machine acknowledged frames that were never sent")
 )
 
 func Slices(text string) ([][]event.Event, error) {
@@ -37,6 +39,10 @@ func Slices(text string) ([][]event.Event, error) {
 	return inSlices(frames), nil
 }
 
+func Withdrawal() event.Event {
+	return event.Clipboard(0)
+}
+
 func IsCopyFrame(frame event.Event) bool {
 	return frame.IsControl() && (frame.Code == event.ControlClipboard || frame.Code == event.ControlClipboardData)
 }
@@ -45,27 +51,42 @@ type Assembler struct {
 	text   []byte
 	length int
 	open   bool
+	taken  uint32
+	acked  uint32
 }
 
 func (a *Assembler) Take(frame event.Event) (text string, complete bool, err error) {
 	if !IsCopyFrame(frame) {
 		return "", false, nil
 	}
+	a.taken++
 	if frame.Code == event.ControlClipboard {
-		return "", false, a.start(frame.Value)
+		return a.start(frame.Value)
 	}
 	return a.add(frame.Value)
 }
 
-func (a *Assembler) start(length int32) error {
+func (a *Assembler) Ack() (event.Event, bool) {
+	unacknowledged := a.taken - a.acked
+	if unacknowledged == 0 || (a.open && unacknowledged < SliceFrames) {
+		return event.Event{}, false
+	}
+	a.acked = a.taken
+	return event.ClipboardAck(int32(a.taken)), true
+}
+
+func (a *Assembler) start(length int32) (string, bool, error) {
 	a.drop()
-	if length < 1 || length > Limit {
-		return fmt.Errorf("%w: %d bytes", ErrLength, length)
+	switch {
+	case length == 0:
+		return "", true, nil
+	case length < 0 || length > Limit:
+		return "", false, fmt.Errorf("%w: %d bytes", ErrLength, length)
 	}
 	a.length = int(length)
-	a.text = make([]byte, 0, dataFramesFor(a.length)*bytesPerFrame)
+	a.text = make([]byte, 0, min(dataFramesFor(a.length), SliceFrames)*bytesPerFrame)
 	a.open = true
-	return nil
+	return "", false, nil
 }
 
 func (a *Assembler) add(chunk int32) (string, bool, error) {
@@ -85,7 +106,29 @@ func (a *Assembler) add(chunk int32) (string, bool, error) {
 }
 
 func (a *Assembler) drop() {
-	*a = Assembler{}
+	a.text, a.length, a.open = nil, 0, false
+}
+
+type Window struct {
+	sent  uint32
+	acked uint32
+}
+
+func (w *Window) Room() int {
+	return WindowFrames - int(w.sent-w.acked)
+}
+
+func (w *Window) Sent(frames int) {
+	w.sent += uint32(frames)
+}
+
+func (w *Window) Acked(framesRead int32) error {
+	read := uint32(framesRead)
+	if read-w.acked > w.sent-w.acked {
+		return fmt.Errorf("%w: %d read, %d sent", ErrAck, read, w.sent)
+	}
+	w.acked = read
+	return nil
 }
 
 func sendable(text string) error {
