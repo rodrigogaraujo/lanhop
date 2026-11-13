@@ -26,6 +26,11 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+      - name: Time keys behind copies and files, without the race detector
+        if: runner.os == 'Linux'
+        run: |
+          go test -count=1 -run 'TestKeysArriveAtMost50|TestKeysArriveMoreThan50' ./internal/transport
+          go test -count=1 -run 'Keys|64KiB' ./internal/clipshare
       - name: Test the macOS build without cgo
         if: runner.os == 'macOS'
         env:
