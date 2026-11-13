@@ -118,10 +118,6 @@ func newDeskStatus(record statusFile, now func() time.Time, trusted peerList) *d
 	return &deskStatus{record: record, now: now, trusted: trusted, departed: map[string]time.Time{}}
 }
 
-func reportReceivers(record statusFile, now func() time.Time, trusted peerList) func(names []string) {
-	return newDeskStatus(record, now, trusted).receivers
-}
-
 func (d *deskStatus) receivers(names []string) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()

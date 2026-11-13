@@ -117,8 +117,8 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 			fmt.Fprintln(stdout, "This machine no longer follows the version of the machine with the keyboard, so that it is not moved back up. lanhop updates on lets it follow again.")
 		}
 	}
-	restartTheService(stdout)
-	waitForTheDesk(directory, deskBefore, want, stdout)
+	restarted := restartTheService(stdout)
+	waitForTheDesk(directory, deskBefore, want, restarted, stdout)
 	if switchFailed != nil {
 		return fmt.Errorf("lanhop moved back to %s, but could not stop following the machine with the keyboard, which may move it up again: %w", want, switchFailed)
 	}
@@ -127,19 +127,19 @@ func updateThisMachine(args []string, stdout io.Writer) error {
 
 func sideMachinesOfThisCentral(directory string) []status.Seat {
 	report, err := status.Read(directory)
-	if err != nil || (report.State != status.Sharing && report.State != status.Waiting) {
+	if err != nil || !status.Running(directory) || (report.State != status.Sharing && report.State != status.Waiting) {
 		return nil
 	}
 	return report.Seats
 }
 
-func waitForTheDesk(directory string, before []status.Seat, want update.Version, stdout io.Writer) {
+func waitForTheDesk(directory string, before []status.Seat, want update.Version, restarted bool, stdout io.Writer) {
 	waiting := map[string]string{}
 	var needInstaller, notFollowing []string
 	for _, seat := range before {
 		switch seat.Mark {
 		case string(follow.Follows):
-			if seat.Version != want.String() {
+			if version, err := update.ParseVersion(seat.Version); restarted && err == nil && version.Compare(want) < 0 {
 				waiting[seat.Name] = seat.Version
 			}
 		case string(follow.NeedsTheInstaller):
@@ -157,8 +157,14 @@ func waitForTheDesk(directory string, before []status.Seat, want update.Version,
 			continue
 		}
 		for _, seat := range report.Seats {
-			if old, found := waiting[seat.Name]; found && seat.Version == want.String() {
+			old, found := waiting[seat.Name]
+			switch {
+			case !found:
+			case seat.Version == want.String():
 				fmt.Fprintf(stdout, "%s %s → %s\n", seat.Name, old, want)
+				delete(waiting, seat.Name)
+			case seat.Mark == string(follow.NeedsTheInstaller):
+				needInstaller = append(needInstaller, seat.Name)
 				delete(waiting, seat.Name)
 			}
 		}
@@ -308,7 +314,7 @@ func writeUpdatesSwitch(directory string, on bool) error {
 	return os.WriteFile(path, []byte("off\n"), 0o600)
 }
 
-func restartTheService(stdout io.Writer) {
+func restartTheService(stdout io.Writer) bool {
 	var restart *exec.Cmd
 	switch {
 	case runtime.GOOS == "darwin" && serviceDefinitionExists(true):
@@ -318,14 +324,15 @@ func restartTheService(stdout io.Writer) {
 	}
 	if restart == nil {
 		fmt.Fprintln(stdout, "Start lanhop again to use the new version.")
-		return
+		return false
 	}
 	output, err := restart.CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(stdout, "The lanhop service did not restart (%v): %s\nStart lanhop again to use the new version.\n", err, strings.TrimSpace(string(output)))
-		return
+		return false
 	}
 	fmt.Fprintln(stdout, "The lanhop service restarted on the new version. lanhop status says what it does.")
+	return true
 }
 
 func serviceDefinitionExists(launchAgent bool) bool {

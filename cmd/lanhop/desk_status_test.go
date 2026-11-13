@@ -17,7 +17,7 @@ import (
 func TestShareWritesWhenEachMachineLeftAndForgetsItWhenItComesBack(t *testing.T) {
 	directory := useConfigDirectory(t)
 	clock := time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
-	report := reportReceivers(openStatus(), func() time.Time { return clock }, nil)
+	report := newDeskStatus(openStatus(), func() time.Time { return clock }, nil).receivers
 
 	report([]string{"desk", "laptop"})
 	clock = clock.Add(2 * time.Minute)
@@ -113,7 +113,7 @@ func TestStatusOnASideMachineListsNoDesk(t *testing.T) {
 func TestShareForgetsWhenAMachineThatIsNoLongerTrustedLeft(t *testing.T) {
 	directory := useConfigDirectory(t)
 	trustAlready(t, directory, trust.Peer{Name: "desk", Fingerprint: someFingerprint(1)})
-	report := reportReceivers(openStatus(), time.Now, peersOnDisk(filepath.Join(directory, peersFileName)))
+	report := newDeskStatus(openStatus(), time.Now, peersOnDisk(filepath.Join(directory, peersFileName))).receivers
 
 	report([]string{"desk", "laptop"})
 	report(nil)
