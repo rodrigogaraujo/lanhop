@@ -57,7 +57,7 @@ The file chooser of step 3 starts in Applications: choose **lanhop** and click *
 
 A Mac that is controlled from another machine connects to it over the local network. macOS lets a program started at login do that only after you allow it, while a program started from a terminal may do it without asking.
 
-- The first time the lanhop that starts at login tries to connect, macOS asks whether lanhop may find and connect to devices on your local network. Click **Allow**. On the Macs tried so far, the first try failed while macOS asked, and the next one connected.
+- The first time the lanhop that starts at login tries to connect, macOS asks whether lanhop may find and connect to devices on your local network. Click **Allow**. On two of the Macs tried so far, the first try failed while macOS asked, and the next one connected.
 - If you missed the question, said no, or it never came, open **System Settings → Privacy & Security → Local Network** and switch on **lanhop**. lanhop should connect on its next try, with no restart. That has not been measured yet: if it does not, run `launchctl kickstart -k gui/$(id -u)/com.github.rodrigogaraujo.lanhop`.
 - While it is blocked, the log says `no route to host`, and `lanhop status` should say `blocked` (not tried on a real Mac yet).
 - An **a.out** in that list is lanhop 0.1.0, a bare program that macOS could not tie the setting to. Its switch does nothing for the app. [ADR 6](adr/0006-an-app-bundle-with-its-own-identifier-on-macos.md) says why lanhop is an app now.
@@ -71,7 +71,7 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /Applications/lanhop.
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /Applications/lanhop.app
 ```
 
-By hand, open **Firewall → Options** and allow incoming connections for lanhop. If **Block all incoming connections** is on, switch it off, or no machine can connect. This has not been tried on a real Mac yet.
+If the app is in `~/Applications`, use that path. By hand, open **Firewall → Options** and allow incoming connections for lanhop. If **Block all incoming connections** is on, switch it off, or no machine can connect. This has not been tried on a real Mac yet.
 
 ## If it does not work
 
@@ -114,7 +114,7 @@ Each macOS archive of a release unpacks to a folder, `lanhop-darwin-arm64` or `l
 
   Or try to open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
 
-- **macOS may take each new build for another program.** An ad hoc signature changes with every build, so a switch that is on for the old app may do nothing for the new one. A signed app keeps its permissions across updates. This has not been measured yet: if it happens, remove lanhop from the Accessibility list with the **−** button and add it again.
+- **macOS may take each new build for another program.** An ad hoc signature changes with every build, so a switch that is on for the old app may do nothing for the new one. An app signed with an Apple developer certificate keeps its permissions across updates. This has not been measured yet: if it happens, remove lanhop from the Accessibility list with the **−** button and add it again.
 
 ## Letting another machine control the Mac
 

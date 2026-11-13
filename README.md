@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: first release, v0.1.0.** One person has used it on one desk: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On another night, an Intel Mac running the 0.1.0 build for Intel shared its keyboard and mouse, and three Macs and a Linux machine connected to it; the three Macs ran a `lanhop.app` made by hand. Not tried by a person yet: a Linux machine sharing its keyboard and mouse, the screen edges across three or more machines, and the installer on a real machine. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: first release, v0.1.0.** One person has used it on one desk: a Mac sharing its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On another night, an Intel Mac running the 0.1.0 build for Intel shared its keyboard and mouse, and three Macs and a Linux machine connected to it; the three Macs ran a `lanhop.app` made by hand. The installer of 0.1.0 ran on Macs that night and did not get them connected; the installer that checks every permission has not run on a real machine yet. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -88,7 +88,7 @@ Each release also has the archives themselves, one per system and architecture, 
 - [ ] Automatic discovery on the local network
 - [ ] Clipboard sharing
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
-  - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built, not yet tried on a real machine
+  - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 fixes
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
   - [ ] Homebrew formula
 
