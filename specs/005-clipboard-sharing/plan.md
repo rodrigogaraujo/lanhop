@@ -68,21 +68,16 @@ Each system provides three operations: a mark that changes with every copy and c
 
 Newer versions of macOS may show an alert when a program reads what another program copied without a paste from the person. `changeCount` does not read the content. Whether macOS 15 or 26 show such an alert to lanhop running as a launch agent is not measured yet. Task 7 measures it at the desk. If macOS asks, the installer of [spec 008](../008-permissions-checked/spec.md) has to ask for it too.
 
-### Linux, open point
+### Linux
 
-There is no clipboard in the kernel. The clipboard belongs to the desktop session, and the session is X11 or Wayland. The spec asks for both, without a Go dependency.
+The X11 selection `CLIPBOARD`, spoken over the socket of the X server in pure Go, in `internal/x11`. See [ADR 9](../../docs/adr/0009-the-linux-clipboard-through-the-x11-selection.md), which also records what was measured on the Linux machine of the desk: an X11 session of GNOME 46, no clipboard tool installed, and `DISPLAY` and `XAUTHORITY` in the service manager of the person.
 
-| Way | Works on | Cost |
-|---|---|---|
-| The X11 selection `CLIPBOARD`, spoken over the X socket in pure Go | X11 sessions, and Wayland sessions that run Xwayland, which GNOME and KDE Plasma do. The compositor keeps the Wayland clipboard and the X11 one in step | About 600 lines of X11 protocol: owning a selection, answering requests from other programs, and the `INCR` transfer for large texts |
-| Run `wl-copy` and `wl-paste`, or `xclip` and `xsel`, when they are installed | Where they are installed | Little code. They are probably not part of a default Ubuntu desktop, which task 4 checks, and then the person has to install them. Without the data-control protocol, which GNOME does not offer, `wl-paste` has to give itself keyboard focus to read |
-| The Wayland data-control protocol, in pure Go | KDE Plasma and wlroots compositors | A second protocol to speak, and no GNOME, which is the default desktop of Ubuntu |
+- **Mark**: a count of the selection events of the `XFIXES` extension for `CLIPBOARD`, which move with every copy, even two copies from the same program.
+- **Read**: convert `CLIPBOARD` to `UTF8_STRING` and read it, in parts with `INCR` when it is large. A copy that offers `x-kde-passwordManagerHint` with the value `secret`, which password managers set on Linux, is private (FR-014).
+- **Write**: own `CLIPBOARD` and answer `TARGETS` and `UTF8_STRING`, with `INCR` for large texts.
+- **Wayland**: through Xwayland, which GNOME and KDE Plasma run and keep in step with the Wayland clipboard. Deduced, not measured: the desk runs X11.
 
-A copy that offers the target `x-kde-passwordManagerHint` with the value `secret`, which password managers set on Linux, is private (FR-014), whichever way is chosen.
-
-The planned way is the X11 selection, because it covers X11 and GNOME on Wayland with one implementation and nothing to install. It is deduced from how GNOME runs Xwayland and has not been measured. Task 4 measures it on Ubuntu 24.04 with GNOME on Wayland and on an X11 session, and records the choice in ADR 9.
-
-Where no way works, for example a session with no Xwayland or a machine at its login screen, clipboard sharing is off on that machine. lanhop says why in its log once (FR-011), the central does not send copies to it, and the keyboard and mouse work as before.
+Where there is no X server, for example a machine at its login screen or a Wayland session without Xwayland, clipboard sharing is off on that machine. lanhop says why in its log once (FR-011), the central does not send copies to it, and the keyboard and mouse work as before.
 
 ## Switching it off
 
@@ -101,7 +96,7 @@ Where no way works, for example a session with no Xwayland or a machine at its l
 | Passwords | A copy marked private by its program is not sent, and counts as a withdrawal | A password copied from a password manager stays on the machine where it was copied | Copying a password to log in on another machine. The person types it there instead |
 | Switch | A file in the configuration directory, set by `lanhop clipboard` | Works with the service as installed, with no restart and no flag to edit | Nothing |
 | macOS | `NSPasteboard` through cgo, with `changeCount` | It is the clipboard of macOS, and `changeCount` tells a new copy without reading it | Code that only the macOS job of the CI can build |
-| Linux | Open, see above. Decided in task 4, ADR 9 | | |
+| Linux | The X11 selection in pure Go, with `XFIXES` for the mark. [ADR 9](../../docs/adr/0009-the-linux-clipboard-through-the-x11-selection.md) | Covers X11 and GNOME on Wayland with nothing to install | About 600 lines of X11 protocol. Wayland is reached only through Xwayland |
 
 ## Tasks
 
@@ -110,8 +105,8 @@ Each task is one pull request with its tests. Task 6 starts after pull request #
 - [x] **1. Messages.** This spec, this plan, ADRs 7 and 8. `internal/event` gets the five control codes. `internal/clipboard` turns a text into slices of frames and frames back into a text or a withdrawal, acknowledges what it reads, and keeps the window of the sender. → Verify: round trips for texts of 1 to 9 bytes and at the limit, with characters of several bytes. Empty texts, texts over the limit and invalid UTF-8 are refused. Frames mixed with input and pings still give the text. A new copy or a withdrawal drops an unfinished one, and stray data frames are dropped. Every copy frame is acknowledged, refused ones too. A sender that waits for acknowledgements delivers a 1 MiB copy with never more than the window on the way, and the window still works after an abandoned copy and a withdrawal. The receiver of 0.1.0 replays nothing when it gets the frames of a copy.
 - [x] **2. Who gets which copy.** A state machine with no I/O in `internal/clipboard`: focus changes, reads, copies, answers and copies cut short in, announcements, copies to send, withdrawals, answers and writes out, for the central and for a side machine. → Verify: table tests for each acceptance scenario of stories 1, 2, 3, 5 and 6, for the rule that no copy goes back where it came from, for withdrawals from a machine that focus moved away from, for copies marked private, for the wait for answers and its end, counted per leave, for reconnection, and for the fresh marks.
 - [ ] **3. macOS clipboard.** `NSPasteboard` in `internal/macos`. The tests write and read a pasteboard of their own, and take only the mark of the general one, so they leave the clipboard of the Mac that runs them alone. → Verify: the macOS job of the CI writes a text with emoji and several lines and reads it back, sees `changeCount` move on a write and stay on a read, reports a copy that offers `org.nspasteboard.ConcealedType` as private and a text over 1 MiB as too large, and times a write and a read of 64 KiB, because the read is on the path of every copy (SC-001).
-- [ ] **4. Research: the clipboard on Linux.** A throwaway prototype of the X11 selection. Measure it on Ubuntu 24.04 with GNOME on Wayland, copying in a Wayland application and pasting in another, in both directions, and on an X11 session in a container with Xvfb. Check which of `wl-copy`, `wl-paste`, `xclip` and `xsel` a default Ubuntu desktop has, and how the service of lanhop finds the session's display. Writing to the clipboard of a session in use needs the OK of the person who uses that session. → Verify: ADR 9 records the choice with the measurements.
-- [ ] **5. Linux clipboard.** The way chosen in task 4, in its own package under `internal/`. → Verify: tests against Xvfb in a container without privileges, including a text larger than one X11 request and a copy that offers `x-kde-passwordManagerHint`. A read and a write of 64 KiB are timed (SC-001).
+- [x] **4. Research: the clipboard on Linux.** A throwaway client of the X11 protocol, run on the Linux machine of the desk and on Xvfb in a container, reading nothing that the person copied. Check which of `wl-copy`, `wl-paste`, `xclip` and `xsel` the desk has, and how the service of lanhop finds the session's display. GNOME on Wayland could not be measured, because the desk runs X11 (see Risks). → Verify: ADR 9 records the choice with the measurements.
+- [ ] **5. Linux clipboard.** The X11 selection of ADR 9 in `internal/x11`. → Verify: tests against Xvfb in a container without privileges, including a text larger than one X11 request in both directions, two copies from the same program moving the mark twice, and a copy that offers `x-kde-passwordManagerHint`. A read and a write of 64 KiB are timed (SC-001). On the Linux machine of the desk, with the OK of the person, lanhop writes a test text and another program reads it back, and the reverse; the test never reads what the person copied.
 - [ ] **6. Copies in `lanhop share` and `lanhop receive`, and `lanhop clipboard`.** Wire tasks 1 to 5 into the central and the side machine, send copies off the input path, and add the switch. Send acknowledgements from the side that reads, and wait for them on the side that sends. → Verify: an integration test with a central and two side machines over TLS on loopback, with fake clipboards. A side machine that never sends Features and drops every frame, as 0.1.0 does, keeps getting input and gets no copy. With the reading side slowed to 20 Mbit/s: a 1 MiB copy is sent while keys flow and the delay of each key is timed against SC-002, and a 64 KiB copy is timed from the enter to the write against SC-001. A loopback at full speed would hide both. A side machine that switches off in the middle of a copy, and focus that leaves in the middle of a copy, leave the next copy working. A copy the person makes after focus arrived is not overwritten (FR-013).
 
   What the wiring does with the state machines of task 2, which have no clock and no clipboard of their own:
@@ -133,7 +128,7 @@ Each task is one pull request with its tests. Task 6 starts after pull request #
 ## Risks
 
 - **Pasteboard privacy on macOS.** If macOS asks before lanhop reads a copy, and the answer belongs to one build of the app as described in [ADR 6](../../docs/adr/0006-an-app-bundle-with-its-own-identifier-on-macos.md), each update may ask again.
-- **GNOME on Wayland.** The plan relies on GNOME keeping the clipboard of Wayland applications and the one of Xwayland in step. Task 4 exists to check it before tasks 5 and 6 depend on it.
-- **The display of the Linux service.** A systemd user unit can start before the desktop session and then has no `DISPLAY`. Task 4 finds how lanhop learns where the session is.
+- **GNOME on Wayland.** The plan relies on GNOME keeping the clipboard of Wayland applications and the one of Xwayland in step. The desk runs X11, so task 4 could not measure it, and it stays open until someone measures it on a Wayland session.
+- **The display of the Linux service.** A systemd user unit can start before the desktop session and then has no `DISPLAY`. lanhop then tries the sockets in `/tmp/.X11-unix` (ADR 9). On the desk the X server accepted a connection from the person without a cookie, which other display managers may not do.
 - **Bytes on the wire.** A copy takes twice its size, and moves at most 32 KiB per round trip. It matters only for copies near the limit on a slow Wi-Fi link, where a 1 MiB copy may take about a second. Keys wait at most for the window.
 - **A paste right after crossing.** The copy follows the answer of the machine that lost focus, so a paste pressed in the same instant can get the previous text. SC-001 bounds how long that lasts.
