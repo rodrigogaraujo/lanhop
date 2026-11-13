@@ -110,6 +110,7 @@ type desk struct {
 	sharer      *identity.Identity
 	receiver    *identity.Identity
 	replay      *recordedReplay
+	clipboard   Clipboard
 	stop        context.CancelFunc
 	finished    chan error
 	mutex       sync.Mutex
@@ -138,6 +139,7 @@ func (d *desk) config(sharerAddress string) Config {
 		Transport: transportFor(d.receiver),
 		Sharer:    trust.Peer{Name: "desk", Fingerprint: d.sharer.Fingerprint, Address: sharerAddress},
 		Replay:    d.replay,
+		Clipboard: d.clipboard,
 		OnConnect: func() {
 			d.mutex.Lock()
 			defer d.mutex.Unlock()

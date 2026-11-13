@@ -16,10 +16,30 @@ type Replay interface {
 	Close() error
 }
 
+type Connection interface {
+	Send(events ...event.Event) error
+	Close() error
+}
+
+type Clipboard interface {
+	Connected(conn Connection) (received func(frame event.Event))
+	FocusArrives()
+	FocusLeaves()
+	Lost()
+}
+
+type noClipboard struct{}
+
+func (noClipboard) Connected(Connection) func(event.Event) { return func(event.Event) {} }
+func (noClipboard) FocusArrives()                          {}
+func (noClipboard) FocusLeaves()                           {}
+func (noClipboard) Lost()                                  {}
+
 type Config struct {
 	Transport transport.Config
 	Sharer    trust.Peer
 	Replay    Replay
+	Clipboard Clipboard
 	OnConnect func()
 	OnFailure func(reason error)
 }
@@ -30,6 +50,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.OnFailure == nil {
 		c.OnFailure = func(error) {}
+	}
+	if c.Clipboard == nil {
+		c.Clipboard = noClipboard{}
 	}
 	return c
 }
@@ -51,16 +74,18 @@ func Run(ctx context.Context, config Config) error {
 
 func run(ctx context.Context, config Config, delays retryDelays) error {
 	config = config.withDefaults()
-	local := &machine{replay: config.Replay}
+	local := &machine{replay: config.Replay, clipboard: config.Clipboard}
 	err := local.receiveUntilStopped(ctx, config, delays)
 	return errors.Join(err, config.Replay.Close())
 }
 
 type machine struct {
-	replay     Replay
-	held       keystate.Tracker
-	focused    bool
-	reportOpen bool
+	replay      Replay
+	clipboard   Clipboard
+	toClipboard func(frame event.Event)
+	held        keystate.Tracker
+	focused     bool
+	reportOpen  bool
 }
 
 func (m *machine) receiveUntilStopped(ctx context.Context, config Config, delays retryDelays) error {
@@ -93,6 +118,8 @@ func (m *machine) replayFrom(ctx context.Context, conn *transport.Conn) (lost, b
 	stopWatching := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stopWatching()
 	defer conn.Close()
+	m.toClipboard = m.clipboard.Connected(conn)
+	defer m.clipboard.Lost()
 	for {
 		received, err := conn.Receive()
 		if err != nil {
@@ -111,8 +138,13 @@ func (m *machine) handle(received event.Event) error {
 	switch received.Code {
 	case event.ControlEnter:
 		m.focused = true
+		m.clipboard.FocusArrives()
 	case event.ControlLeave:
-		return m.loseFocus()
+		err := m.loseFocus()
+		m.clipboard.FocusLeaves()
+		return err
+	default:
+		m.toClipboard(received)
 	}
 	return nil
 }

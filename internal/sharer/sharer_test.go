@@ -143,6 +143,7 @@ func (c *fakeCapture) GiveBack() error {
 type fakeReceiver struct {
 	journal    *journal
 	peer       trust.Peer
+	says       chan event.Event
 	lost       chan struct{}
 	losing     sync.Once
 	shut       chan struct{}
@@ -171,8 +172,12 @@ func (r *fakeReceiver) Send(events ...event.Event) error {
 }
 
 func (r *fakeReceiver) Receive() (event.Event, error) {
-	<-r.lost
-	return event.Event{}, errConnectionLost
+	select {
+	case said := <-r.says:
+		return said, nil
+	case <-r.lost:
+		return event.Event{}, errConnectionLost
+	}
 }
 
 func (r *fakeReceiver) Close() error {
@@ -230,6 +235,7 @@ type sharing struct {
 	speed       Speed
 	sharer      *Sharer
 	onReceivers func(names []string)
+	clipboard   Clipboard
 	stop        context.CancelFunc
 	finished    chan outcome
 }
@@ -271,6 +277,9 @@ func (s *sharing) start(capture Capture) {
 	s.sharer.now = s.clock.now
 	if s.onReceivers != nil {
 		s.sharer.OnReceivers(s.onReceivers)
+	}
+	if s.clipboard != nil {
+		s.sharer.ShareClipboard(s.clipboard)
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	s.stop = stop
