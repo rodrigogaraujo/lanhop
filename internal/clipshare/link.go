@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
@@ -51,6 +52,9 @@ type link struct {
 	assembler         clipboard.Assembler
 	describedFiles    int32
 	filesDescribedYet bool
+	draggedFiles      int32
+	draggedDock       int32
+	dragDescribedYet  bool
 }
 
 func startLink(conn Conn, name string, silenceLimit time.Duration, log io.Writer) *link {
@@ -177,6 +181,24 @@ func (l *link) filesSized(kibibytes int32) (clipboard.FileCopy, bool) {
 	}
 	l.filesDescribedYet = false
 	return clipboard.FileCopy{FilesAndFolders: int(l.describedFiles), Bytes: int64(kibibytes) * 1024}, true
+}
+
+func (l *link) dragDescribed(value int32) (dragGone bool) {
+	filesAndFolders, dock := event.SplitDragFiles(value)
+	if filesAndFolders == 0 {
+		l.dragDescribedYet = false
+		return true
+	}
+	l.draggedFiles, l.draggedDock, l.dragDescribedYet = filesAndFolders, dock, true
+	return false
+}
+
+func (l *link) dragSized(kibibytes int32) (clipboard.FileCopy, edge.Side, bool) {
+	if !l.dragDescribedYet {
+		return clipboard.FileCopy{}, 0, false
+	}
+	l.dragDescribedYet = false
+	return clipboard.FileCopy{FilesAndFolders: int(l.draggedFiles), Bytes: int64(kibibytes) * 1024}, dockEdgeIn(l.draggedDock), true
 }
 
 func (l *link) close() {

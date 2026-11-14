@@ -273,7 +273,7 @@ func TestAConnectionLostInTheMiddleOfAFileLeavesNothingBehind(t *testing.T) {
 
 	done := receiveInBackground(receiving, arrivals)
 	var stream bytes.Buffer
-	writeHeader(&stream, header{filesAndFolders: 2, bytes: 1000})
+	writeHeader(&stream, formatVersion, header{filesAndFolders: 2, bytes: 1000})
 	writeEntryStart(&stream, entryStart{kind: folderEntry, name: "report"})
 	writeEntryStart(&stream, entryStart{kind: fileEntry, name: "report/big.bin", size: 1000})
 	stream.Write(make([]byte, 400))

@@ -19,25 +19,37 @@ type dataHalf struct {
 }
 
 type centralTransfer struct {
-	id      int
-	from    *link
-	to      *link
-	paths   []string
-	arrival *arrival.Arrival
-	written bool
-	ctx     context.Context
-	cancel  context.CancelCauseFunc
+	id           int
+	from         *link
+	to           *link
+	drop         bool
+	run          *dropRun
+	refusesDrops bool
+	paths        []string
+	arrival      *arrival.Arrival
+	written      bool
+	ctx          context.Context
+	cancel       context.CancelCauseFunc
 
-	mutex    sync.Mutex
-	ended    bool
-	stopSaid bool
-	halves   []dataHalf
-	conns    []io.Closer
+	mutex         sync.Mutex
+	ended         bool
+	stopSaid      bool
+	halves        []dataHalf
+	conns         []io.Closer
+	cancelAsked   bool
+	cancelPending *link
 }
 
 func (c *Central) start(t *centralTransfer) {
 	if t.from == nil {
 		t.paths = c.ownFiles
+		if t.drop {
+			t.paths = c.dragged
+		}
+	}
+	if t.drop {
+		t.run = c.drops[t.id]
+		t.refusesDrops = !c.takesDropsOn(t.from) || !c.takesDropsOn(t.to)
 	}
 	t.ctx, t.cancel = context.WithCancelCause(c.ctx)
 	c.transfers[t.id] = t
@@ -54,6 +66,9 @@ func (c *Central) start(t *centralTransfer) {
 }
 
 func (c *Central) carry(t *centralTransfer) error {
+	if t.refusesDrops {
+		return errDropsNotTakenThere
+	}
 	switch {
 	case t.from != nil && t.to != nil:
 		to, err := c.openHalf(t, t.to, false)
@@ -71,13 +86,20 @@ func (c *Central) carry(t *centralTransfer) error {
 			return err
 		}
 		t.arrival = c.config.Arrivals.Expecting(t.id)
+		if t.drop {
+			return filestream.ReceiveDrop(t.ctx, c.watch(from), dropArrivals{arrivals: arrivals{t.arrival}, begin: c.beginDrop(t)})
+		}
 		return filestream.Receive(t.ctx, c.watch(from), arrivals{t.arrival})
 	}
 	to, err := c.openHalf(t, t.to, false)
 	if err != nil {
 		return err
 	}
-	_, err = filestream.Send(t.ctx, c.watch(to), t.paths)
+	send := filestream.Send
+	if t.drop {
+		send = filestream.SendDrop
+	}
+	_, err = send(t.ctx, c.watch(to), t.paths)
 	return err
 }
 
@@ -108,10 +130,14 @@ func (c *Central) transferDone(t *centralTransfer, err error) {
 	if err != nil {
 		delete(c.transfers, t.id)
 		t.sayStop()
-		fmt.Fprintf(c.config.Log, "%s stopped: %s\n", t.describe(), forTheLog(t.because(err)))
+		if !t.cancelWasAsked() {
+			fmt.Fprintf(c.config.Log, "%s stopped: %s\n", t.describe(), forTheLog(t.because(err)))
+		}
 		c.desk.TransferEnded(t.id)
+		c.do(c.desk.DropStopped(t.id))
 		return
 	}
+	c.keepForTheDrop(t)
 	c.do(c.desk.FilesArrived(t.id))
 	delete(c.transfers, t.id)
 	if !t.written {
@@ -169,11 +195,55 @@ func (t *centralTransfer) announce(side *link, wire int32, sideSends bool) error
 	if t.ended {
 		return errTransferStopped
 	}
-	if !side.sendFrame(event.OpenData(wire, sideSends)) {
+	opening := event.OpenData(wire, sideSends)
+	if t.drop {
+		opening = event.OpenDropData(wire, sideSends)
+	}
+	if !side.sendFrame(opening) {
 		return errConnectionClosed
 	}
 	t.halves = append(t.halves, dataHalf{side: side, wire: wire})
+	if t.cancelPending == side {
+		t.cancelPending = nil
+		side.sendFrame(event.CancelDrop(wire))
+	}
 	return nil
+}
+
+func (t *centralTransfer) cancelOn(side *link) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.cancelAsked = true
+	for _, half := range t.halves {
+		if half.side == side {
+			side.sendFrame(event.CancelDrop(half.wire))
+			return
+		}
+	}
+	t.cancelPending = side
+}
+
+func (t *centralTransfer) takenOnTheSide() {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.cancelAsked = false
+}
+
+func (t *centralTransfer) cancelWasAsked() bool {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	return t.cancelAsked
+}
+
+func (t *centralTransfer) halfOn(side *link) (dataHalf, bool) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	for _, half := range t.halves {
+		if half.side == side {
+			return half, true
+		}
+	}
+	return dataHalf{}, false
 }
 
 func (t *centralTransfer) hold(conn *transport.DataConn) bool {
@@ -233,11 +303,15 @@ func (t *centralTransfer) because(err error) error {
 }
 
 func (t *centralTransfer) describe() string {
+	what := "The file copy"
+	if t.drop {
+		what = "The dragged files"
+	}
 	switch {
 	case t.from != nil && t.to != nil:
-		return fmt.Sprintf("The file copy from %s to %s", t.from.name, t.to.name)
+		return fmt.Sprintf("%s from %s to %s", what, t.from.name, t.to.name)
 	case t.from != nil:
-		return fmt.Sprintf("The file copy from %s", t.from.name)
+		return fmt.Sprintf("%s from %s", what, t.from.name)
 	}
-	return fmt.Sprintf("The file copy to %s", t.to.name)
+	return fmt.Sprintf("%s to %s", what, t.to.name)
 }
