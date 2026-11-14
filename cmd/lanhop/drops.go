@@ -271,6 +271,9 @@ func (r *dropReplay) holdsTheDropButton() bool {
 }
 
 func (r *dropReplay) forgetTheLeftButton() {
+	if r == nil {
+		return
+	}
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.leftByPerson, r.dropHolds = false, false
