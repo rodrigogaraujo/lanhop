@@ -15,9 +15,10 @@ import (
 var nautilusTypes = []string{"application/vnd.portal.filetransfer", "application/vnd.portal.files", "text/uri-list", "x-special/gnome-icon-list"}
 
 type sourceOffer struct {
-	types  []string
-	list   string
-	silent bool
+	types         []string
+	list          string
+	silent        bool
+	refuseTargets bool
 }
 
 func filesOffer(paths ...string) sourceOffer {
@@ -274,7 +275,7 @@ func (s *xdndSource) answer(event []byte) {
 	}
 	answered := uint32(atomNone)
 	switch name := s.names[target]; {
-	case name == "TARGETS":
+	case name == "TARGETS" && !offer.refuseTargets:
 		offered := append([]string{"TARGETS", "TIMESTAMP"}, offer.types...)
 		s.writer.change(requestor, property, atomAtom, 32, s.typeAtoms(offered))
 		answered = property

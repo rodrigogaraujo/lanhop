@@ -46,7 +46,7 @@ func TestFilesThatArrivedBeforeTheReleaseAreDroppedWhereTheButtonIsReleased(t *t
 	if !wasAccepted(drag) {
 		t.Error("Accepted was not closed for a drop the target took")
 	}
-	checkMessages(t, desk.target.messages(), "XdndEnter", "XdndPosition", "XdndDrop")
+	checkMessages(t, desk.everythingTheTargetSaw(t), "XdndEnter", "XdndPosition", "XdndDrop")
 	if version, types := desk.target.entered(); version != xdndVersion || !slices.Equal(types, []uint32{desk.target.atoms["text/uri-list"]}) {
 		t.Errorf("XdndEnter carried version %d and types %v, want version %d and text/uri-list only", version, types, xdndVersion)
 	}
@@ -89,7 +89,7 @@ func TestADropBeforeTheFilesArrivedWaitsForThemWithTheMouseFree(t *testing.T) {
 	if got := desk.target.droppedList(t); got != arrivedList {
 		t.Errorf("the target received %q, want %q", got, arrivedList)
 	}
-	checkMessages(t, desk.target.messages(), "XdndEnter", "XdndPosition", "XdndDrop")
+	checkMessages(t, desk.everythingTheTargetSaw(t), "XdndEnter", "XdndPosition", "XdndDrop")
 	if at := desk.target.lastPosition(); at != [2]int{200, 200} {
 		t.Errorf("the drop went to %v, want the release point 200,200 although the cursor moved on", at)
 	}
@@ -263,7 +263,7 @@ func TestATargetThatTookTheDropAndNeverFinishesIsGivenUpAfterTheLimit(t *testing
 	if got := desk.target.droppedList(t); got != arrivedList {
 		t.Errorf("the target received %q, want %q", got, arrivedList)
 	}
-	checkMessages(t, desk.target.messages(), "XdndEnter", "XdndPosition", "XdndDrop")
+	checkMessages(t, desk.everythingTheTargetSaw(t), "XdndEnter", "XdndPosition", "XdndDrop")
 }
 
 func TestATargetThatFinishesWithoutTakingTheFilesIsReported(t *testing.T) {
@@ -315,7 +315,7 @@ func TestADropThroughAProxyWindowGoesToTheProxy(t *testing.T) {
 	if got := desk.target.droppedList(t); got != arrivedList {
 		t.Errorf("the proxy received %q, want %q", got, arrivedList)
 	}
-	checkMessages(t, desk.target.messages(), "XdndEnter", "XdndPosition", "XdndDrop")
+	checkMessages(t, desk.everythingTheTargetSaw(t), "XdndEnter", "XdndPosition", "XdndDrop")
 }
 
 func TestThePortalTypesAreRefusedAndTheAddressListIsGiven(t *testing.T) {
@@ -686,7 +686,7 @@ func TestAHeldDropWaitsForAButtonHeldOnThisMachineBeforeTakingXdndSelection(t *t
 	if got := desk.target.droppedList(t); got != arrivedList {
 		t.Errorf("the target received %q, want %q", got, arrivedList)
 	}
-	checkMessages(t, desk.target.messages(), "XdndEnter", "XdndPosition", "XdndDrop")
+	checkMessages(t, desk.everythingTheTargetSaw(t), "XdndEnter", "XdndPosition", "XdndDrop")
 }
 
 func TestAHeldDropIsGivenUpWhenAButtonStaysDownOnThisMachine(t *testing.T) {
@@ -811,4 +811,150 @@ func TestTIMESTAMPGivesTheTimeLanhopTookXdndSelection(t *testing.T) {
 	if err := waitForDrag(t, drag); err != nil {
 		t.Errorf("Wait: %v", err)
 	}
+}
+
+func TestAHeldDropOnAFramedWindowWhoseFrameMovedIsGivenUp(t *testing.T) {
+	desk := newDragDesk(t, targetBehaviour{})
+	frame := desk.frameTheTarget(t)
+	drag := desk.holdADrop(t)
+	desk.moveFrame(t, frame, 110, 90)
+
+	if err := drag.FilesArrived(arrivedPaths); err != nil {
+		t.Fatalf("FilesArrived: %v", err)
+	}
+
+	if err := waitForDrag(t, drag); !errors.Is(err, ErrDropTargetChanged) || !strings.Contains(err.Error(), "moved") {
+		t.Errorf("Wait: error = %v, want %v saying it moved", err, ErrDropTargetChanged)
+	}
+	if seen := desk.target.messages(); len(seen) != 0 {
+		t.Errorf("the target saw %v, want nothing", seen)
+	}
+}
+
+func TestCancelWhileAHeldDropWaitsForButtonsHereEndsItAtOnce(t *testing.T) {
+	desk := newDragDesk(t, targetBehaviour{})
+	desk.source.limits.buttonsUp = 8 * time.Second
+	drag := desk.holdADrop(t)
+	desk.input.press(t, 1)
+	if err := drag.FilesArrived(arrivedPaths); err != nil {
+		t.Fatalf("FilesArrived: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	cancelled := time.Now()
+	drag.Cancel()
+
+	if err := waitForDrag(t, drag); !errors.Is(err, ErrDragCancelled) {
+		t.Errorf("Wait: error = %v, want %v", err, ErrDragCancelled)
+	}
+	if waited := time.Since(cancelled); waited > 2*time.Second {
+		t.Errorf("the drag ended %v after Cancel, want at once", waited)
+	}
+	desk.input.release(t, 1)
+	if seen := desk.target.messages(); len(seen) != 0 {
+		t.Errorf("the target saw %v, want nothing", seen)
+	}
+}
+
+func TestAHeldDropWaitsForButtonThreeHeldOnThisMachine(t *testing.T) {
+	desk := newDragDesk(t, targetBehaviour{})
+	drag := desk.holdADrop(t)
+	localDrag := takeXdndSelection(t, desk.display)
+	desk.input.press(t, 3)
+
+	if err := drag.FilesArrived(arrivedPaths); err != nil {
+		t.Fatalf("FilesArrived: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if owner := dragSelectionOwner(t, desk.source); owner != localDrag {
+		t.Errorf("while button 3 was down, the drag on this machine lost XdndSelection to 0x%x", owner)
+	}
+
+	desk.input.release(t, 3)
+	if err := waitForDrag(t, drag); err != nil {
+		t.Errorf("Wait: %v", err)
+	}
+}
+
+func releaseOverTheTarget(t *testing.T, desk *dragDesk) pointerEvent {
+	t.Helper()
+	when, err := desk.source.serverTime()
+	if err != nil {
+		t.Fatalf("serverTime: %v", err)
+	}
+	return pointerEvent{button: dragButton, released: true, x: 200, y: 200, time: when}
+}
+
+func TestAReleaseTakesFilesThatArrivedJustBeforeIt(t *testing.T) {
+	desk := newDragDesk(t, targetBehaviour{})
+	run := desk.idleRun()
+	addresses, err := fileAddresses(arrivedPaths)
+	if err != nil {
+		t.Fatalf("fileAddresses: %v", err)
+	}
+	run.drag.arrived <- addressList(addresses)
+
+	_, on, err := run.release(releaseOverTheTarget(t, desk))
+
+	if err != nil || on.window != desk.target.window {
+		t.Fatalf("release = %+v, %v, want the target 0x%x", on, err, desk.target.window)
+	}
+	if string(run.list) != arrivedList {
+		t.Errorf("the release offers %q, want the files that were waiting, %q", run.list, arrivedList)
+	}
+	if owner := dragSelectionOwner(t, desk.source); owner != desk.source.window {
+		t.Errorf("XdndSelection is owned by 0x%x, want lanhop's window 0x%x", owner, desk.source.window)
+	}
+	checkMessages(t, desk.target.messagesOnceItSaw("XdndPosition"), "XdndEnter", "XdndPosition")
+	if wasAccepted(run.drag) {
+		t.Error("Accepted was closed before the target answered")
+	}
+	run.end(nil)
+}
+
+func TestNoDropIsAcceptedOrSentOnceCancelHasBeenCalled(t *testing.T) {
+	desk := newDragDesk(t, targetBehaviour{})
+	t.Run("a release before the files", func(t *testing.T) {
+		run := desk.idleRun()
+		run.drag.cancelling.Do(func() { close(run.drag.cancel) })
+
+		_, _, err := run.release(releaseOverTheTarget(t, desk))
+
+		if !errors.Is(err, ErrDragCancelled) {
+			t.Errorf("release: error = %v, want %v", err, ErrDragCancelled)
+		}
+		if wasAccepted(run.drag) {
+			t.Error("Accepted was closed after Cancel")
+		}
+		run.end(err)
+	})
+	t.Run("a drop the target already accepted", func(t *testing.T) {
+		run := desk.idleRun()
+		addresses, err := fileAddresses(arrivedPaths)
+		if err != nil {
+			t.Fatalf("fileAddresses: %v", err)
+		}
+		if err := run.offer(addressList(addresses)); err != nil {
+			t.Fatalf("offer: %v", err)
+		}
+		found, err := desk.source.dropTargetAt(200, 200)
+		if err != nil {
+			t.Fatalf("dropTargetAt: %v", err)
+		}
+		if err := run.enter(found); err != nil {
+			t.Fatalf("enter: %v", err)
+		}
+		run.drag.cancelling.Do(func() { close(run.drag.cancel) })
+
+		err = run.drop(releaseOverTheTarget(t, desk))
+		run.end(err)
+
+		if !errors.Is(err, ErrDragCancelled) {
+			t.Errorf("drop: error = %v, want %v", err, ErrDragCancelled)
+		}
+		if wasAccepted(run.drag) {
+			t.Error("Accepted was closed after Cancel")
+		}
+		checkMessages(t, desk.everythingTheTargetSaw(t), "XdndEnter", "XdndLeave")
+	})
 }
