@@ -11,6 +11,8 @@ You can run lanhop with `sudo` to try it. For daily use, give your own user the 
 
 ## The quick way: the installer
 
+To add this machine to a desk that already runs lanhop, run `lanhop add NAME` on the machine with the keyboard, and type here the installer line it prints, the one with `LANHOP_JOIN`. It installs lanhop as a side machine and joins the desk. It asks no question, apart from the password that `sudo` asks for steps 1 and 2. See [Adding a machine](../README.md#adding-a-machine). The other way is the installer line alone, which offers to pair the machine with `lanhop pair`.
+
 The [installer](../README.md#install) downloads lanhop and then does steps 1 and 2 of this page for you. It shows each command that needs `sudo` and asks before running it, and it skips a step that is already done. A machine that shares its keyboard needs only step 1, so the installer offers step 2 only on a machine that receives.
 
 It also writes the unit of [Starting lanhop with your session](#starting-lanhop-with-your-session) and offers to enable it.
@@ -85,8 +87,8 @@ systemctl --user enable --now lanhop.service
 
 - `journalctl --user -u lanhop.service -f` shows what lanhop prints.
 - `systemctl --user disable --now lanhop.service` stops it and keeps it from starting again.
-- When lanhop ends with an error, systemd starts it again after 10 seconds. So a machine that is not paired yet starts receiving by itself soon after `lanhop pair`, or, once a release brings it, after `lanhop join` with the line that [`lanhop add`](../README.md#adding-a-machine) printed.
-- The installer on `main` sets `LANHOP_SERVICE=1` in the unit. Only a lanhop started this way can follow the version of the machine with the keyboard (see [Updating](../README.md#updating)). After an update it ends with exit status 3, so that systemd starts the new version. Following does not work yet: it needs a release that carries the keys of the project.
+- When lanhop ends with an error, systemd starts it again after 10 seconds. So a machine that has not joined yet starts receiving by itself soon after `lanhop join`, with the line that [`lanhop add`](../README.md#adding-a-machine) printed, or after `lanhop pair`.
+- From v0.1.2 on, the installer sets `LANHOP_SERVICE=1` in the unit. Run `lanhop update` on the machine with the keyboard, and each side machine that its unit started follows it to the same version (see [Updating](../README.md#updating)). After an update, a side machine ends with exit status 3, so that systemd starts the new version. A unit written by the installer of 0.1.1 or older lacks the variable: type the installer line once to reach v0.1.2.
 - lanhop can read the input devices only in a session that began after step 3.
 
 `install.sh --uninstall` stops and removes the unit, the binary and, after asking, the files of step 2 when the installer wrote them. It keeps `~/.config/lanhop`, with the key of the machine and its trusted machines.
