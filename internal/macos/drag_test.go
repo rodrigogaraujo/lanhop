@@ -12,7 +12,10 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 )
 
-const watchPatience = 2 * time.Second
+const (
+	watchPatience = 2 * time.Second
+	quietWindow   = 20 * time.Millisecond
+)
 
 type dragBoard struct {
 	mu    sync.Mutex
@@ -21,6 +24,7 @@ type dragBoard struct {
 	err   error
 	held  bool
 	reads int
+	marks int
 }
 
 func newDragBoard() *dragBoard {
@@ -30,6 +34,7 @@ func newDragBoard() *dragBoard {
 func (b *dragBoard) Mark() int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.marks++
 	return b.mark
 }
 
@@ -96,12 +101,28 @@ func (b *dragBoard) readCount() int {
 	return b.reads
 }
 
+func (b *dragBoard) markCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.marks
+}
+
+func waitForPolls(t *testing.T, board *dragBoard, polls int) {
+	t.Helper()
+	until := board.markCount() + polls
+	deadline := time.Now().Add(watchPatience)
+	for board.markCount() < until {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch did not poll %d times within %v", polls, watchPatience)
+		}
+		time.Sleep(shortestDragPoll)
+	}
+}
+
 func pollTimes(tracker *dragTracker, source dragSource, times int) []DragEvent {
 	var seen []DragEvent
 	for range times {
-		if event, happened := tracker.poll(source); happened {
-			seen = append(seen, event)
-		}
+		seen = append(seen, tracker.poll(source)...)
 	}
 	return seen
 }
@@ -140,21 +161,75 @@ func TestTheEndIsReportedOnceWhenTheLeftButtonComesUp(t *testing.T) {
 	expectDragEvents(t, pollTimes(tracker, board.source(), 4), dragEnd)
 }
 
-func TestChangesDuringADragAreNotReportedOrReadAgain(t *testing.T) {
+func TestAChangeDuringADragWithTheSameFilesIsReadOnceAndReportsNothing(t *testing.T) {
 	board := newDragBoard()
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/report.pdf")
 	pollTimes(tracker, board.source(), 1)
-	reads := board.readCount()
 
 	board.holdFiles("/tmp/report.pdf")
-	board.holdFiles("/tmp/other.pdf")
 
 	expectDragEvents(t, pollTimes(tracker, board.source(), 3))
-	if got := board.readCount(); got != reads {
-		t.Errorf("the drag pasteboard was read %d more times during the drag", got-reads)
+	if got := board.readCount(); got != 2 {
+		t.Errorf("the drag pasteboard was read %d times, want 2", got)
 	}
+}
+
+func TestADropAndANewDragBetweenTwoPollsEndTheFirstDragAndStartTheSecond(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/first.pdf")
+	first := pollTimes(tracker, board.source(), 1)
+
+	board.release()
+	board.press()
+	board.holdFiles("/tmp/second.pdf")
+
+	expectDragEvents(t, append(first, pollTimes(tracker, board.source(), 3)...), startedWith("/tmp/first.pdf"), dragEnd, startedWith("/tmp/second.pdf"))
+}
+
+func TestAChangeDuringADragThatHoldsNoFilesYetEndsItAndTheNextFilesStartANewOne(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/first.pdf")
+	pollTimes(tracker, board.source(), 1)
+	board.holdNoFiles(clipboard.ErrNotFiles)
+	ending := pollTimes(tracker, board.source(), 1)
+
+	board.finishWriting("/tmp/second.pdf")
+
+	expectDragEvents(t, append(ending, pollTimes(tracker, board.source(), 1)...), dragEnd, startedWith("/tmp/second.pdf"))
+}
+
+func TestAChangeDuringADragToAPrivateCopyEndsItAndIsReadOnce(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	pollTimes(tracker, board.source(), 1)
+
+	board.holdNoFiles(clipboard.ErrPrivate)
+
+	expectDragEvents(t, pollTimes(tracker, board.source(), 6), dragEnd)
+	if got := board.readCount(); got != 2 {
+		t.Errorf("the drag pasteboard was read %d times, want 2", got)
+	}
+}
+
+func TestTheStartedPathsBelongToWhoeverReadsThem(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	started := pollTimes(tracker, board.source(), 1)
+	started[0].Paths[0] = "/tmp/changed.pdf"
+
+	board.holdFiles("/tmp/report.pdf")
+
+	expectDragEvents(t, pollTimes(tracker, board.source(), 2))
 }
 
 func TestAChangeWithoutTheLeftButtonHeldIsNotADragAndIsNotRead(t *testing.T) {
@@ -194,15 +269,15 @@ func TestFilesWrittenAfterTheChangeWasSeenStillStartTheDrag(t *testing.T) {
 	expectDragEvents(t, pollTimes(tracker, board.source(), 1), startedWith("/tmp/report.pdf"))
 }
 
-func TestADragOfSomethingOtherThanFilesIsReadOnlyAFewTimes(t *testing.T) {
+func TestADragOfSomethingOtherThanFilesIsReadFiveTimes(t *testing.T) {
 	board := newDragBoard()
 	tracker := board.tracker()
 	board.press()
 	board.holdNoFiles(clipboard.ErrNotFiles)
 
-	expectDragEvents(t, pollTimes(tracker, board.source(), 3*readsPerChange))
-	if got := board.readCount(); got != readsPerChange {
-		t.Errorf("the drag pasteboard was read %d times, want %d", got, readsPerChange)
+	expectDragEvents(t, pollTimes(tracker, board.source(), 15))
+	if got := board.readCount(); got != 5 {
+		t.Errorf("the drag pasteboard was read %d times, want 5", got)
 	}
 }
 
@@ -214,11 +289,29 @@ func TestADragOfPrivateFilesOrOfTooManyIsReadOnce(t *testing.T) {
 			board.press()
 			board.holdNoFiles(refusal)
 
-			expectDragEvents(t, pollTimes(tracker, board.source(), 3*readsPerChange))
+			expectDragEvents(t, pollTimes(tracker, board.source(), 15))
 			if got := board.readCount(); got != 1 {
 				t.Errorf("the drag pasteboard was read %d times, want once", got)
 			}
 		})
+	}
+}
+
+func TestAReleaseForgetsTheReadsLeftForAChangeWithoutFiles(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdNoFiles(clipboard.ErrNotFiles)
+	pollTimes(tracker, board.source(), 1)
+	board.release()
+	pollTimes(tracker, board.source(), 1)
+	board.finishWriting("/tmp/report.pdf")
+
+	board.press()
+
+	expectDragEvents(t, pollTimes(tracker, board.source(), 3))
+	if got := board.readCount(); got != 1 {
+		t.Errorf("the drag pasteboard was read %d times, want once", got)
 	}
 }
 
@@ -271,18 +364,37 @@ func nextDragEvent(t *testing.T, watch *DragWatch) DragEvent {
 	return DragEvent{}
 }
 
-func TestAWatchReportsADragUntilClosedAndThenClosesItsEvents(t *testing.T) {
-	board := newDragBoard()
+func expectNoDragEvent(t *testing.T, watch *DragWatch) {
+	t.Helper()
+	select {
+	case seen := <-watch.Events():
+		t.Errorf("the watch sent %+v, want nothing", seen)
+	case <-time.After(quietWindow):
+	}
+}
+
+func startWatch(t *testing.T, board *dragBoard) *DragWatch {
+	t.Helper()
 	watch, err := watchDrags(board.source(), shortestDragPoll)
 	if err != nil {
 		t.Fatalf("watchDrags: %v", err)
 	}
-	defer watch.Close()
+	t.Cleanup(func() { watch.Close() })
+	return watch
+}
+
+func TestAWatchSendsADragAndNothingElseAndClosesItsEventsWhenClosed(t *testing.T) {
+	board := newDragBoard()
+	watch := startWatch(t, board)
 	board.press()
 	board.holdFiles("/tmp/report.pdf")
 	started := nextDragEvent(t, watch)
+	waitForPolls(t, board, 5)
+	expectNoDragEvent(t, watch)
 	board.release()
 	end := nextDragEvent(t, watch)
+	waitForPolls(t, board, 5)
+	expectNoDragEvent(t, watch)
 
 	watch.Close()
 
@@ -290,11 +402,67 @@ func TestAWatchReportsADragUntilClosedAndThenClosesItsEvents(t *testing.T) {
 	select {
 	case seen, open := <-watch.Events():
 		if open {
-			t.Errorf("the closed watch still gave %+v", seen)
+			t.Errorf("the closed watch still sent %+v", seen)
 		}
-	case <-time.After(watchPatience):
-		t.Error("the events of a closed watch were not closed")
+	default:
+		t.Error("the events of the watch were not closed when Close returned")
 	}
+}
+
+func TestAWatchStartedDuringAnEarlierDragDoesNotReadIt(t *testing.T) {
+	board := newDragBoard()
+	board.press()
+	board.holdFiles("/tmp/earlier.pdf")
+	watch := startWatch(t, board)
+
+	waitForPolls(t, board, 5)
+
+	expectNoDragEvent(t, watch)
+	if got := board.readCount(); got != 0 {
+		t.Errorf("the drag pasteboard was read %d times", got)
+	}
+}
+
+func TestAResetDropsTheEventsNotYetReadAndForgetsTheDrag(t *testing.T) {
+	board := newDragBoard()
+	watch := startWatch(t, board)
+	board.press()
+	board.holdFiles("/tmp/first.pdf")
+	deadline := time.Now().Add(watchPatience)
+	for board.readCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch did not read the drag within %v", watchPatience)
+		}
+		time.Sleep(shortestDragPoll)
+	}
+
+	watch.Reset()
+	board.release()
+	waitForPolls(t, board, 5)
+	expectNoDragEvent(t, watch)
+	board.press()
+	board.holdFiles("/tmp/second.pdf")
+
+	expectDragEvents(t, []DragEvent{nextDragEvent(t, watch)}, startedWith("/tmp/second.pdf"))
+}
+
+func TestAResetLetsTheSameFilesStartAgainAtTheirNextChange(t *testing.T) {
+	board := newDragBoard()
+	watch := startWatch(t, board)
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	first := nextDragEvent(t, watch)
+	reads := board.readCount()
+
+	watch.Reset()
+	waitForPolls(t, board, 5)
+	expectNoDragEvent(t, watch)
+	if got := board.readCount(); got != reads {
+		t.Errorf("the reset watch read the drag pasteboard %d more times without a change", got-reads)
+	}
+	board.holdFiles("/tmp/report.pdf")
+
+	expectDragEvents(t, []DragEvent{first, nextDragEvent(t, watch)}, startedWith("/tmp/report.pdf"), startedWith("/tmp/report.pdf"))
 }
 
 type flickeringDrag struct {
@@ -306,28 +474,38 @@ func (f *flickeringDrag) Mark() int64 {
 }
 
 func (f *flickeringDrag) ReadFiles() ([]string, error) {
-	return []string{"/tmp/report.pdf"}, nil
+	return []string{fmt.Sprintf("/tmp/drag-%d", f.polls.Load())}, nil
 }
 
 func (f *flickeringDrag) leftHeld() bool {
 	return f.polls.Load()%2 == 1
 }
 
-func TestClosingAWatchThatNobodyReadsReturns(t *testing.T) {
+const marksWhenTheQueueIsFull = 1 + 1 + dragEventQueue
+
+func watchThatNobodyReads(t *testing.T) (*flickeringDrag, *DragWatch) {
+	t.Helper()
 	flicker := &flickeringDrag{}
 	watch, err := watchDrags(dragSource{board: flicker, leftHeld: flicker.leftHeld}, shortestDragPoll)
 	if err != nil {
 		t.Fatalf("watchDrags: %v", err)
 	}
-	full := time.Now().Add(watchPatience)
-	for len(watch.events) < dragEventQueue {
-		if time.Now().After(full) {
-			t.Fatalf("the queue of the watch holds %d events, want %d", len(watch.events), dragEventQueue)
+	t.Cleanup(func() { watch.Close() })
+	deadline := time.Now().Add(watchPatience)
+	for flicker.polls.Load() < marksWhenTheQueueIsFull {
+		if time.Now().After(deadline) {
+			t.Fatalf("the watch polled %d times, want %d", flicker.polls.Load(), marksWhenTheQueueIsFull)
 		}
 		time.Sleep(shortestDragPoll)
 	}
+	time.Sleep(quietWindow)
+	return flicker, watch
+}
 
+func TestClosingAWatchWithAFullQueueThatNobodyReadsReturns(t *testing.T) {
+	_, watch := watchThatNobodyReads(t)
 	closed := make(chan struct{})
+
 	go func() {
 		watch.Close()
 		close(closed)
@@ -337,6 +515,83 @@ func TestClosingAWatchThatNobodyReadsReturns(t *testing.T) {
 	case <-closed:
 	case <-time.After(watchPatience):
 		t.Fatalf("Close did not return within %v while nobody read the events", watchPatience)
+	}
+}
+
+func TestAWatchThatNobodyReadsLosesNoEvent(t *testing.T) {
+	_, watch := watchThatNobodyReads(t)
+	var got []DragEvent
+
+	for range 12 {
+		got = append(got, nextDragEvent(t, watch))
+	}
+
+	var want []DragEvent
+	for started := 3; len(want) < 12; started += 2 {
+		want = append(want, startedWith(fmt.Sprintf("/tmp/drag-%d", started)), dragEnd)
+	}
+	expectDragEvents(t, got, want...)
+}
+
+type slowDragBoard struct {
+	marks    atomic.Int64
+	polling  atomic.Int64
+	entered  chan struct{}
+	duration time.Duration
+}
+
+func (s *slowDragBoard) Mark() int64 {
+	if s.marks.Add(1) == 1 {
+		return 0
+	}
+	s.polling.Add(1)
+	defer s.polling.Add(-1)
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	time.Sleep(s.duration)
+	return 0
+}
+
+func (s *slowDragBoard) ReadFiles() ([]string, error) {
+	return nil, clipboard.ErrNotFiles
+}
+
+func TestCloseReturnsOnlyOnceTheWatchHasStoppedPolling(t *testing.T) {
+	slow := &slowDragBoard{entered: make(chan struct{}, 1), duration: 30 * time.Millisecond}
+	watch, err := watchDrags(dragSource{board: slow, leftHeld: func() bool { return false }}, shortestDragPoll)
+	if err != nil {
+		t.Fatalf("watchDrags: %v", err)
+	}
+	select {
+	case <-slow.entered:
+	case <-time.After(watchPatience):
+		t.Fatalf("the watch did not poll within %v", watchPatience)
+	}
+
+	watch.Close()
+
+	if polling := slow.polling.Load(); polling != 0 {
+		t.Errorf("Close returned while %d polls were still running", polling)
+	}
+	select {
+	case _, open := <-watch.Events():
+		if open {
+			t.Error("the closed watch still sent an event")
+		}
+	default:
+		t.Error("the events of the watch were not closed when Close returned")
+	}
+	reset := make(chan struct{})
+	go func() {
+		watch.Reset()
+		close(reset)
+	}()
+	select {
+	case <-reset:
+	case <-time.After(watchPatience):
+		t.Errorf("Reset of a closed watch did not return within %v", watchPatience)
 	}
 }
 
@@ -391,6 +646,15 @@ func postingAllowed() bool {
 	return true
 }
 
+func endingAt(at Point) []any {
+	return []any{
+		KeyPress{Code: 0x35, Down: true},
+		KeyPress{Code: 0x35},
+		20 * time.Millisecond,
+		MouseEvent{Action: MouseUp, At: at, Button: 0, Clicks: 1},
+	}
+}
+
 func TestEndingASourceDragPostsEscapeThenALeftMouseUpWhereTheCursorIsAfterTheGap(t *testing.T) {
 	screen := &endingScreen{held: true, cursor: Point{X: 501, Y: 165}, cursorLater: Point{X: 503, Y: 166}}
 
@@ -399,13 +663,7 @@ func TestEndingASourceDragPostsEscapeThenALeftMouseUpWhereTheCursorIsAfterTheGap
 	if err != nil {
 		t.Fatalf("endSourceDrag: %v", err)
 	}
-	want := []any{
-		KeyPress{Code: 0x35, Down: true},
-		KeyPress{Code: 0x35},
-		20 * time.Millisecond,
-		MouseEvent{Action: MouseUp, At: Point{X: 503, Y: 166}, Button: 0, Clicks: 1},
-	}
-	if !slices.Equal(screen.did, want) {
+	if want := endingAt(Point{X: 503, Y: 166}); !slices.Equal(screen.did, want) {
 		t.Errorf("did %+v, want %+v", screen.did, want)
 	}
 }
@@ -427,5 +685,85 @@ func TestNothingIsPostedToEndADragWithoutThePermissionToPost(t *testing.T) {
 
 	if !errors.Is(err, ErrCannotEndDrag) || len(screen.did) != 0 {
 		t.Errorf("endSourceDrag = %v after %+v, want %v and nothing posted", err, screen.did, ErrCannotEndDrag)
+	}
+}
+
+type sharedEndingScreen struct {
+	mu     sync.Mutex
+	did    []any
+	pauses int
+	paused chan struct{}
+	resume chan struct{}
+}
+
+func (s *sharedEndingScreen) ButtonDown(int) bool {
+	return true
+}
+
+func (s *sharedEndingScreen) Cursor() Point {
+	return Point{X: 501, Y: 165}
+}
+
+func (s *sharedEndingScreen) PostKey(key KeyPress) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.did = append(s.did, key)
+}
+
+func (s *sharedEndingScreen) PostMouse(mouse MouseEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.did = append(s.did, mouse)
+}
+
+func (s *sharedEndingScreen) pause(gap time.Duration) {
+	s.mu.Lock()
+	s.did = append(s.did, gap)
+	s.pauses++
+	first := s.pauses == 1
+	s.mu.Unlock()
+	if first {
+		close(s.paused)
+		<-s.resume
+	}
+}
+
+func (s *sharedEndingScreen) posted() []any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.did)
+}
+
+func TestTwoEndsOfASourceDragDoNotInterleave(t *testing.T) {
+	screen := &sharedEndingScreen{paused: make(chan struct{}), resume: make(chan struct{})}
+	ends := make(chan error, 2)
+	go func() { ends <- endSourceDrag(screen, postingAllowed, screen.pause) }()
+	select {
+	case <-screen.paused:
+	case <-time.After(watchPatience):
+		t.Fatalf("the first end did not reach its gap within %v", watchPatience)
+	}
+
+	go func() { ends <- endSourceDrag(screen, postingAllowed, screen.pause) }()
+	time.Sleep(50 * time.Millisecond)
+	during := screen.posted()
+	close(screen.resume)
+
+	for range 2 {
+		select {
+		case err := <-ends:
+			if err != nil {
+				t.Errorf("endSourceDrag: %v", err)
+			}
+		case <-time.After(watchPatience):
+			t.Fatalf("an end did not return within %v", watchPatience)
+		}
+	}
+	if len(during) != 3 {
+		t.Errorf("while the first end waited, %+v was posted, want only its Escape and its gap", during)
+	}
+	at := Point{X: 501, Y: 165}
+	if want := append(endingAt(at), endingAt(at)...); !slices.Equal(screen.posted(), want) {
+		t.Errorf("posted %+v, want %+v", screen.posted(), want)
 	}
 }

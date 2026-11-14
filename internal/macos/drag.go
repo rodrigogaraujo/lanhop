@@ -3,6 +3,7 @@ package macos
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -52,43 +53,58 @@ type dragSource struct {
 type dragTracker struct {
 	mark      int64
 	dragging  bool
+	paths     []string
 	readsLeft int
 }
 
-func (d *dragTracker) poll(source dragSource) (DragEvent, bool) {
+func (d *dragTracker) poll(source dragSource) []DragEvent {
 	mark := source.board.Mark()
 	held := source.leftHeld()
 	changed := mark != d.mark
 	d.mark = mark
-	switch {
-	case d.dragging && held:
-		return DragEvent{}, false
-	case d.dragging:
-		d.dragging, d.readsLeft = false, 0
-		return DragEvent{Kind: DragEnded}, true
-	case !held:
+	if !held {
 		d.readsLeft = 0
-		return DragEvent{}, false
-	case changed:
+		if !d.dragging {
+			return nil
+		}
+		d.dragging, d.paths = false, nil
+		return []DragEvent{{Kind: DragEnded}}
+	}
+	if changed {
 		d.readsLeft = readsPerChange
 	}
 	if d.readsLeft == 0 {
-		return DragEvent{}, false
+		return nil
 	}
 	d.readsLeft--
 	paths, err := source.board.ReadFiles()
+	var seen []DragEvent
+	if d.dragging && (err != nil || !slices.Equal(paths, d.paths)) {
+		d.dragging, d.paths = false, nil
+		seen = append(seen, DragEvent{Kind: DragEnded})
+	}
 	switch {
 	case err == nil:
-		d.dragging, d.readsLeft = true, 0
-		return DragEvent{Kind: DragStarted, Paths: paths}, true
+		d.readsLeft = 0
+		if !d.dragging {
+			d.dragging, d.paths = true, paths
+			seen = append(seen, DragEvent{Kind: DragStarted, Paths: slices.Clone(paths)})
+		}
 	case !errors.Is(err, clipboard.ErrNotFiles):
 		d.readsLeft = 0
 	}
-	return DragEvent{}, false
+	return seen
+}
+
+func (d *dragTracker) reset(mark int64) {
+	*d = dragTracker{mark: mark}
 }
 
 type DragWatch struct {
+	source  dragSource
+	tracker dragTracker
 	events  chan DragEvent
+	resets  chan struct{}
 	stop    chan struct{}
 	stopped chan struct{}
 	closing sync.Once
@@ -99,40 +115,54 @@ func watchDrags(source dragSource, interval time.Duration) (*DragWatch, error) {
 		return nil, fmt.Errorf("%w: %v", ErrDragPollInterval, interval)
 	}
 	watch := &DragWatch{
-		events:  make(chan DragEvent, dragEventQueue),
+		source:  source,
+		tracker: dragTracker{mark: source.board.Mark()},
+		events:  make(chan DragEvent),
+		resets:  make(chan struct{}),
 		stop:    make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
-	tracker := &dragTracker{mark: source.board.Mark()}
-	go watch.run(source, tracker, interval)
+	go watch.run(interval)
 	return watch, nil
 }
 
-func (w *DragWatch) run(source dragSource, tracker *dragTracker, interval time.Duration) {
+func (w *DragWatch) run(interval time.Duration) {
 	defer close(w.stopped)
 	defer close(w.events)
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
+	var pending []DragEvent
 	for {
+		var send chan<- DragEvent
+		var next DragEvent
+		if len(pending) > 0 {
+			send, next = w.events, pending[0]
+		}
 		select {
 		case <-w.stop:
 			return
+		case <-w.resets:
+			pending = nil
+			w.tracker.reset(w.source.board.Mark())
+		case send <- next:
+			pending = pending[1:]
 		case <-tick.C:
-		}
-		seen, happened := tracker.poll(source)
-		if !happened {
-			continue
-		}
-		select {
-		case w.events <- seen:
-		case <-w.stop:
-			return
+			if len(pending) < dragEventQueue {
+				pending = append(pending, w.tracker.poll(w.source)...)
+			}
 		}
 	}
 }
 
 func (w *DragWatch) Events() <-chan DragEvent {
 	return w.events
+}
+
+func (w *DragWatch) Reset() {
+	select {
+	case w.resets <- struct{}{}:
+	case <-w.stopped:
+	}
 }
 
 func (w *DragWatch) Close() error {

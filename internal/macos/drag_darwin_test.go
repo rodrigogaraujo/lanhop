@@ -107,7 +107,8 @@ func TestAWatchOfTheSystemDragPasteboardStartsAndStops(t *testing.T) {
 
 	for range watch.Events() {
 	}
-	if _, err := WatchDrags(0); err == nil {
+	if refused, err := WatchDrags(0); err == nil {
+		refused.Close()
 		t.Error("WatchDrags with no interval was accepted")
 	}
 }
