@@ -631,7 +631,11 @@ func TestAWaitingMachineThatNowNeedsTheInstallerIsNamedSo(t *testing.T) {
 }
 
 func TestTheReleaseBuildSetsTheVariablesThatHoldTheVersions(t *testing.T) {
-	workflow, err := os.ReadFile("../../.github/workflows/release.yml")
+	_, thisFile, _, found := runtime.Caller(0)
+	if !found {
+		t.Fatal("the test does not know where its source file is")
+	}
+	workflow, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "..", "..", ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
