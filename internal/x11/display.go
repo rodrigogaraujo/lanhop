@@ -4,11 +4,13 @@ package x11
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -30,6 +32,40 @@ var (
 type display struct {
 	number string
 	socket string
+}
+
+func openSession[T any](open func(display, []byte) (T, error)) (T, error) {
+	if value := os.Getenv("DISPLAY"); value != "" {
+		return openNamedWith(open, value, authorityFile())
+	}
+	asking, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+	if output, err := exec.CommandContext(asking, "systemctl", "--user", "show-environment").Output(); err == nil {
+		if value, authority := sessionEnvironment(output); value != "" {
+			if opened, err := openNamedWith(open, value, authority); err == nil {
+				return opened, nil
+			}
+		}
+	}
+	var failures []error
+	for _, d := range displaysOnThisMachine(socketDirectory, 0, uint32(os.Getuid())) {
+		opened, err := open(d, cookieFromFile(d.number, authorityFile()))
+		if err == nil {
+			return opened, nil
+		}
+		failures = append(failures, err)
+	}
+	var none T
+	return none, errors.Join(append([]error{ErrNoDisplay}, failures...)...)
+}
+
+func openNamedWith[T any](open func(display, []byte) (T, error), value, authority string) (T, error) {
+	d, err := parseDisplay(value)
+	if err != nil {
+		var none T
+		return none, err
+	}
+	return open(d, cookieFromFile(d.number, authority))
 }
 
 func parseDisplay(value string) (display, error) {
