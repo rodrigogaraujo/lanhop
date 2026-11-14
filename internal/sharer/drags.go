@@ -132,16 +132,28 @@ func (s *Sharer) armForTheDrag(watcher *edge.Watcher) {
 	watcher.DragStarted(s.docks[s.nameOfFocused()])
 }
 
-func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func() error) error {
-	if !dragging || s.dragHere() == nil || s.onDragCrossing == nil {
+type leaving int
+
+const (
+	releasingEverything leaving = iota
+	leavingTheButtonToTheOrigin
+)
+
+func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func(how leaving) error) error {
+	if !dragging {
 		s.endDrag()
-		return move()
+		return move(releasingEverything)
+	}
+	if s.dragHere() == nil || s.onDragCrossing == nil {
+		return nil
 	}
 	crossing := DragCrossing{Origin: s.drag.Origin, From: from, To: to, Files: s.drag.Files, Button: event.ButtonLeft}
 	s.onDragCrossing(crossing)
-	s.originEndsItsDrag = s.focused != nil && s.focused == s.drag.origin
-	err := move()
-	s.originEndsItsDrag = false
+	how := releasingEverything
+	if s.focused != nil && s.focused == s.drag.origin {
+		how = leavingTheButtonToTheOrigin
+	}
+	err := move(how)
 	if err != nil || s.drag == nil || s.focused != onto {
 		s.endDrag()
 		return err
@@ -156,9 +168,9 @@ func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func(
 	return nil
 }
 
-func (s *Sharer) farewellReleases() []event.Event {
+func (s *Sharer) farewellReleases(how leaving) []event.Event {
 	releases := s.heldOnFocused.ReleaseAll()
-	if !s.originEndsItsDrag {
+	if how != leavingTheButtonToTheOrigin {
 		return releases
 	}
 	return slices.DeleteFunc(releases, func(release event.Event) bool {

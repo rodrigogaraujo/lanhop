@@ -227,7 +227,7 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 		if crossing.Dragging && !s.dragMayEnter(neighbour, s.announcedHere()) {
 			return nil
 		}
-		return s.crossOver(crossing.Dragging, from, neighbour, nil, func() error { return s.comeBack(arrival) })
+		return s.crossOver(crossing.Dragging, from, neighbour, nil, func(how leaving) error { return s.comeBack(arrival, how) })
 	}
 	receiver, connected := s.receiverNamed(neighbour)
 	if !connected || s.wouldLeaveAKeyHeldHere(crossing.Dragging) {
@@ -236,7 +236,7 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 	if crossing.Dragging && !s.dragMayEnter(neighbour, s.announced[receiver]) {
 		return nil
 	}
-	return s.crossOver(crossing.Dragging, from, neighbour, receiver, func() error { return s.enter(receiver, arrival) })
+	return s.crossOver(crossing.Dragging, from, neighbour, receiver, func(how leaving) error { return s.enter(receiver, arrival, how) })
 }
 
 func (s *Sharer) focusedIsANamesakeOfThisMachine() bool {
@@ -259,11 +259,11 @@ func (s *Sharer) receiverNamed(name string) (Conn, bool) {
 	return nil, false
 }
 
-func (s *Sharer) comeBack(arrival arrival) error {
+func (s *Sharer) comeBack(arrival arrival, how leaving) error {
 	if s.focused == nil {
 		return nil
 	}
-	s.bringFocusBack()
+	s.bringFocusBack(how)
 	if err := s.giveBack(); err != nil {
 		return err
 	}

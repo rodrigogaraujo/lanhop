@@ -136,7 +136,6 @@ type Sharer struct {
 	onDragEnded        func(Drag)
 	onBlockedDrag      func(BlockedDrag)
 	onDragUnblocked    func(BlockedDrag)
-	originEndsItsDrag  bool
 }
 
 func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges EdgeSwitching) *Sharer {
@@ -190,7 +189,7 @@ func (s *Sharer) Run(ctx context.Context) (err error) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.bringFocusBack()
+			s.bringFocusBack(releasingEverything)
 			return nil
 		case captured, capturing := <-s.capture.Events():
 			if !capturing {
@@ -282,12 +281,12 @@ func (s *Sharer) switchTo(target int) error {
 		return nil
 	}
 	s.endDrag()
-	return s.enter(receiver, atTheCentre)
+	return s.enter(receiver, atTheCentre, releasingEverything)
 }
 
-func (s *Sharer) enter(receiver Conn, arrival arrival) error {
+func (s *Sharer) enter(receiver Conn, arrival arrival, how leaving) error {
 	if s.focused != nil {
-		s.leaveFocused()
+		s.leaveFocused(how)
 	} else if err := s.capture.Take(); err != nil {
 		return fmt.Errorf("sharer: cannot take the keyboard and mouse away from this machine: %w", err)
 	}
@@ -321,25 +320,25 @@ func (s *Sharer) focusOnSharer() error {
 		return nil
 	}
 	s.endDrag()
-	s.bringFocusBack()
+	s.bringFocusBack(releasingEverything)
 	return s.giveBack()
 }
 
-func (s *Sharer) bringFocusBack() {
+func (s *Sharer) bringFocusBack(how leaving) {
 	if s.focused == nil {
 		return
 	}
-	s.leaveFocused()
+	s.leaveFocused(how)
 	s.clipboard.FocusArrives(nil)
 }
 
-func (s *Sharer) leaveFocused() {
+func (s *Sharer) leaveFocused(how leaving) {
 	left := s.focused
 	if left == nil {
 		return
 	}
 	farewell := s.unsent
-	if releases := s.farewellReleases(); releases != nil {
+	if releases := s.farewellReleases(how); releases != nil {
 		farewell = append(farewell, releases...)
 	} else if len(farewell) > 0 {
 		farewell = append(farewell, event.Sync())

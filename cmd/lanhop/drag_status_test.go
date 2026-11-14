@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
@@ -78,6 +79,52 @@ func TestTheDeskStatusForgetsAMachineOnceADraggedFileCanReachItAgain(t *testing.
 	}
 	if !slices.Equal(read.DragCannotReach, []string{"tablet"}) || len(read.DragFilesOff) != 0 {
 		t.Errorf("status %+v, want only tablet out of reach of a dragged file", read)
+	}
+}
+
+type noticesOfASharer struct {
+	blocked   func(sharer.BlockedDrag)
+	unblocked func(sharer.BlockedDrag)
+}
+
+func (n *noticesOfASharer) OnBlockedDrag(blocked func(sharer.BlockedDrag)) { n.blocked = blocked }
+func (n *noticesOfASharer) OnDragUnblocked(unblocked func(sharer.BlockedDrag)) {
+	n.unblocked = unblocked
+}
+
+func TestShareWiresBothTheNoticesOfBlockedDragsAndTheirTakingBack(t *testing.T) {
+	directory := useConfigDirectory(t)
+	report := newDeskStatus(openStatus(), time.Now, nil)
+	var log bytes.Buffer
+	machine := &noticesOfASharer{}
+
+	reportBlockedDrags(machine, report, &log)
+	if machine.blocked == nil || machine.unblocked == nil {
+		t.Fatalf("share left a notice of the sharer unwired: blocked %v, taken back %v", machine.blocked != nil, machine.unblocked != nil)
+	}
+	machine.blocked(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
+	machine.blocked(sharer.BlockedDrag{Machine: "tablet", Block: sharer.FilesOffThere})
+	machine.unblocked(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
+
+	read, err := status.Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.DragCannotReach) != 0 || !slices.Equal(read.DragFilesOff, []string{"tablet"}) {
+		t.Errorf("status %+v, want only file sharing off on tablet", read)
+	}
+	if want := dragCannotReachLaptop + "\n" + filesOffOnTablet + "\n"; log.String() != want {
+		t.Errorf("the log reads %q, want %q", log.String(), want)
+	}
+}
+
+func TestOnlyALinuxCentralKeepsItsFileDragsHere(t *testing.T) {
+	announced := new(features.Set)
+	for system, stay := range map[string]bool{"linux": true, "darwin": false, "windows": false} {
+		edges := edgesOfTheCentral("me", nil, announced, system)
+		if edges.DragsStayHere != stay || edges.Features != announced || edges.Name != "me" {
+			t.Errorf("on %s the central edges are %+v, want its drags kept here %v, with its own features", system, edges, stay)
+		}
 	}
 }
 
