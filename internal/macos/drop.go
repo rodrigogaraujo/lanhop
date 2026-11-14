@@ -153,16 +153,34 @@ type dragScreen interface {
 }
 
 type heldDown struct {
-	mu     sync.Mutex
-	screen dragScreen
-	home   Point
-	at     Point
-	down   bool
-	moved  bool
+	mu          sync.Mutex
+	screen      dragScreen
+	home        Point
+	at          Point
+	down        bool
+	moved       bool
+	personHolds bool
 }
 
 func newHeldDown(screen dragScreen, home Point) *heldDown {
 	return &heldDown{screen: screen, home: home, at: home}
+}
+
+func newHeldDownByThePerson(screen dragScreen) *heldDown {
+	return &heldDown{screen: screen, personHolds: true}
+}
+
+func (h *heldDown) pressAt(at Point) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.home, h.at, h.down = at, at, true
+	h.screen.PostMouse(MouseEvent{Action: MouseDown, At: at, Clicks: 1})
+}
+
+func (h *heldDown) postUp(at Point) {
+	if !h.personHolds {
+		h.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Clicks: 1})
+	}
 }
 
 func (h *heldDown) press() {
@@ -199,10 +217,10 @@ func (h *heldDown) releaseAtHome() bool {
 	if !h.down {
 		return false
 	}
-	if h.moved {
+	if h.moved && !h.personHolds {
 		h.postDrag(h.screen.Cursor(), h.home)
 	}
-	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: h.home, Clicks: 1})
+	h.postUp(h.home)
 	h.down = false
 	return true
 }
@@ -217,7 +235,7 @@ func (h *heldDown) releaseAt(at Point) bool {
 	if !h.down {
 		return false
 	}
-	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Clicks: 1})
+	h.postUp(at)
 	h.down = false
 	return true
 }
@@ -242,7 +260,7 @@ func (h *heldDown) releaseWithADragAt(at Point, escapeFirst bool) bool {
 		time.Sleep(escapeBeforeRelease)
 	}
 	h.screen.PostMouse(MouseEvent{Action: MouseDragged, At: at, Clicks: 1})
-	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Clicks: 1})
+	h.postUp(at)
 	h.at = at
 	h.down = false
 	return true
@@ -296,6 +314,8 @@ type dragTiming struct {
 	beginLimit time.Duration
 }
 
+const startUnderTheCursorLimit = 1500 * time.Millisecond
+
 var timingOfTheProbe = dragTiming{
 	showLimit:  time.Second,
 	showPoll:   10 * time.Millisecond,
@@ -343,6 +363,65 @@ func (s dragStart) run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+type cursorFollower interface {
+	takeTheMouseAt(at Point) (bool, error)
+}
+
+type startUnderTheCursor struct {
+	button   *heldDown
+	window   cursorFollower
+	cursor   func() Point
+	plan     func(at Point) dragPlan
+	downSeen <-chan struct{}
+	began    <-chan struct{}
+	timing   dragTiming
+	limit    time.Duration
+}
+
+func (s startUnderTheCursor) run(ctx context.Context) error {
+	bounded, stop := context.WithTimeout(ctx, s.limit)
+	defer stop()
+	at, err := s.followTheCursor(bounded)
+	if err != nil {
+		return err
+	}
+	s.button.pressAt(at)
+	if err := waitFor(bounded, s.downSeen, s.timing.downLimit, ErrDownNotSeen); err != nil {
+		s.button.releaseAtHome()
+		return err
+	}
+	pause := s.timing.firstStep
+	for _, step := range s.plan(at).steps {
+		if err := sleepUnlessDone(bounded, pause); err != nil {
+			s.button.releaseAtHome()
+			return err
+		}
+		s.button.drag(step)
+		pause = s.timing.nextStep
+	}
+	if err := waitFor(bounded, s.began, s.timing.beginLimit, ErrDragDidNotBegin); err != nil {
+		s.button.releaseAtHome()
+		return err
+	}
+	return nil
+}
+
+func (s startUnderTheCursor) followTheCursor(ctx context.Context) (Point, error) {
+	for {
+		at := s.cursor()
+		taken, err := s.window.takeTheMouseAt(at)
+		if taken && err == nil {
+			return at, nil
+		}
+		if sleepUnlessDone(ctx, s.timing.showPoll) != nil {
+			if err != nil {
+				return Point{}, fmt.Errorf("%w: %v", ErrDropWindowMissed, err)
+			}
+			return Point{}, ErrDropWindowMissed
+		}
+	}
 }
 
 func (s dragStart) waitForTheWindow(ctx context.Context) error {
