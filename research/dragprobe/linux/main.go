@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -24,9 +25,13 @@ const (
 	keyEscape         uint16 = 1
 	virtualDeviceName        = "lanhop drag probe"
 	longestGap               = time.Second
+	longestWait              = 10 * time.Second
+	longestTimeout           = 10 * time.Minute
+	longestAfter             = 30 * time.Second
+	widestEdge               = 400
 )
 
-const usage = `usage: lanhop-dragprobe <watch|drop|cancel|grab> [flags]
+const usage = `usage: lanhop-dragprobe <watch|drop|cancel|grab|edge|release-real> [flags]
 
   watch            print every change of the XdndSelection owner and what it offers
   drop <file>      act as an XDND source and drop <file> where button 1 is released,
@@ -34,6 +39,11 @@ const usage = `usage: lanhop-dragprobe <watch|drop|cancel|grab> [flags]
   cancel           when a drag starts, send Escape and a left button release through uinput,
                    only if X still reports button 1 held at that moment
   grab             grab the pointer and move it through uinput, printing the cursor before and after
+  edge             put an XDND drop target of lanhop on a strip along one screen edge
+                   (-edge right, -width 40) that accepts every drop with XdndActionCopy
+  release-real     when a drag starts, write one left button release into the event node
+                   of the physical mouse that holds the button, only if X still reports
+                   button 1 held; -with-edge also puts up the edge strip
 
 Every subcommand takes -display (default: $DISPLAY).`
 
@@ -56,6 +66,9 @@ type command struct {
 	dx, dy     int
 	settle     time.Duration
 	baseline   bool
+	edge       string
+	width      int
+	withEdge   bool
 }
 
 func parse(args []string) (command, error) {
@@ -89,6 +102,18 @@ func parse(args []string) (command, error) {
 		set.DurationVar(&c.ready, "ready", time.Second, "")
 		set.DurationVar(&c.settle, "settle", 300*time.Millisecond, "")
 		set.BoolVar(&c.baseline, "baseline", true, "")
+	case "edge":
+		set.StringVar(&c.edge, "edge", "right", "")
+		set.IntVar(&c.width, "width", 40, "")
+		set.DurationVar(&c.timeout, "timeout", 2*time.Minute, "")
+		set.DurationVar(&c.after, "after", 3*time.Second, "")
+	case "release-real":
+		set.DurationVar(&c.wait, "wait", 2*time.Second, "")
+		set.DurationVar(&c.timeout, "timeout", 2*time.Minute, "")
+		set.DurationVar(&c.after, "after", 3*time.Second, "")
+		set.BoolVar(&c.withEdge, "with-edge", false, "")
+		set.StringVar(&c.edge, "edge", "right", "")
+		set.IntVar(&c.width, "width", 40, "")
 	default:
 		return c, fmt.Errorf("unknown subcommand %q\n\n%s", c.name, usage)
 	}
@@ -111,7 +136,26 @@ func parse(args []string) (command, error) {
 	if c.gap < 0 || c.gap > longestGap {
 		return c, fmt.Errorf("-gap must be between 0 and %v", longestGap)
 	}
+	if c.name == "edge" || c.name == "release-real" {
+		return c, checkEdgeAndWaits(c)
+	}
 	return c, nil
+}
+
+func checkEdgeAndWaits(c command) error {
+	switch {
+	case !slices.Contains([]string{"left", "right", "top", "bottom"}, c.edge):
+		return fmt.Errorf("-edge must be left, right, top or bottom, not %q", c.edge)
+	case c.width < 1 || c.width > widestEdge:
+		return fmt.Errorf("-width must be between 1 and %d pixels", widestEdge)
+	case c.timeout <= 0 || c.timeout > longestTimeout:
+		return fmt.Errorf("-timeout must be above 0 and at most %v", longestTimeout)
+	case c.after < 0 || c.after > longestAfter:
+		return fmt.Errorf("-after must be between 0 and %v", longestAfter)
+	case c.name == "release-real" && (c.wait <= 0 || c.wait > longestWait):
+		return fmt.Errorf("-wait must be above 0 and at most %v", longestWait)
+	}
+	return nil
 }
 
 func main() {
@@ -144,6 +188,10 @@ func run(ctx context.Context, c command, p *cli.Printer) error {
 		return drop(ctx, c, drags, p)
 	case "cancel":
 		return endDrag(ctx, c, drags, p)
+	case "edge":
+		return dropOnEdge(ctx, c, drags, p)
+	case "release-real":
+		return releaseReal(ctx, c, drags, p)
 	default:
 		return measureGrab(ctx, c, drags, p)
 	}
@@ -301,32 +349,48 @@ func endDrag(ctx context.Context, c command, drags *x11.Drags, p *cli.Printer) e
 	if err != nil {
 		return err
 	}
-	return observe(ctx, drags, c.after, p)
+	p.Say("release the real button when you like and check that nothing was dropped")
+	_, err = observe(ctx, drags, c.after, nil, p)
+	return err
 }
 
-func observe(ctx context.Context, drags *x11.Drags, period time.Duration, p *cli.Printer) error {
-	p.Say("watching the owner and the buttons for %v; release the real button when you like and check that nothing was dropped", period)
+func observe(ctx context.Context, drags *x11.Drags, period time.Duration, drops <-chan edgeResult, p *cli.Printer) (bool, error) {
+	p.Say("watching the XdndSelection owner and the buttons for %v", period)
+	start := time.Now()
 	last := ""
+	dropped := false
 	deadline := time.After(period)
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case change := <-drags.OwnerChanges():
-			p.Say("XdndSelection: %s, owner 0x%x", change.Reason, change.Owner)
+			p.Say("XdndSelection: %s, owner 0x%x (%.1f ms)", change.Reason, change.Owner, millis(time.Since(start)))
+		case got := <-drops:
+			drops = nil
+			if got.err == nil {
+				dropped = true
+				describeEdgeDrop(got.drop, p)
+				reportFiles(got.drop.URIList, p)
+			}
 		case <-tick.C:
 			if line := pointerLine(drags); line != last {
-				p.Say("%s", line)
+				p.Say("%s (%.1f ms)", line, millis(time.Since(start)))
 				last = line
 			}
 		case <-deadline:
+			p.Say("after %v: %s", period, pointerLine(drags))
 			describeOwner(drags, p)
-			return nil
+			return dropped, nil
 		case <-ctx.Done():
 			p.Say("stopped")
-			return nil
+			return dropped, nil
 		}
 	}
+}
+
+func millis(d time.Duration) float64 {
+	return d.Seconds() * 1000
 }
 
 func measureGrab(ctx context.Context, c command, drags *x11.Drags, p *cli.Printer) error {

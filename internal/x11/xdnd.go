@@ -335,15 +335,19 @@ func (d *Drags) AtomName(atom uint32) string {
 }
 
 func (d *Drags) convert(target uint32) ([]byte, error) {
+	return d.convertAt(target, currentTime, d.answerWait)
+}
+
+func (d *Drags) convertAt(target, when uint32, wait time.Duration) ([]byte, error) {
 	drain(d.notifies)
 	if err := d.c.send(newRequest(opDeleteProperty, 0).u32(d.window).u32(d.atoms.property).done()); err != nil {
 		return nil, err
 	}
-	request := newRequest(opConvertSelection, 0).u32(d.window).u32(d.atoms.selection).u32(target).u32(d.atoms.property).u32(currentTime).done()
+	request := newRequest(opConvertSelection, 0).u32(d.window).u32(d.atoms.selection).u32(target).u32(d.atoms.property).u32(when).done()
 	if err := d.c.send(request); err != nil {
 		return nil, err
 	}
-	deadline := time.NewTimer(d.answerWait)
+	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
 	for {
 		select {

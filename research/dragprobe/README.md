@@ -178,6 +178,50 @@ Every command starts the app with `open -n -W ~/lanhop-dragprobe/lanhop-dragprob
 
    Press Enter, then within 3 seconds press and hold the left button over an empty part of the desktop. Move over `target`, then release.
 
+## Second Linux session: ending the drag at the crossing
+
+The first session showed that Escape and a release through uinput do not end a drag of Nautilus, because the physical mouse still holds button 1 in X. These runs measure two other ways.
+
+Before the runs:
+
+- Stop lanhop on the Linux machine with `systemctl --user stop lanhop.service`, so that the pointer at the edge does not cross to the other machine. Start it again afterwards with `systemctl --user start lanhop.service`.
+- `release-real` writes to the event node of the mouse, `/dev/input/eventN`, which the `input` group can write. Check it with `ls -l /dev/input/event*` and `id`. Do not use sudo.
+- Open a Nautilus window of `~/drag-scratch`, so that `throwaway.txt` is visible.
+- While `edge` runs, the strip takes the clicks within 40 pixels of that edge. It is invisible.
+
+7. **edge**. Question: when a file dragged from Nautilus is released over a window of lanhop on the screen edge, does Nautilus finish the drag with copy and leave the file where it was?
+
+   ```sh
+   ~/lanhop-dragprobe edge
+   ```
+
+   Drag `throwaway.txt`, push the pointer against the right edge of the screen, halfway down, away from the top bar, and release there.
+   - Look for "edge: XdndEnter", "edge: XdndPosition 1 ... answered XdndStatus: accept, XdndActionCopy", "edge: XdndDrop", the `text/uri-list`, "XdndFinished sent ... accepted true, action XdndActionCopy", and "dragged file still in its place: true".
+   - Check that `throwaway.txt` is still in `~/drag-scratch`.
+   - The probe stops after the drop, after 2 minutes without one, or on Ctrl+C. `-edge left|right|top|bottom` and `-width` change the strip.
+
+8. **release-real**. Question: does a release written into the event node of the physical mouse end the drag in X while the finger still holds the button?
+
+   ```sh
+   ~/lanhop-dragprobe release-real
+   ```
+
+   Drag `throwaway.txt` and hold it still over an empty part of the Nautilus window of `~/drag-scratch`, never over a folder, because the release drops it there. Keep the button held. 2 seconds after the drag starts, the probe checks that X reports button 1 held, writes one release of the left button and a SYN_REPORT into the node of the mouse that holds the button, and watches X for 3 seconds.
+   - Look for "wrote EV_KEY BTN_LEFT 0 and EV_SYN SYN_REPORT to /dev/input/eventN", then "buttons held []" and "owner 0x0" while you still hold the button.
+   - Release when the log says "after 3s".
+   - The first lines list the pointers the probe found. It never writes to lanhop's devices, uinput devices or keyboards, and it never writes a press.
+
+9. **release-real -with-edge**. Question: with the edge strip up, does the written release drop the file on lanhop's window with copy and leave the file untouched?
+
+   ```sh
+   ~/lanhop-dragprobe release-real -with-edge -wait 4s
+   ```
+
+   Drag `throwaway.txt`, push the pointer against the right edge, halfway down, and hold it there with the button held.
+   - Look for the write, then the "edge:" lines of the drop with "XdndFinished sent ... accepted true", "the edge took a drop", and "dragged file still in its place: true".
+
+If X keeps a button held after a run, click once.
+
 ## What to expect
 
 - `cancel -press-first` cannot release the button while the real one is held. Only Escape can end the drag. If Escape fails, your own release drops the throwaway file into the scratch folder.
