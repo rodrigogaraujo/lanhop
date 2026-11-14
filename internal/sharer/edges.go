@@ -165,7 +165,7 @@ func (s *Sharer) observeKeysAndButtons(captured event.Event) {
 	s.ownEdges.Button(captured.Code, pressed)
 	s.remoteEdges.Button(captured.Code, pressed)
 	if captured.Code == event.ButtonLeft && !pressed {
-		s.drag = nil
+		s.endDrag()
 	}
 }
 
