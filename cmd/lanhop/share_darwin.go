@@ -41,10 +41,8 @@ func endTheDragHere(done context.Context, capture sharer.Capture, log io.Writer)
 			fmt.Fprintf(log, "lanhop could not put its window under the cursor before it ended the file drag on this Mac: %v\n", shieldMissed)
 		}
 		ended := macos.EndSourceDrag()
-		if shieldMissed == nil {
-			if err := shield.Close(); err != nil {
-				fmt.Fprintf(log, "lanhop could not take its window from under the cursor: %v\n", err)
-			}
+		if err := shield.Close(); err != nil {
+			fmt.Fprintf(log, "lanhop could not take its window from under the cursor: %v\n", err)
 		}
 		if ended != nil {
 			return ended
