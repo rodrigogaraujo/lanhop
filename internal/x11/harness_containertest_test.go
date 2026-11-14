@@ -74,8 +74,8 @@ func (d *containerTestDisplay) emit(t *testing.T, events ...event.Event) {
 	if err := d.replay.Emit(events...); err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
-	if _, _, err := d.probe.Pointer(); err != nil {
-		t.Fatalf("sync with the X server: %v", err)
+	if _, _, _, err := d.replay.h.pointer(); err != nil {
+		t.Fatalf("sync the replay with the X server: %v", err)
 	}
 }
 
@@ -141,6 +141,13 @@ func TestTheContainerTestReplayMovesThePointerOnlyAtTheEndOfAReport(t *testing.T
 
 	d.emit(t, event.Absolute(event.AbsX, event.AbsoluteMax/2), event.Sync())
 	d.expectPointer(t, xtestScaled(event.AbsoluteMax/2, d.width), 196)
+}
+
+func TestTheContainerTestReplayStopsAMotionBeyondTheX11RangeAtTheEdge(t *testing.T) {
+	d := startContainerTestDisplay(t)
+	d.moveTo(t, 300, 200)
+	d.emit(t, event.Relative(event.RelX, 30000), event.Relative(event.RelX, 20000), event.Relative(event.RelY, -50000), event.Sync())
+	d.expectPointer(t, d.width-1, 0)
 }
 
 func TestTheContainerTestReplayPressesButtonsAsXDoesAndKeysEightCodesHigher(t *testing.T) {
@@ -271,6 +278,52 @@ func TestTheContainerTestSourceKeepsItsFileWhenTheDropFinishesWithCopy(t *testin
 	drag.expectFile(t)
 	drag.targetLog.waitFor(t, "uri-list=true")
 	drag.sourceLog.waitFor(t, "asked target=text/uri-list given=true")
+	drag.sourceLog.waitFor(t, fmt.Sprintf("enter window=%d version=5 input-only=false override-redirect=false x=400 y=100 width=300 height=300", drag.target.Window()))
+	if strings.Contains(drag.sourceLog.String(), "request-failed") {
+		t.Errorf("a request of the source failed:\n%s", drag.sourceLog)
+	}
+}
+
+func TestTheContainerTestSourceDroppedOnLanhopsEdgeWindowKeepsItsFile(t *testing.T) {
+	drag := startContainerTestDrag(t, false)
+	d, err := parseDisplay(os.Getenv("DISPLAY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lanhop, err := openDrags(d, nil)
+	if err != nil {
+		t.Fatalf("openDrags: %v", err)
+	}
+	t.Cleanup(func() { lanhop.Close() })
+	strip := Rect{X: drag.width - 4, Y: 0, Width: 4, Height: drag.height}
+	catch, err := lanhop.CatchAtEdge(strip)
+	if err != nil {
+		t.Fatalf("CatchAtEdge: %v", err)
+	}
+	t.Cleanup(func() { catch.Close() })
+
+	drag.pressInTheSource(t)
+	drag.moveAlong(t, [2]int{800, 120}, [2]int{drag.width - 10, 120}, [2]int{drag.width - 2, 120}, [2]int{drag.width - 3, 120})
+	select {
+	case <-catch.Accepted():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the edge window never accepted the drag:\n%s", drag.sourceLog)
+	}
+	drag.release(t)
+	select {
+	case dropped := <-catch.Dropped():
+		if dropped.Err != nil || len(dropped.Paths) != 1 || dropped.Paths[0] != drag.file {
+			t.Errorf("the edge window got %q (%v), want only %q", dropped.Paths, dropped.Err, drag.file)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("nothing was dropped on the edge window:\n%s", drag.sourceLog)
+	}
+	described := fmt.Sprintf("version=5 input-only=true override-redirect=true x=%d y=0 width=4 height=%d", strip.X, strip.Height)
+	drag.sourceLog.waitFor(t, described)
+	drag.sourceLog.waitFor(t, "accepted=true action=XdndActionCopy")
+	drag.sourceLog.waitFor(t, "kept path="+drag.file)
+	drag.expectSelectionLetGo(t)
+	drag.expectFile(t)
 }
 
 func TestTheContainerTestSourceDeletesItsFileWhenTheDropFinishesWithMove(t *testing.T) {

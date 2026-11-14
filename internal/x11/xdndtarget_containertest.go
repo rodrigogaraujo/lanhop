@@ -96,6 +96,12 @@ func (t *XdndTestTarget) logf(format string, values ...any) {
 	fmt.Fprintf(t.config.Log, format+"\n", values...)
 }
 
+func (t *XdndTestTarget) sent(request string, err error) {
+	if err != nil {
+		t.logf("request-failed request=%s error=%v", request, err)
+	}
+}
+
 func (t *XdndTestTarget) atom(name string) uint32 {
 	return t.h.atoms[name]
 }
@@ -149,7 +155,7 @@ func (t *XdndTestTarget) handle(event []byte) {
 		if t.offered {
 			flags, action = 3, t.answeredAction()
 		}
-		t.h.sendMessage(t.source, t.source, t.atom("XdndStatus"), [5]uint32{t.window, flags, 0, 0, action})
+		t.sent("XdndStatus", t.h.sendMessage(t.source, t.source, t.atom("XdndStatus"), [5]uint32{t.window, flags, 0, 0, action}))
 	case t.atom("XdndLeave"):
 		if data[0] == t.source {
 			t.logf("leave source=%d", t.source)
@@ -177,14 +183,18 @@ func (t *XdndTestTarget) drop(when uint32) {
 		finished[1], finished[2] = 1, t.answeredAction()
 		t.logf("took paths=%q action=%s", paths, t.h.nameOf(finished[2]))
 	}
-	t.h.sendMessage(source, source, t.atom("XdndFinished"), finished)
+	t.sent("XdndFinished", t.h.sendMessage(source, source, t.atom("XdndFinished"), finished))
 }
 
 func (t *XdndTestTarget) fetch(when uint32) ([]string, error) {
 	le := binary.LittleEndian
 	property, list := t.atom("LANHOP_TEST_DROPPED"), t.atom("text/uri-list")
-	t.h.send(newRequest(opDeleteProperty, 0).u32(t.window).u32(property).done())
-	t.h.send(newRequest(opConvertSelection, 0).u32(t.window).u32(t.atom("XdndSelection")).u32(list).u32(property).u32(when).done())
+	if err := t.h.send(newRequest(opDeleteProperty, 0).u32(t.window).u32(property).done()); err != nil {
+		return nil, err
+	}
+	if err := t.h.send(newRequest(opConvertSelection, 0).u32(t.window).u32(t.atom("XdndSelection")).u32(list).u32(property).u32(when).done()); err != nil {
+		return nil, err
+	}
 	deadline := time.After(xdndTestFetchLimit)
 	for {
 		select {

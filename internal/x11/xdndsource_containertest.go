@@ -4,6 +4,7 @@ package x11
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -15,7 +16,7 @@ import (
 const xdndTestFinishLimit = 10 * time.Second
 
 var xdndTestSourceAtoms = []string{
-	"XdndSelection", "XdndAware", "XdndProxy", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished",
+	"XdndSelection", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished",
 	"XdndActionCopy", "XdndActionMove", "XdndActionList", "text/uri-list", "TARGETS", "TIMESTAMP",
 	"application/vnd.portal.filetransfer", "application/vnd.portal.files",
 }
@@ -30,6 +31,7 @@ type XdndTestSourceConfig struct {
 
 type XdndTestSource struct {
 	h       *harnessConn
+	lookup  *Drags
 	config  XdndTestSourceConfig
 	window  uint32
 	list    []byte
@@ -73,11 +75,17 @@ func startXdndTestSource(d display, cookie []byte, config XdndTestSourceConfig) 
 		return nil, err
 	}
 	s.h = h
+	s.lookup, err = openDrags(d, cookie)
+	if err != nil {
+		h.close()
+		return nil, err
+	}
 	s.window, err = h.createWindow(config.X, config.Y, config.Width, config.Height, buttonPressMask|buttonReleaseMask|pointerMotionMask)
 	if err == nil {
 		err = h.mapAndWait(s.window)
 	}
 	if err != nil {
+		s.lookup.Close()
 		h.close()
 		return nil, err
 	}
@@ -91,7 +99,7 @@ func (s *XdndTestSource) Window() uint32 {
 }
 
 func (s *XdndTestSource) Close() error {
-	err := s.h.close()
+	err := errors.Join(s.h.close(), s.lookup.Close())
 	<-s.stopped
 	return err
 }
@@ -105,6 +113,13 @@ func (s *XdndTestSource) queue(event []byte) {
 
 func (s *XdndTestSource) logf(format string, values ...any) {
 	fmt.Fprintf(s.config.Log, format+"\n", values...)
+}
+
+func (s *XdndTestSource) sent(request string, err error) bool {
+	if err != nil {
+		s.logf("request-failed request=%s error=%v", request, err)
+	}
+	return err == nil
 }
 
 func (s *XdndTestSource) atom(name string) uint32 {
@@ -163,52 +178,72 @@ func xdndTestMessageData(event []byte) [5]uint32 {
 
 func (s *XdndTestSource) start(when uint32) {
 	selection := s.atom("XdndSelection")
-	s.h.send(newRequest(opSetSelectionOwner, 0).u32(s.window).u32(selection).u32(when).done())
+	if !s.sent("SetSelectionOwner", s.h.send(newRequest(opSetSelectionOwner, 0).u32(s.window).u32(selection).u32(when).done())) {
+		return
+	}
 	owner, err := s.h.selectionOwner(selection)
 	if err != nil || owner != s.window {
 		s.logf("drag-not-started owner=%d error=%v", owner, err)
 		return
 	}
-	s.h.setAtoms(s.window, s.atom("XdndActionList"), s.atom("XdndActionMove"), s.atom("XdndActionCopy"))
+	if !s.sent("ChangeProperty XdndActionList", s.h.setAtoms(s.window, s.atom("XdndActionList"), s.atom("XdndActionMove"), s.atom("XdndActionCopy"))) {
+		return
+	}
 	s.dragging, s.ownedSince = true, when
 	s.logf("drag-started window=%d", s.window)
 }
 
 func (s *XdndTestSource) moveTo(x, y int, when uint32) {
-	window, destination, version, err := s.h.awareWindowAt(x, y, s.atom("XdndAware"), s.atom("XdndProxy"))
+	found, err := s.lookup.dropTargetAt(x, y)
 	if err != nil {
 		s.logf("lookup-failed error=%v", err)
 		return
 	}
-	if window == s.window || version < xdndOldestVersion {
-		window = atomNone
+	if found.window == s.window {
+		found = dragTarget{}
 	}
-	if window != s.target {
+	if found.window != s.target {
 		s.leave()
-		if window != atomNone {
-			s.enter(window, destination, min(version, xdndVersion))
+		if found.window != atomNone {
+			s.enter(found)
 		}
 	}
 	if s.target == atomNone {
 		return
 	}
 	place := uint32(uint16(int16(x)))<<16 | uint32(uint16(int16(y)))
-	s.h.sendMessage(s.destination, s.target, s.atom("XdndPosition"), [5]uint32{s.window, 0, place, when, s.atom("XdndActionMove")})
+	s.sent("XdndPosition", s.h.sendMessage(s.destination, s.target, s.atom("XdndPosition"), [5]uint32{s.window, 0, place, when, s.atom("XdndActionMove")}))
 }
 
-func (s *XdndTestSource) enter(window, destination, version uint32) {
-	s.target, s.destination, s.version = window, destination, version
+func (s *XdndTestSource) enter(found dragTarget) {
+	s.target, s.destination, s.version = found.window, found.destination, found.version
 	s.accepts, s.action = false, atomNone
-	offered := [5]uint32{s.window, version << 24, s.atom("application/vnd.portal.filetransfer"), s.atom("application/vnd.portal.files"), s.atom("text/uri-list")}
-	s.h.sendMessage(destination, window, s.atom("XdndEnter"), offered)
-	s.logf("enter window=%d version=%d", window, version)
+	offered := [5]uint32{s.window, found.version << 24, s.atom("application/vnd.portal.filetransfer"), s.atom("application/vnd.portal.files"), s.atom("text/uri-list")}
+	s.sent("XdndEnter", s.h.sendMessage(found.destination, found.window, s.atom("XdndEnter"), offered))
+	s.logf("enter window=%d version=%d %s", found.window, found.version, s.describe(found.window))
+}
+
+func (s *XdndTestSource) describe(window uint32) string {
+	const opGetWindowAttributesRequest = 3
+	const classInputOnlyWindow = 2
+	attributes, err := s.h.call(newRequest(opGetWindowAttributesRequest, 0).u32(window).done())
+	if err != nil {
+		return fmt.Sprintf("described=no error=%q", err.Error())
+	}
+	area, err := s.lookup.areaOf(window)
+	if err != nil {
+		return fmt.Sprintf("described=no error=%q", err.Error())
+	}
+	inputOnly := binary.LittleEndian.Uint16(attributes[12:14]) == classInputOnlyWindow
+	overrideRedirect := attributes[27] != 0
+	return fmt.Sprintf("input-only=%t override-redirect=%t x=%d y=%d width=%d height=%d", inputOnly, overrideRedirect, area.x, area.y, area.width, area.height)
 }
 
 func (s *XdndTestSource) leave() {
 	if s.target == atomNone {
 		return
 	}
-	s.h.sendMessage(s.destination, s.target, s.atom("XdndLeave"), [5]uint32{s.window})
+	s.sent("XdndLeave", s.h.sendMessage(s.destination, s.target, s.atom("XdndLeave"), [5]uint32{s.window}))
 	s.logf("leave window=%d", s.target)
 	s.target, s.destination, s.accepts, s.action = atomNone, atomNone, false, atomNone
 }
@@ -262,7 +297,9 @@ func (s *XdndTestSource) release(when uint32) {
 		s.logf("released-without-drop reason=not-accepted window=%d", s.target)
 		s.leave()
 	default:
-		s.h.sendMessage(s.destination, s.target, s.atom("XdndDrop"), [5]uint32{s.window, 0, when})
+		if !s.sent("XdndDrop", s.h.sendMessage(s.destination, s.target, s.atom("XdndDrop"), [5]uint32{s.window, 0, when})) {
+			break
+		}
 		s.dropped = true
 		s.finishBy = time.After(xdndTestFinishLimit)
 		s.logf("drop window=%d action=%s", s.target, s.h.nameOf(s.action))
@@ -273,7 +310,7 @@ func (s *XdndTestSource) release(when uint32) {
 }
 
 func (s *XdndTestSource) end() {
-	s.h.send(newRequest(opSetSelectionOwner, 0).u32(atomNone).u32(s.atom("XdndSelection")).u32(s.ownedSince).done())
+	s.sent("SetSelectionOwner none", s.h.send(newRequest(opSetSelectionOwner, 0).u32(atomNone).u32(s.atom("XdndSelection")).u32(s.ownedSince).done()))
 	s.dragging, s.dropped, s.finishBy = false, false, nil
 	s.target, s.destination, s.accepts, s.action = atomNone, atomNone, false, atomNone
 	s.logf("drag-ended")
@@ -289,19 +326,23 @@ func (s *XdndTestSource) answer(event []byte) {
 	given := uint32(atomNone)
 	inTime := when == currentTime || int32(when-s.ownedSince) >= 0
 	if s.dragging && inTime && selection == s.atom("XdndSelection") {
+		var err error
 		switch target {
 		case s.atom("TARGETS"):
-			s.h.setAtoms(requestor, property, s.atom("TARGETS"), s.atom("TIMESTAMP"),
+			err = s.h.setAtoms(requestor, property, s.atom("TARGETS"), s.atom("TIMESTAMP"),
 				s.atom("application/vnd.portal.filetransfer"), s.atom("application/vnd.portal.files"), s.atom("text/uri-list"))
 			given = property
 		case s.atom("TIMESTAMP"):
-			s.h.setProperty(requestor, property, atomInteger, 32, le.AppendUint32(nil, s.ownedSince))
+			err = s.h.setProperty(requestor, property, atomInteger, 32, le.AppendUint32(nil, s.ownedSince))
 			given = property
 		case s.atom("text/uri-list"):
-			s.h.setProperty(requestor, property, target, 8, s.list)
+			err = s.h.setProperty(requestor, property, target, 8, s.list)
 			given = property
+		}
+		if !s.sent("ChangeProperty "+s.h.nameOf(target), err) {
+			given = atomNone
 		}
 	}
 	s.logf("asked target=%s given=%t", s.h.nameOf(target), given != atomNone)
-	s.h.notifySelection(when, requestor, selection, target, given)
+	s.sent("SendEvent SelectionNotify", s.h.notifySelection(when, requestor, selection, target, given))
 }

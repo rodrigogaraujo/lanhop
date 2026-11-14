@@ -164,6 +164,10 @@ func xtestButton(code uint16) (byte, bool) {
 func (r *XTestReplay) fake(kind, detail byte, root uint32, x, y int) error {
 	const fakeInput = 2
 	request := newRequest(r.opcode, fakeInput).u8(kind).u8(detail).u16(0).u32(currentTime).u32(root).
-		u32(0).u32(0).u16(uint16(int16(x))).u16(uint16(int16(y))).u32(0).u16(0).u8(0).u8(0).done()
+		u32(0).u32(0).u16(xtestCoordinate(x)).u16(xtestCoordinate(y)).u32(0).u16(0).u8(0).u8(0).done()
 	return r.h.send(request)
+}
+
+func xtestCoordinate(value int) uint16 {
+	return uint16(int16(min(max(value, math.MinInt16), math.MaxInt16)))
 }

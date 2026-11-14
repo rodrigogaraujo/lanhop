@@ -164,30 +164,6 @@ func (h *harnessConn) notifySelection(when, requestor, selection, target, proper
 	return h.send(newRequest(opSendEvent, 0).u32(requestor).u32(0).raw(notify).done())
 }
 
-func (h *harnessConn) awareWindowAt(x, y int, aware, proxy uint32) (window, destination, version uint32, err error) {
-	const deepest = 32
-	parent := h.root
-	for range deepest {
-		reply, err := h.call(newRequest(opTranslateCoordinates, 0).u32(h.root).u32(parent).u16(uint16(int16(x))).u16(uint16(int16(y))).done())
-		if err != nil {
-			return 0, 0, 0, err
-		}
-		child := binary.LittleEndian.Uint32(reply[8:12])
-		if child == atomNone {
-			return 0, 0, 0, nil
-		}
-		receiver := child
-		if proxies, _ := h.property32(child, proxy, atomWindow, 1); len(proxies) == 1 && proxies[0] != atomNone {
-			receiver = proxies[0]
-		}
-		if versions, _ := h.property32(receiver, aware, atomAtom, 1); len(versions) == 1 {
-			return child, receiver, versions[0], nil
-		}
-		parent = child
-	}
-	return 0, 0, 0, nil
-}
-
 func harnessAtomValues(values []uint32) []byte {
 	data := make([]byte, 0, 4*len(values))
 	for _, value := range values {
