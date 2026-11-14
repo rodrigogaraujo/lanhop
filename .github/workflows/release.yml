@@ -4,16 +4,39 @@ on:
   push:
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version that the program and UPDATE carry. A manual run signs with a throwaway certificate and key, and publishes nothing
+        required: true
+        default: v0.0.1
 
 permissions:
   contents: read
 
 env:
-  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.sha) }}
+  VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version || 'v0.0.1' }}
+  RELEASE_RUN: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
 
 jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check the version and the oldest version it updates from
+        run: |
+          from=$(cat packaging/update-from)
+          scripts/release/check-version "$VERSION"
+          scripts/release/check-version "$from"
+          if [ "$(printf '%s\n' "$from" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ] && [ "$RELEASE_RUN" = true ]; then
+            echo "::error::packaging/update-from names $from, above the release $VERSION"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -46,8 +69,8 @@ jobs:
             runs_here: false
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
       - name: Build
@@ -56,7 +79,9 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: ${{ matrix.cgo }}
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.oldest_macos }}
-        run: go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o lanhop ./cmd/lanhop
+        run: go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.updateFrom=$(cat packaging/update-from)" -o lanhop ./cmd/lanhop
+      - name: Check that the program was built without build tags
+        run: scripts/release/check-build-tags lanhop
       - name: Check the system and the architecture of the binary
         env:
           LOOKS_LIKE: ${{ matrix.looks_like }}
@@ -116,19 +141,77 @@ jobs:
           else
             mv lanhop out/
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: lanhop-${{ matrix.os }}-${{ matrix.arch }}
+          name: ${{ matrix.os == 'darwin' && 'unsigned' || 'lanhop' }}-${{ matrix.os }}-${{ matrix.arch }}
           path: out/
+          if-no-files-found: error
+
+  sign-mac:
+    name: Sign lanhop.app with the certificate of the project
+    needs: build
+    runs-on: macos-latest
+    environment: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 'release' || '' }}
+    outputs:
+      certificate_leaf: ${{ steps.certificate.outputs.leaf }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: unsigned-darwin-*
+          path: unsigned
+      - name: Take the certificate, or make a throwaway one outside a release
+        id: certificate
+        env:
+          LANHOP_SIGNING_CERTIFICATE: ${{ secrets.LANHOP_SIGNING_CERTIFICATE }}
+          LANHOP_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.LANHOP_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          signing="$RUNNER_TEMP/signing"
+          if [ "$RELEASE_RUN" = true ]; then
+            scripts/release/take-certificate "$signing" packaging/macos/certificate-leaf
+          elif [ -n "$LANHOP_SIGNING_CERTIFICATE$LANHOP_SIGNING_CERTIFICATE_PASSWORD" ]; then
+            echo "::error::a signing secret is reachable outside a release run; keep it only in the environment release"
+            exit 1
+          else
+            scripts/release/make-certificate "$signing"
+          fi
+          echo "leaf=$(cat "$signing/leaf")" >>"$GITHUB_OUTPUT"
+      - name: Sign both apps
+        run: |
+          chmod 755 unsigned/unsigned-darwin-*/lanhop.app/Contents/MacOS/lanhop
+          scripts/release/sign-apps "$RUNNER_TEMP/signing/certificate.p12" "$RUNNER_TEMP/signing/password" unsigned/unsigned-darwin-*/lanhop.app
+      - name: Throw away the certificate
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/signing"
+      - name: Check the requirement of both apps
+        env:
+          LEAF: ${{ steps.certificate.outputs.leaf }}
+        run: |
+          for arch in arm64 amd64; do
+            scripts/release/check-app-requirement "unsigned/unsigned-darwin-$arch/lanhop.app" "$LEAF"
+            mkdir -p "signed/lanhop-darwin-$arch"
+            mv "unsigned/unsigned-darwin-$arch/lanhop.app" "signed/lanhop-darwin-$arch/"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lanhop-darwin-arm64
+          path: signed/lanhop-darwin-arm64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lanhop-darwin-amd64
+          path: signed/lanhop-darwin-amd64/
           if-no-files-found: error
 
   package:
     name: Pack the archives and install from them
-    needs: build
+    needs: [build, sign-mac]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: lanhop-*
           path: built
@@ -145,9 +228,10 @@ jobs:
             cp LICENSE README.md "$build/"
             tar -czf "release/$name.tar.gz" --owner=0 --group=0 --numeric-owner -C built "$name"
           done
+          printf 'version %s\nfrom %s\n' "$VERSION" "$(cat packaging/update-from)" >release/UPDATE
           cd release
-          sha256sum lanhop-*.tar.gz | tee SHA256SUMS
-          test "$(wc -l <SHA256SUMS)" -eq 4
+          sha256sum lanhop-*.tar.gz UPDATE | tee SHA256SUMS
+          test "$(wc -l <SHA256SUMS)" -eq 5
       - name: Check what each archive holds
         run: |
           for arch in amd64 arm64; do
@@ -165,27 +249,113 @@ jobs:
           HOME="$home" LANHOP_RELEASES_URL="file://$PWD/served" sh install.sh </dev/null
           test "$("$home/.local/bin/lanhop" version)" = "lanhop $VERSION"
           test "$(find "$home" -type f)" = "$home/.local/bin/lanhop"
-      - uses: actions/upload-artifact@v4
+      - name: Check that the installer writes the same unit and udev rule as the one at packaging/update-from
+        run: |
+          scripts/release/installer-at-from ${{ github.event_name == 'push' && github.ref_type == 'tag' && '--release' || '' }} "$RUNNER_TEMP/installer-at-from"
+          scripts/release/compare-installers "$RUNNER_TEMP/installer-at-from" install.sh served
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-to-sign
+          path: release/
+          if-no-files-found: error
+
+  sign-checksums:
+    name: Sign SHA256SUMS with the release key
+    needs: package
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 'release' || '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-to-sign
+          path: release
+      - name: Sign with the release key, or with a throwaway one outside a release
+        env:
+          RELEASE_KEY: ${{ secrets.LANHOP_RELEASE_KEY }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/release-key.pem"
+          trap 'rm -f "$key"' EXIT
+          if [ "$RELEASE_RUN" = true ]; then
+            if [ -z "$RELEASE_KEY" ]; then
+              echo "::error::the environment release does not hold LANHOP_RELEASE_KEY"
+              exit 1
+            fi
+            printf '%s\n' "$RELEASE_KEY" >"$key"
+          elif [ -n "$RELEASE_KEY" ]; then
+            echo "::error::the release key is reachable outside a release run; keep it only in the environment release"
+            exit 1
+          else
+            openssl genpkey -algorithm ed25519 -out "$key"
+            mkdir throwaway
+            openssl pkey -in "$key" -pubout -out throwaway/release-key.pub
+          fi
+          scripts/release/sign-checksums "$key" release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release
           path: release/
           if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: env.RELEASE_RUN != 'true'
+        with:
+          name: throwaway-release-key
+          path: throwaway/
+          if-no-files-found: error
+
+  verify:
+    name: Check the signature and UPDATE as lanhop update does
+    needs: sign-checksums
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release
+          path: release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: env.RELEASE_RUN != 'true'
+        with:
+          name: throwaway-release-key
+          path: throwaway
+      - name: Check the release with the keys of lanhop, or the throwaway key outside a release
+        run: |
+          set --
+          if [ "$RELEASE_RUN" != true ]; then
+            set -- -key throwaway/release-key.pub
+          fi
+          go run ./scripts/release/verify-release -release release -version "$VERSION" -from "$(cat packaging/update-from)" "$@"
+          (cd release && sha256sum -c SHA256SUMS)
 
   check-mac-archive:
     name: Unpack the macOS archive on a Mac and check the app
-    needs: package
+    needs: [sign-mac, sign-checksums]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: release
           path: release
       - name: Check the signature and the program after packing
+        env:
+          LEAF_OF_THE_RUN: ${{ needs.sign-mac.outputs.certificate_leaf }}
         run: |
+          if [ "$RELEASE_RUN" = true ]; then
+            LEAF=$(cat packaging/macos/certificate-leaf)
+          else
+            LEAF=$LEAF_OF_THE_RUN
+          fi
           for arch in arm64 amd64; do
             tar -xzf "release/lanhop-darwin-$arch.tar.gz"
             codesign --verify --strict --verbose=2 "lanhop-darwin-$arch/lanhop.app"
+            scripts/release/check-app-requirement "lanhop-darwin-$arch/lanhop.app" "$LEAF"
           done
           test "$(lanhop-darwin-arm64/lanhop.app/Contents/MacOS/lanhop version)" = "lanhop $VERSION"
       - name: Install from these archives with install.sh on a Mac
@@ -203,20 +373,24 @@ jobs:
           plutil -lint "$agent"
           test "$(plutil -extract AssociatedBundleIdentifiers.0 raw "$agent")" = com.github.rodrigogaraujo.lanhop
           test "$(plutil -extract ProgramArguments.0 raw "$agent")" = "$program"
+      - name: Check that the installer writes the same launch agent as the one at packaging/update-from
+        run: |
+          scripts/release/installer-at-from ${{ github.event_name == 'push' && github.ref_type == 'tag' && '--release' || '' }} "$RUNNER_TEMP/installer-at-from"
+          scripts/release/compare-installers "$RUNNER_TEMP/installer-at-from" install.sh served
 
   publish:
     name: Publish the release
-    if: github.ref_type == 'tag'
-    needs: [package, check-mac-archive]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [verify, check-mac-archive]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: release
           path: release
-      - name: Create the release with the archives and SHA256SUMS
+      - name: Create the release with the archives, UPDATE, SHA256SUMS and its signature
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

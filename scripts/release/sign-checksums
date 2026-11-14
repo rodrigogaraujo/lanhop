@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: sign-checksums ED25519_KEY.pem RELEASE_FOLDER" >&2
+  exit 64
+fi
+key=$1
+release=$2
+
+refuse() {
+  printf 'sign-checksums: %s\n' "$*" >&2
+  exit 1
+}
+
+openssl pkey -in "$key" -noout -text_pub 2>/dev/null | head -n 1 | grep -q 'ED25519 Public-Key' ||
+  refuse "$key is not an Ed25519 private key in PEM"
+grep -q ' UPDATE$' "$release/SHA256SUMS" || refuse "$release/SHA256SUMS does not list UPDATE"
+openssl pkeyutl -sign -rawin -inkey "$key" -in "$release/SHA256SUMS" -out "$release/SHA256SUMS.sig"
+if [ "$(wc -c <"$release/SHA256SUMS.sig")" -ne 64 ]; then
+  refuse "the signature is not 64 bytes long"
+fi

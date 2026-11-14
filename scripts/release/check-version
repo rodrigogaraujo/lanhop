@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: check-version VERSION" >&2
+  exit 64
+fi
+version=$1
+
+refuse() {
+  printf 'check-version: %s\n' "$*" >&2
+  exit 1
+}
+
+not_a_release() {
+  refuse "\"$version\" is not a release version, which looks like v1.2.3, with minor and patch at most 255"
+}
+
+case $version in
+  v*.*.*) ;;
+  *) not_a_release ;;
+esac
+numbers=${version#v}
+major=${numbers%%.*}
+rest=${numbers#*.}
+minor=${rest%%.*}
+patch=${rest#*.}
+for part in "$major" "$minor" "$patch"; do
+  case $part in
+    0 | [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9] | [1-9][0-9][0-9][0-9][0-9]) ;;
+    *) not_a_release ;;
+  esac
+done
+if [ "$major" -gt 32767 ] || [ "$minor" -gt 255 ] || [ "$patch" -gt 255 ]; then
+  not_a_release
+fi

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+  echo "usage: check-build-tags PROGRAM..." >&2
+  exit 64
+fi
+
+refuse() {
+  printf 'check-build-tags: %s\n' "$*" >&2
+  exit 1
+}
+
+for program in "$@"; do
+  build=$(go version -m "$program") || refuse "go cannot read how $program was built"
+  settings=$(printf '%s\n' "$build" | awk '$1 == "build" { print $2 }')
+  if [ -z "$settings" ]; then
+    refuse "$program carries no build settings to check"
+  fi
+  tags=$(printf '%s\n' "$settings" | grep '^-tags=' || true)
+  if [ -n "$tags" ]; then
+    refuse "$program was built with $tags, and a release is built without build tags"
+  fi
+done

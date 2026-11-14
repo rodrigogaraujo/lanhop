@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,7 +35,7 @@ var (
 	deskPatience       = 90 * time.Second
 	deskPollInterval   = time.Second
 	answerPatience     = 10 * time.Second
-	projectReleaseKeys []ed25519.PublicKey
+	projectReleaseKeys = update.ProjectKeys()
 	releasesAddress    = update.ProjectReleases
 	checkNewApp        func(app string) error
 	firstProgramString = regexp.MustCompile(`(?s)<key>ProgramArguments</key>\s*<array>\s*<string>([^<]+)</string>`)
