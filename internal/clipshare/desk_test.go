@@ -563,6 +563,38 @@ func (d *deskUnderTest) waitUntilTheCentralHasTheAnswerOf(side *sideUnderTest) {
 	})
 }
 
+func (d *deskUnderTest) waitUntilTheCentralHasMovedFocusTo(side *sideUnderTest) {
+	d.t.Helper()
+	eventually(d.t, "the central moving focus to "+side.name, func() bool {
+		answer := make(chan bool, 1)
+		d.runtime.tell(func() {
+			answer <- !d.runtime.focusHere && d.runtime.focused != nil && d.runtime.focused.name == side.name
+		})
+		select {
+		case moved := <-answer:
+			return moved
+		case <-time.After(testPatience):
+			return false
+		}
+	})
+}
+
+func (d *deskUnderTest) waitUntilTheSideHandledTheMovesOfFocus(side *sideUnderTest) {
+	d.t.Helper()
+	pressesBefore := len(side.replay.pressesOf(event.KeyA))
+	d.types()
+	eventually(d.t, side.name+" replaying a key typed after focus arrived", func() bool {
+		return len(side.replay.pressesOf(event.KeyA)) > pressesBefore
+	})
+	handled := make(chan struct{})
+	side.runtime.inbox.put(func() { close(handled) })
+	select {
+	case <-handled:
+	case <-time.After(testPatience):
+		d.t.Fatalf("%s did not handle the moves of focus", side.name)
+	}
+}
+
 func namesTakingPart(t *testing.T, c *Central) []string {
 	t.Helper()
 	answer := make(chan []string, 1)
