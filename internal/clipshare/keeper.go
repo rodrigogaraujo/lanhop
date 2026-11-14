@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,6 +64,15 @@ func (m readMarks) of(kind clipboard.Kinds) int64 {
 	return m.text
 }
 
+type seenMark struct {
+	mark   int64
+	starts int
+}
+
+type focusArrival struct {
+	seen *seenMark
+}
+
 type arrived interface {
 	Paths() []string
 	GiveUp()
@@ -77,14 +87,18 @@ type keeper struct {
 	gone            <-chan struct{}
 	readMarks       readMarks
 	untouchedMark   int64
+	starts          int
 	saidUnreachable bool
 	retryAfter      time.Duration
 	nextAttempt     time.Time
 	now             func() time.Time
 	holdsFiles      atomic.Bool
+	readsAsked      atomic.Int64
 
 	marksMutex sync.Mutex
 	marksDue   *clipboard.Kinds
+	underWay   *seenMark
+	arriving   []*focusArrival
 }
 
 func newKeeper(config Config, reachable func(bool)) *keeper {
@@ -161,15 +175,40 @@ func (k *keeper) takeReadMark(kinds clipboard.Kinds) {
 }
 
 func (k *keeper) takeArrivalMark() {
-	k.queue(func() {
-		if k.board != nil {
-			k.untouchedMark = k.board.Mark()
-		}
-	})
+	arriving := &focusArrival{}
+	k.marksMutex.Lock()
+	if k.underWay != nil {
+		arriving.seen = k.underWay
+	} else {
+		k.arriving = append(k.arriving, arriving)
+	}
+	k.marksMutex.Unlock()
+	k.queue(func() { k.arrive(arriving) })
+}
+
+func (k *keeper) arrive(arriving *focusArrival) {
+	k.marksMutex.Lock()
+	k.arriving = slices.DeleteFunc(k.arriving, func(waiting *focusArrival) bool { return waiting == arriving })
+	seen := arriving.seen
+	k.marksMutex.Unlock()
+	switch {
+	case k.board == nil:
+	case seen == nil:
+		k.untouchedMark = k.board.Mark()
+	case seen.starts == k.starts:
+		k.untouchedMark = seen.mark
+	}
 }
 
 func (k *keeper) read(listFilesBy time.Time, done func(readResult)) {
-	k.queue(func() { done(k.readNow(listFilesBy)) })
+	asked := k.readsAsked.Add(1)
+	k.queue(func() {
+		if k.readsAsked.Load() != asked {
+			done(readResult{unchanged: true})
+			return
+		}
+		done(k.readNow(listFilesBy))
+	})
 }
 
 func (k *keeper) write(text string) {
@@ -198,8 +237,7 @@ func (k *keeper) connect() bool {
 	if ending, endsSometimes := board.(interface{ Done() <-chan struct{} }); endsSometimes {
 		k.gone = ending.Done()
 	}
-	fresh := board.Mark()
-	k.readMarks, k.untouchedMark = bothMarks(fresh), fresh
+	k.startFrom(board.Mark())
 	if k.saidUnreachable {
 		fmt.Fprintln(k.log, "lanhop reaches the clipboard of this machine again.")
 		k.saidUnreachable = false
@@ -236,6 +274,8 @@ func (k *keeper) readNow(listFilesBy time.Time) readResult {
 		return readResult{err: ErrUnreachable}
 	}
 	now := k.board.Mark()
+	k.readStarts(&seenMark{mark: now, starts: k.starts})
+	defer k.readEnds()
 	if now == k.readMarks.text && now == k.readMarks.files {
 		return readResult{unchanged: true}
 	}
@@ -246,6 +286,22 @@ func (k *keeper) readNow(listFilesBy time.Time) readResult {
 		return readResult{unchanged: true}
 	}
 	return result
+}
+
+func (k *keeper) readStarts(seen *seenMark) {
+	k.marksMutex.Lock()
+	defer k.marksMutex.Unlock()
+	for _, waiting := range k.arriving {
+		waiting.seen = seen
+	}
+	k.arriving = nil
+	k.underWay = seen
+}
+
+func (k *keeper) readEnds() {
+	k.marksMutex.Lock()
+	k.underWay = nil
+	k.marksMutex.Unlock()
 }
 
 func (k *keeper) readCopy(listFilesBy time.Time) readResult {
@@ -286,7 +342,7 @@ func (k *keeper) writeNow(text string) {
 		fmt.Fprintf(k.log, "A copy arrived, and lanhop could not write it to the clipboard: %v\n", err)
 		return
 	}
-	k.readMarks, k.untouchedMark = bothMarks(mark), mark
+	k.startFrom(mark)
 }
 
 func (k *keeper) writeFilesNow(files arrived) {
@@ -306,5 +362,10 @@ func (k *keeper) writeFilesNow(files arrived) {
 		files.GiveUp()
 		return
 	}
+	k.startFrom(mark)
+}
+
+func (k *keeper) startFrom(mark int64) {
 	k.readMarks, k.untouchedMark = bothMarks(mark), mark
+	k.starts++
 }

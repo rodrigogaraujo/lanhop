@@ -317,6 +317,119 @@ func TestACopyMadeOnASideMachineWinsOverTheOlderCopyOfTheCentralWhoseReadEndsLas
 	}
 }
 
+func TestACopyMadeOnTheCentralWhileAnEarlierReadOfItWaitsMovesWhenFocusLeaves(t *testing.T) {
+	d := newDesk(t, "left", "right")
+	left, right := d.sideJoins("left"), d.sideJoins("right")
+	d.waitUntilTakingPart(left, right)
+	d.clipboard.personCopies("first on the central")
+	releaseTheReads := d.clipboard.holdReadsUntilReleased()
+	defer releaseTheReads()
+
+	d.focusOn(left.number)
+	waitUntilAReadIsHeld(t, "the central", d.clipboard)
+	d.focusOn(thisMachine)
+	d.focusOn(right.number)
+	right.clipboard.personCopies("from the right")
+	d.focusOn(thisMachine)
+	d.waitUntilTheCentralHasTheAnswerOf(right)
+	d.clipboard.personCopies("second on the central")
+	d.focusOn(left.number)
+	d.waitUntilTheCentralHasMovedFocusTo(left)
+	releaseTheReads()
+
+	eventually(t, "left getting a copy", func() bool { return len(left.clipboard.written()) > 0 })
+	if first := left.clipboard.written()[0].text; first != "second on the central" {
+		t.Errorf("left got %s, want the newest copy, made on the central", describe(first))
+	}
+	d.focusOn(thisMachine)
+	time.Sleep(settling)
+	if held := d.clipboard.holds(); held != "second on the central" {
+		t.Errorf("the central holds %s once focus came back, want the copy the person made there", describe(held))
+	}
+}
+
+func TestACopyMadeOnASideMachineWhileAnEarlierReadOfItWaitsMovesWhenFocusLeaves(t *testing.T) {
+	d := newDesk(t, "right")
+	right := d.sideJoins("right")
+	d.waitUntilTakingPart(right)
+	right.clipboard.personCopies("first on the right")
+	releaseTheReads := right.clipboard.holdReadsUntilReleased()
+	defer releaseTheReads()
+
+	d.focusOn(right.number)
+	d.focusOn(thisMachine)
+	waitUntilAReadIsHeld(t, "right", right.clipboard)
+	d.focusOn(right.number)
+	d.focusOn(thisMachine)
+	d.clipboard.personCopies("from the central")
+	d.focusOn(right.number)
+	eventually(t, "the central reading its copy", func() bool { return d.clipboard.timesRead() > 0 })
+	right.clipboard.personCopies("second on the right")
+	d.focusOn(thisMachine)
+	d.focusOn(right.number)
+	d.waitUntilTheSideHandledTheMovesOfFocus(right)
+	releaseTheReads()
+	d.focusOn(thisMachine)
+
+	waitUntilItHolds(t, "the central", d.clipboard, "second on the right")
+	if held := right.clipboard.holds(); held != "second on the right" {
+		t.Errorf("right holds %s, want the copy the person made there", describe(held))
+	}
+}
+
+func TestACopyMadeOnTheCentralWhileItsReadRunsIsNotOverwritten(t *testing.T) {
+	d := newDesk(t, "right")
+	right := d.sideJoins("right")
+	d.waitUntilTakingPart(right)
+	d.clipboard.personCopies("from the central")
+	releaseTheRead := d.clipboard.holdReadsUntilReleased()
+	defer releaseTheRead()
+
+	d.focusOn(right.number)
+	waitUntilAReadIsHeld(t, "the central", d.clipboard)
+	right.clipboard.personCopies("from the right")
+	d.focusOn(thisMachine)
+	d.waitUntilTheCentralHasTheAnswerOf(right)
+	d.clipboard.personCopies("made on the central after focus came back")
+	releaseTheRead()
+	eventually(t, "the copy of the right reaching the central", func() bool {
+		return len(d.clipboard.written()) > 0 || strings.Contains(d.log.String(), "the newer copy made on this machine after focus arrived was kept")
+	})
+
+	if held := d.clipboard.holds(); held != "made on the central after focus came back" {
+		t.Errorf("the central holds %s, want the copy the person made there after focus came back", describe(held))
+	}
+	d.focusOn(right.number)
+	waitUntilItHolds(t, "right", right.clipboard, "made on the central after focus came back")
+}
+
+func TestACopyMadeOnASideMachineWhileItsReadRunsIsNotOverwritten(t *testing.T) {
+	d := newDesk(t, "right")
+	right := d.sideJoins("right")
+	d.waitUntilTakingPart(right)
+	right.clipboard.personCopies("from the right")
+	releaseTheRead := right.clipboard.holdReadsUntilReleased()
+	defer releaseTheRead()
+
+	d.focusOn(right.number)
+	d.focusOn(thisMachine)
+	waitUntilAReadIsHeld(t, "right", right.clipboard)
+	d.clipboard.personCopies("from the central")
+	d.focusOn(right.number)
+	d.waitUntilTheSideHandledTheMovesOfFocus(right)
+	right.clipboard.personCopies("made on the right after focus came back")
+	releaseTheRead()
+	eventually(t, "the copy of the central reaching the right", func() bool {
+		return len(right.clipboard.written()) > 0 || strings.Contains(right.log.String(), "the newer copy made on this machine after focus arrived was kept")
+	})
+
+	if held := right.clipboard.holds(); held != "made on the right after focus came back" {
+		t.Errorf("right holds %s, want the copy the person made there after focus came back", describe(held))
+	}
+	d.focusOn(thisMachine)
+	waitUntilItHolds(t, "the central", d.clipboard, "made on the right after focus came back")
+}
+
 func TestTheCentralSwitchedOffMovesNoCopyUntilItIsSwitchedOnAgain(t *testing.T) {
 	d := newDesk(t, "right")
 	right := d.sideJoins("right")
