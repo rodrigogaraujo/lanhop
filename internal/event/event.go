@@ -47,6 +47,7 @@ const (
 	ControlDropTaken     uint16 = 21
 	ControlCancelDrop    uint16 = 22
 	ControlDragLeaves    uint16 = 23
+	ControlDragStayed    uint16 = 24
 )
 
 const FeatureClipboard int32 = 1 << 0
@@ -212,6 +213,10 @@ func CancelDrop(transfer int32) Event {
 
 func DragLeaves() Event {
 	return Event{Type: TypeControl, Code: ControlDragLeaves}
+}
+
+func DragStayed() Event {
+	return Event{Type: TypeControl, Code: ControlDragStayed}
 }
 
 func DataStop(transfer int32) Event {

@@ -67,6 +67,25 @@ func (c *Central) dragOn(l *link, files clipboard.FileCopy, dock edge.Side) {
 	}
 }
 
+func (c *Central) dockOn(l *link, dock edge.Side) {
+	machine := c.sides[l]
+	if machine == nil || !machine.drops || machine.dock == dock {
+		return
+	}
+	machine.dock = dock
+	if c.sideDock != nil {
+		c.sideDock(l.name, dock)
+	}
+}
+
+func (c *Central) dragStayedOn(l *link) {
+	machine := c.sides[l]
+	if machine == nil || !machine.drops || c.sideDragStayed == nil {
+		return
+	}
+	c.sideDragStayed(l.name)
+}
+
 func (c *Central) dragGoneOn(l *link) {
 	if machine := c.sides[l]; machine != nil && !machine.dragCrossed {
 		c.forgetDragOn(l, machine)

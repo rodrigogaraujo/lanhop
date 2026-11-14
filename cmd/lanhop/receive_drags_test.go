@@ -27,7 +27,7 @@ func TestOnAMacTheDragThatLeftIsEndedUnderTheShieldAndThenItsButtonIsForgotten(t
 	}
 	end := func() error { log.record("source drag ended"); return nil }
 
-	endTheSourceDragUnderAShield(context.Background(), shield, end, hand, &screen{})
+	endTheSourceDragUnderAShield(context.Background(), shield, end, hand, &screen{}, func() { log.record("told the central") })
 
 	expectEntries(t, "the steps", log.seen(), "shield", "source drag ended", "shield closed", "forget 0")
 }
@@ -39,7 +39,7 @@ func TestOnAMacTheDragThatLeftIsStillEndedWhenTheShieldFails(t *testing.T) {
 	shield := func(context.Context) (io.Closer, error) { return nil, errors.New("no window") }
 	end := func() error { log.record("source drag ended"); return nil }
 
-	endTheSourceDragUnderAShield(context.Background(), shield, end, hand, said)
+	endTheSourceDragUnderAShield(context.Background(), shield, end, hand, said, func() { log.record("told the central") })
 
 	expectEntries(t, "the steps", log.seen(), "source drag ended", "forget 0")
 	if !strings.Contains(said.String(), "no window") {
@@ -54,9 +54,21 @@ func TestOnACentralMacTheDragThatLeftIsEndedWithoutAReplay(t *testing.T) {
 		return closerFunc(func() error { log.record("shield closed"); return nil }), nil
 	}
 
-	endTheSourceDragUnderAShield(context.Background(), shield, func() error { log.record("source drag ended"); return nil }, nil, &screen{})
+	endTheSourceDragUnderAShield(context.Background(), shield, func() error { log.record("source drag ended"); return nil }, nil, &screen{}, nil)
 
 	expectEntries(t, "the steps", log.seen(), "shield", "source drag ended", "shield closed")
+}
+
+func TestOnAMacASourceDragThatCannotBeEndedAsksTheCentralToCancelTheDrop(t *testing.T) {
+	log := &replayLog{}
+	hand := newDropReplay(keepingReplayLog{log}, nil)
+	shield := func(context.Context) (io.Closer, error) {
+		return closerFunc(func() error { log.record("shield closed"); return nil }), nil
+	}
+
+	endTheSourceDragUnderAShield(context.Background(), shield, func() error { return errors.New("not allowed to post") }, hand, &screen{}, func() { log.record("told the central") })
+
+	expectEntries(t, "the steps", log.seen(), "told the central", "shield closed", "forget 0")
 }
 
 type edgeHandLog struct {

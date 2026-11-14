@@ -80,9 +80,9 @@ func endSourceDragHere() error {
 	return macos.EndSourceDrag()
 }
 
-func dragLeavesHandler(hand *dropReplay, log io.Writer, _ func()) func(context.Context) {
+func dragLeavesHandler(hand *dropReplay, log io.Writer, stayed func()) func(context.Context) {
 	return func(ctx context.Context) {
-		endTheSourceDragUnderAShield(ctx, shieldTheCursor, endSourceDragHere, hand, log)
+		endTheSourceDragUnderAShield(ctx, shieldTheCursor, endSourceDragHere, hand, log, stayed)
 	}
 }
 

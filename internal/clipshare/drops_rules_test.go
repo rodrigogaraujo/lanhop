@@ -214,7 +214,7 @@ func (r *rawCentral) announces(value int32) {
 	}
 	eventually(r.t, "the side machine hearing what the central takes", func() bool {
 		return askSide(r.t, r.runtime, func() bool {
-			return r.runtime.centralTakes == clipboard.KindsIn(value) && r.runtime.centralDrops == clipboard.DropsIn(value)
+			return r.runtime.centralTakes == clipboard.KindsIn(value) && r.runtime.centralDrags == carriesDrags(value)
 		})
 	})
 }

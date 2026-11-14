@@ -163,7 +163,7 @@ func receive(args []string, stdout io.Writer) (err error) {
 	defer stopSharingTheClipboard()
 	config.Replay = hand
 	if side != nil && drops != nil {
-		config.DragLeaves = dragLeavesHandler(hand, stdout, side.DragGone)
+		config.DragLeaves = dragLeavesHandler(hand, stdout, side.DragStayed)
 		defer followLocalDrags(receiving, side, stdout)()
 	}
 	config.Clipboard = receiver.Together(config.Clipboard, follower)

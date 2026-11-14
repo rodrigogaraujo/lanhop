@@ -183,14 +183,15 @@ func (l *link) filesSized(kibibytes int32) (clipboard.FileCopy, bool) {
 	return clipboard.FileCopy{FilesAndFolders: int(l.describedFiles), Bytes: int64(kibibytes) * 1024}, true
 }
 
-func (l *link) dragDescribed(value int32) (dragGone bool) {
-	filesAndFolders, dock := event.SplitDragFiles(value)
+func (l *link) dragDescribed(value int32) (dragGone bool, dock edge.Side) {
+	filesAndFolders, dockEdge := event.SplitDragFiles(value)
+	dock = dockEdgeIn(dockEdge)
 	if filesAndFolders == 0 {
 		l.dragDescribedYet = false
-		return true
+		return true, dock
 	}
-	l.draggedFiles, l.draggedDock, l.dragDescribedYet = filesAndFolders, dock, true
-	return false
+	l.draggedFiles, l.draggedDock, l.dragDescribedYet = filesAndFolders, dockEdge, true
+	return false, dock
 }
 
 func (l *link) dragSized(kibibytes int32) (clipboard.FileCopy, edge.Side, bool) {
