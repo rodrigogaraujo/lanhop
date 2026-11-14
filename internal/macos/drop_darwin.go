@@ -261,10 +261,29 @@ func (d *Drop) start(ctx context.Context, files []PromisedFile, plan dragPlan) e
 	}.run(ctx)
 }
 
+type openedWindow struct {
+	window dropWindow
+	err    error
+}
+
 func (d *Drop) startUnderTheCursor(ctx context.Context, files []PromisedFile, screen Quartz) error {
-	window, err := openDropWindow(d.id, files, screen.Cursor())
-	if err != nil {
-		return err
+	bounded, stop := context.WithTimeout(ctx, startUnderTheCursorLimit)
+	defer stop()
+	opening := make(chan openedWindow, 1)
+	go func() {
+		window, err := openDropWindow(d.id, files, screen.Cursor())
+		opening <- openedWindow{window, err}
+	}()
+	var window dropWindow
+	select {
+	case opened := <-opening:
+		if opened.err != nil {
+			return opened.err
+		}
+		window = opened.window
+	case <-bounded.Done():
+		go closeWhenOpened(opening)
+		return ErrDropWindowNotShown
 	}
 	d.window = window
 	return startUnderTheCursor{
@@ -276,7 +295,13 @@ func (d *Drop) startUnderTheCursor(ctx context.Context, files []PromisedFile, sc
 		began:    d.began.done,
 		timing:   timingOfTheProbe,
 		limit:    startUnderTheCursorLimit,
-	}.run(ctx)
+	}.run(bounded)
+}
+
+func closeWhenOpened(opening <-chan openedWindow) {
+	if opened := <-opening; opened.err == nil {
+		opened.window.close()
+	}
 }
 
 func (d *Drop) Ended() <-chan struct{} {

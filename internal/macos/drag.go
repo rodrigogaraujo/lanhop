@@ -187,7 +187,7 @@ func (w *DragWatch) run(interval time.Duration) {
 	for {
 		select {
 		case <-w.resets:
-			pending, told = w.forget(told)
+			pending = w.forget(told)
 		default:
 		}
 		var send chan<- DragEvent
@@ -199,7 +199,7 @@ func (w *DragWatch) run(interval time.Duration) {
 		case <-w.stop:
 			return
 		case <-w.resets:
-			pending, told = w.forget(told)
+			pending = w.forget(told)
 		case send <- next:
 			pending, told = pending[1:], next.Kind == DragStarted
 		case <-tick.C:
@@ -210,12 +210,12 @@ func (w *DragWatch) run(interval time.Duration) {
 	}
 }
 
-func (w *DragWatch) forget(told bool) ([]DragEvent, bool) {
+func (w *DragWatch) forget(told bool) []DragEvent {
 	w.tracker.reset(w.source.board.Mark())
 	if told {
-		return []DragEvent{{Kind: DragEnded}}, false
+		return []DragEvent{{Kind: DragEnded}}
 	}
-	return nil, false
+	return nil
 }
 
 func (w *DragWatch) Events() <-chan DragEvent {
@@ -253,21 +253,32 @@ const hidReleaseAfterTheEnd = 150 * time.Millisecond
 
 var endingSourceDrag sync.Mutex
 
-func endReplayedSourceDrag(screen replayedDragEnder, canPost func() bool, pause func(time.Duration), under Point) error {
+type replayedDrag struct {
+	described bool
+	shielded  bool
+	under     Point
+}
+
+func endReplayedSourceDrag(screen replayedDragEnder, canPost func() bool, pause func(time.Duration), drag replayedDrag) error {
 	endingSourceDrag.Lock()
 	defer endingSourceDrag.Unlock()
 	if !canPost() {
 		return ErrCannotEndDrag
 	}
 	held := screen.ButtonDown(leftMouseButton)
-	screen.PostKey(KeyPress{Code: escapeKeyCode, Down: true})
-	screen.PostKey(KeyPress{Code: escapeKeyCode})
-	pause(escapeToRelease)
-	screen.PostMouseAtSessionTap(MouseEvent{Action: MouseUp, At: screen.Cursor(), Button: leftMouseButton, Clicks: 1})
+	if held || drag.described {
+		screen.PostKey(KeyPress{Code: escapeKeyCode, Down: true})
+		screen.PostKey(KeyPress{Code: escapeKeyCode})
+		pause(escapeToRelease)
+		screen.PostMouseAtSessionTap(MouseEvent{Action: MouseUp, At: screen.Cursor(), Button: leftMouseButton, Clicks: 1})
+	}
+	if !drag.shielded {
+		return nil
+	}
 	if held {
 		pause(hidReleaseAfterTheEnd)
 	}
-	screen.PostMouse(MouseEvent{Action: MouseUp, At: under, Button: leftMouseButton, Clicks: 1})
+	screen.PostMouse(MouseEvent{Action: MouseUp, At: drag.under, Button: leftMouseButton, Clicks: 1})
 	return nil
 }
 

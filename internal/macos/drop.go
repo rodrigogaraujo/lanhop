@@ -254,7 +254,7 @@ func (h *heldDown) releaseWithADragAt(at Point, escapeFirst bool) bool {
 	if !h.down {
 		return false
 	}
-	if escapeFirst {
+	if escapeFirst || h.personHolds {
 		h.screen.PostKey(KeyPress{Code: macOSEscape, Down: true})
 		h.screen.PostKey(KeyPress{Code: macOSEscape, Down: false})
 		time.Sleep(escapeBeforeRelease)
@@ -408,10 +408,18 @@ func (s startUnderTheCursor) run(ctx context.Context) error {
 	return nil
 }
 
+type mouseTaken struct {
+	taken bool
+	err   error
+}
+
 func (s startUnderTheCursor) followTheCursor(ctx context.Context) (Point, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return Point{}, fmt.Errorf("%w: %v", ErrDropWindowMissed, err)
+		}
 		at := s.cursor()
-		taken, err := s.window.takeTheMouseAt(at)
+		taken, err := s.takeTheMouseWithin(ctx, at)
 		if taken && err == nil {
 			return at, nil
 		}
@@ -421,6 +429,20 @@ func (s startUnderTheCursor) followTheCursor(ctx context.Context) (Point, error)
 			}
 			return Point{}, ErrDropWindowMissed
 		}
+	}
+}
+
+func (s startUnderTheCursor) takeTheMouseWithin(ctx context.Context, at Point) (bool, error) {
+	answer := make(chan mouseTaken, 1)
+	go func() {
+		taken, err := s.window.takeTheMouseAt(at)
+		answer <- mouseTaken{taken, err}
+	}()
+	select {
+	case got := <-answer:
+		return got.taken, got.err
+	case <-ctx.Done():
+		return false, ctx.Err()
 	}
 }
 

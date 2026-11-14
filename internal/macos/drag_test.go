@@ -961,22 +961,29 @@ func (s *replayedEndingScreen) PostMouse(mouse MouseEvent) {
 
 func TestEndingTheDragOfTheReplayAlsoReleasesTheButtonAtTheHIDTapUnderTheShield(t *testing.T) {
 	shield := Point{X: 640, Y: 12}
-	for name, held := range map[string]bool{"the button reads held": true, "the button reads up although the replay pressed it": false} {
-		t.Run(name, func(t *testing.T) {
-			screen := &replayedEndingScreen{endingScreen{held: held, cursor: Point{X: 641, Y: 12}, cursorLater: Point{X: 641, Y: 12}}}
+	hidUp := MouseEvent{Action: MouseUp, At: shield, Button: 0, Clicks: 1}
+	ended := endingAt(Point{X: 641, Y: 12})
+	cases := []struct {
+		name string
+		held bool
+		drag replayedDrag
+		want []any
+	}{
+		{"the button reads held, under the shield", true, replayedDrag{described: true, shielded: true, under: shield}, append(append(slices.Clone(ended), 150*time.Millisecond), hidUp)},
+		{"the button reads up although the replay pressed it, under the shield", false, replayedDrag{described: true, shielded: true, under: shield}, append(slices.Clone(ended), hidUp)},
+		{"no drag was described and the button reads up, under the shield", false, replayedDrag{shielded: true, under: shield}, []any{hidUp}},
+		{"the button reads held, with no shield", true, replayedDrag{described: true}, slices.Clone(ended)},
+		{"no drag was described and the button reads up, with no shield", false, replayedDrag{}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			screen := &replayedEndingScreen{endingScreen{held: c.held, cursor: Point{X: 641, Y: 12}, cursorLater: Point{X: 641, Y: 12}}}
 
-			err := endReplayedSourceDrag(screen, postingAllowed, screen.pause, shield)
-
-			if err != nil {
+			if err := endReplayedSourceDrag(screen, postingAllowed, screen.pause, c.drag); err != nil {
 				t.Fatalf("endReplayedSourceDrag: %v", err)
 			}
-			want := endingAt(Point{X: 641, Y: 12})
-			if held {
-				want = append(want, 150*time.Millisecond)
-			}
-			want = append(want, MouseEvent{Action: MouseUp, At: shield, Button: 0, Clicks: 1})
-			if !slices.Equal(screen.did, want) {
-				t.Errorf("did %+v, want %+v", screen.did, want)
+			if !slices.Equal(screen.did, c.want) {
+				t.Errorf("did %+v, want %+v", screen.did, c.want)
 			}
 		})
 	}
@@ -985,9 +992,25 @@ func TestEndingTheDragOfTheReplayAlsoReleasesTheButtonAtTheHIDTapUnderTheShield(
 func TestNothingIsPostedToEndTheDragOfTheReplayWithoutThePermissionToPost(t *testing.T) {
 	screen := &replayedEndingScreen{endingScreen{held: true}}
 
-	err := endReplayedSourceDrag(screen, func() bool { return false }, screen.pause, Point{})
+	err := endReplayedSourceDrag(screen, func() bool { return false }, screen.pause, replayedDrag{described: true, shielded: true})
 
 	if !errors.Is(err, ErrCannotEndDrag) || len(screen.did) != 0 {
 		t.Errorf("endReplayedSourceDrag = %v after %+v, want %v and nothing posted", err, screen.did, ErrCannotEndDrag)
 	}
+}
+
+func TestASecondResetKeepsTheEndOwedForADragAlreadyTold(t *testing.T) {
+	board := newDragBoard()
+	watch := startWatch(t, board)
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	started := nextDragEvent(t, watch)
+
+	watch.Reset()
+	time.Sleep(quietWindow)
+	watch.Reset()
+	time.Sleep(quietWindow)
+
+	expectDragEvents(t, []DragEvent{started, nextDragEvent(t, watch)}, startedWith("/tmp/report.pdf"), dragEnd)
+	expectNoDragEvent(t, watch)
 }

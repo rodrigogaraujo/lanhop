@@ -34,8 +34,12 @@ func EndSourceDrag() error {
 	return endSourceDrag(Quartz{}, CanPost, time.Sleep)
 }
 
-func EndReplayedSourceDrag(under Point) error {
-	return endReplayedSourceDrag(Quartz{}, CanPost, time.Sleep, under)
+func EndReplayedSourceDragUnder(shield Point, described bool) error {
+	return endReplayedSourceDrag(Quartz{}, CanPost, time.Sleep, replayedDrag{described: described, shielded: true, under: shield})
+}
+
+func EndReplayedSourceDragUnshielded(described bool) error {
+	return endReplayedSourceDrag(Quartz{}, CanPost, time.Sleep, replayedDrag{described: described})
 }
 
 func leftButtonHeld() bool {

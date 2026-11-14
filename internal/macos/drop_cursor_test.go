@@ -120,3 +120,69 @@ func TestTheButtonThePersonHoldsIsLetGoOverTheWindowWithoutAnUp(t *testing.T) {
 		t.Error("the button is still pending after it was let go")
 	}
 }
+
+type stuckWindow struct {
+	release chan struct{}
+}
+
+func (w *stuckWindow) takeTheMouseAt(Point) (bool, error) {
+	<-w.release
+	return false, nil
+}
+
+func TestAStartUnderTheCursorStaysWithinItsLimitWhileAppKitDoesNotAnswer(t *testing.T) {
+	screen := &dropScreen{cursor: leftEdge}
+	window := &stuckWindow{release: make(chan struct{})}
+	defer close(window.release)
+	start, _ := startUnderTheCursorOn(screen, window, appKitAnswers{seesDown: true, begins: true})
+
+	began := time.Now()
+	err := start.run(context.Background())
+
+	if !errors.Is(err, ErrDropWindowMissed) {
+		t.Errorf("the start gave %v, want ErrDropWindowMissed", err)
+	}
+	if took := time.Since(began); took > start.limit+100*time.Millisecond {
+		t.Errorf("the start took %v while AppKit did not answer, more than its limit of %v", took, start.limit)
+	}
+	expectEvents(t, screen.events())
+}
+
+func TestClosingADropWhoseButtonThePersonHoldsEndsItsSessionWithEscapeAndNoUp(t *testing.T) {
+	record := &journal{}
+	screen := &dropScreen{cursor: leftEdge, journal: record}
+	window := &fakeDropWindow{answers: []bool{true}, journal: record}
+	button := newHeldDownByThePerson(screen)
+	button.pressAt(leftEdge)
+	screen.moveTo(finderUnderTheCursor)
+	ended := newLatch()
+	screen.onKey = func(key KeyPress) {
+		if key.Code == macOSEscape && !key.Down {
+			ended.fire()
+		}
+	}
+
+	sessionEnd{
+		button:       button,
+		window:       window,
+		ended:        ended.done,
+		downAtEnd:    func() bool { return false },
+		releaseLimit: time.Second,
+		releasePoll:  time.Millisecond,
+		endLimit:     time.Second,
+		logf:         func(string, ...any) {},
+	}.run()
+
+	for _, posted := range screen.events() {
+		if posted.Action == MouseUp {
+			t.Errorf("an up was posted for the button the person holds: %+v", screen.events())
+		}
+	}
+	keys := screen.keysPosted()
+	if len(keys) != 2 || keys[0] != (KeyPress{Code: macOSEscape, Down: true}) || keys[1] != (KeyPress{Code: macOSEscape}) {
+		t.Errorf("posted the keys %+v, want Escape down then up", keys)
+	}
+	if refused, movedTo, _ := window.seen(); !refused || len(movedTo) == 0 || movedTo[0] != finderUnderTheCursor {
+		t.Errorf("the window refused drops %v and moved to %v, want drops refused and the window under the cursor first", refused, movedTo)
+	}
+}
