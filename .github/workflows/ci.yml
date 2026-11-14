@@ -31,6 +31,27 @@ jobs:
         run: |
           go test -count=1 -run 'TestKeysArriveAtMost50|TestKeysArriveMoreThan50' ./internal/transport
           go test -count=1 -run 'Keys|64KiB|10MiB' ./internal/clipshare
+      - name: Answer commands while the main thread waits for AppKit
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        run: |
+          program="$RUNNER_TEMP/lanhop"
+          answers="$RUNNER_TEMP/lanhop-answers"
+          export LANHOP_CONFIG_DIR="$RUNNER_TEMP/lanhop-config"
+          mkdir -p "$LANHOP_CONFIG_DIR" "$answers"
+          go build -o "$program" ./cmd/lanhop
+          "$program" version >"$answers/version"
+          test "$(cat "$answers/version")" = "lanhop dev"
+          "$program" help >"$answers/help"
+          grep -q "lanhop status" "$answers/help"
+          "$program" status >"$answers/status"
+          grep -q "^stopped:" "$answers/status"
+          "$program" peers >"$answers/peers"
+          grep -q "No machine is trusted yet" "$answers/peers"
+          code=0
+          "$program" teleport 2>"$answers/unknown" || code=$?
+          test "$code" -eq 2
+          grep -q 'unknown command "teleport"' "$answers/unknown"
       - name: Test the macOS build without cgo
         if: runner.os == 'macOS'
         env:
