@@ -346,6 +346,7 @@ type deskUnderTest struct {
 	address     string
 	mutex       sync.Mutex
 	connected   []string
+	handled     handledFrames
 }
 
 type deskSetup struct {
@@ -462,7 +463,7 @@ func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderT
 			if err != nil {
 				return
 			}
-			machine.Connect(conn)
+			machine.Connect(d.handled.of(conn))
 		}
 	}()
 	t.Cleanup(func() {

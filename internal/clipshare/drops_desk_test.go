@@ -2,6 +2,7 @@ package clipshare
 
 import (
 	"context"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/transport"
 )
 
@@ -19,21 +21,29 @@ const textFilesAndDrags = textAndFiles | 1<<features.Drag
 var onTheCentral *sideUnderTest
 
 type fakeDrops struct {
-	mutex    sync.Mutex
-	sessions []*fakeDropSession
+	mutex       sync.Mutex
+	sessions    []*fakeDropSession
+	arrivedHeld <-chan struct{}
 }
 
 func (f *fakeDrops) StartDrop(ctx context.Context, files []DroppedFile) (DropSession, error) {
-	session := &fakeDropSession{
-		files:     slices.Clone(files),
-		taken:     make(chan struct{}),
-		ended:     make(chan struct{}),
-		cancelled: make(chan struct{}),
-	}
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
+	session := &fakeDropSession{
+		files:       slices.Clone(files),
+		taken:       make(chan struct{}),
+		ended:       make(chan struct{}),
+		cancelled:   make(chan struct{}),
+		arrivedHeld: f.arrivedHeld,
+	}
 	f.sessions = append(f.sessions, session)
 	return session, nil
+}
+
+func (f *fakeDrops) holdArrivedUntil(released <-chan struct{}) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.arrivedHeld = released
 }
 
 func (f *fakeDrops) started() []*fakeDropSession {
@@ -43,25 +53,42 @@ func (f *fakeDrops) started() []*fakeDropSession {
 }
 
 type fakeDropSession struct {
-	files      []DroppedFile
-	taken      chan struct{}
-	ended      chan struct{}
-	cancelled  chan struct{}
-	taking     sync.Once
-	ending     sync.Once
-	cancelling sync.Once
+	files       []DroppedFile
+	taken       chan struct{}
+	ended       chan struct{}
+	cancelled   chan struct{}
+	taking      sync.Once
+	ending      sync.Once
+	cancelling  sync.Once
+	arrivedHeld <-chan struct{}
 
-	mutex  sync.Mutex
-	handed [][]string
+	mutex                     sync.Mutex
+	handed                    [][]string
+	calls                     []string
+	goneBeforeArrivedReturned []string
 }
 
 func (s *fakeDropSession) Arrived(paths []string) {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 	s.handed = append(s.handed, slices.Clone(paths))
+	s.mutex.Unlock()
+	if s.arrivedHeld != nil {
+		<-s.arrivedHeld
+	}
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err != nil {
+			s.goneBeforeArrivedReturned = append(s.goneBeforeArrivedReturned, path)
+		}
+	}
+	s.calls = append(s.calls, "Arrived")
 }
 
 func (s *fakeDropSession) Cancel() {
+	s.mutex.Lock()
+	s.calls = append(s.calls, "Cancel")
+	s.mutex.Unlock()
 	s.cancelling.Do(func() { close(s.cancelled) })
 }
 
@@ -94,6 +121,18 @@ func (s *fakeDropSession) handedPaths() [][]string {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	return slices.Clone(s.handed)
+}
+
+func (s *fakeDropSession) callsInOrder() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return slices.Clone(s.calls)
+}
+
+func (s *fakeDropSession) pathsGoneBeforeArrivedReturned() []string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return slices.Clone(s.goneBeforeArrivedReturned)
 }
 
 func heldUntil(released <-chan struct{}, await AwaitData) AwaitData {
@@ -339,6 +378,54 @@ func (r *frameRecorder) all() []event.Event {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	return slices.Clone(r.frames)
+}
+
+type handledFrames struct {
+	mutex sync.Mutex
+	from  map[string][]event.Event
+}
+
+func (h *handledFrames) of(conn *transport.Conn) sharer.Conn {
+	return &handlingConn{Conn: conn, frames: h}
+}
+
+func (h *handledFrames) handled(name string, frame event.Event) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	if h.from == nil {
+		h.from = make(map[string][]event.Event)
+	}
+	h.from[name] = append(h.from[name], frame)
+}
+
+func (h *handledFrames) dragEndsFrom(name string) int {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	ends := 0
+	for _, frame := range h.from[name] {
+		if files, _ := event.SplitDragFiles(frame.Value); frame.IsControl() && frame.Code == event.ControlDragFiles && files == 0 {
+			ends++
+		}
+	}
+	return ends
+}
+
+type handlingConn struct {
+	*transport.Conn
+	frames *handledFrames
+	inHand *event.Event
+}
+
+func (c *handlingConn) Receive() (event.Event, error) {
+	if c.inHand != nil {
+		c.frames.handled(c.Peer().Name, *c.inHand)
+		c.inHand = nil
+	}
+	frame, err := c.Conn.Receive()
+	if err == nil {
+		c.inHand = &frame
+	}
+	return frame, err
 }
 
 type describedDrags struct {
