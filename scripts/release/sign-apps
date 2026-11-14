@@ -2,9 +2,13 @@
 set -eu
 
 identifier=com.github.rodrigogaraujo.lanhop
+if [ "${1:-}" = --identifier ] && [ "$#" -ge 2 ]; then
+  identifier=$2
+  shift 2
+fi
 
 if [ "$#" -lt 3 ]; then
-  echo "usage: sign-apps CERTIFICATE.p12 PASSWORD_FILE APP..." >&2
+  echo "usage: sign-apps [--identifier ID] CERTIFICATE.p12 PASSWORD_FILE APP..." >&2
   exit 64
 fi
 certificate=$1

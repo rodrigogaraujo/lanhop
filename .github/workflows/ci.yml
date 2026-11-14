@@ -207,3 +207,18 @@ jobs:
             echo "::error::check-app-requirement took an app signed ad hoc"
             exit 1
           fi
+      - name: Check apps through the Security framework, as lanhop update does
+        if: runner.os == 'macOS'
+        run: |
+          apps="$WORK/signed-apps"
+          mkdir -p "$apps"
+          cp -R "$WORK/lanhop-darwin-arm64/lanhop.app" "$apps/project.app"
+          cp "$WORK/certificate/leaf" "$apps/project.leaf"
+          cp "$WORK/other-certificate/leaf" "$apps/other.leaf"
+          cp -R "$WORK/ad-hoc.app" "$apps/ad-hoc.app"
+          cp -R "$WORK/ad-hoc.app" "$apps/other.app"
+          scripts/release/sign-apps "$WORK/other-certificate/certificate.p12" "$WORK/other-certificate/password" "$apps/other.app"
+          cp -R "$WORK/ad-hoc.app" "$apps/other-identifier.app"
+          scripts/release/sign-apps --identifier com.example.other "$WORK/certificate/certificate.p12" "$WORK/certificate/password" "$apps/other-identifier.app"
+          LANHOP_TEST_SIGNED_APPS="$apps" go test -count=1 -v -run 'TestTheSecurityFrameworkChecksTheRequirement' ./internal/update | tee "$WORK/app-check.log"
+          grep -q -- '--- PASS: TestTheSecurityFrameworkChecksTheRequirement' "$WORK/app-check.log"
