@@ -412,6 +412,7 @@ func (d *Desk[M]) answerArrived(side M) (current bool, leave int) {
 
 func (d *Desk[M]) writeOffAnswersOf(side M) {
 	if owing := d.answers[side]; owing != nil && len(owing.due) > 0 {
+		d.lastLeave = max(d.lastLeave, owing.due[len(owing.due)-1])
 		d.withdraw()
 	}
 	delete(d.answers, side)

@@ -675,13 +675,39 @@ func TestAnAnswerThatArrivesAfterTheAnswerToALaterLeaveDoesNotReplaceIt(t *testi
 	expect(t, "the copy of A arrives", d.CopyFrom("A", "copied on A before"), send("C", "copied on B"))
 }
 
-func TestAReadOfTheCentralThatEndsAfterTheCentralGaveUpOnALaterLeaveIsNotHandedOut(t *testing.T) {
-	d := deskWith(t, "A", "B")
-	expect(t, "focus to A", d.FocusOn("A"), read())
-	expect(t, "focus from A to B", d.FocusOn("B"))
-	expect(t, "the central gives up on A", d.GaveUpOn("A"))
+func TestAReadOfTheCentralThatEndsAfterALaterLeaveWentUnansweredIsNotHandedOut(t *testing.T) {
+	unanswered := map[string]func(d *Desk[string]) []Action[string]{
+		"the central gives up on A":   func(d *Desk[string]) []Action[string] { return d.GaveUpOn("A") },
+		"the connection of A is lost": func(d *Desk[string]) []Action[string] { return d.Lost("A") },
+	}
+	for name, goesUnanswered := range unanswered {
+		t.Run(name, func(t *testing.T) {
+			d := deskWith(t, "A", "B")
+			expect(t, "focus to A", d.FocusOn("A"), read())
+			expect(t, "focus from A to B", d.FocusOn("B"))
+			expect(t, name, goesUnanswered(d))
 
-	expect(t, "the read of the central ends", readGave(t, d, "copied on the central before"))
+			expect(t, "the read of the central ends", readGave(t, d, "copied on the central before"))
+		})
+	}
+}
+
+func TestAnAnswerOfAnEarlierLeaveIsNotHandedOutAfterALaterLeaveWentUnanswered(t *testing.T) {
+	unanswered := map[string]func(d *Desk[string]) []Action[string]{
+		"the central gives up on B":   func(d *Desk[string]) []Action[string] { return d.GaveUpOn("B") },
+		"the connection of B is lost": func(d *Desk[string]) []Action[string] { return d.Lost("B") },
+	}
+	for name, goesUnanswered := range unanswered {
+		t.Run(name, func(t *testing.T) {
+			d := deskWith(t, "A", "B", "C")
+			copyOnTheCentralGoesTo(t, d, "A", "x")
+			d.FocusOn("B")
+			d.FocusOn("C")
+			expect(t, name, goesUnanswered(d))
+
+			expect(t, "the answer of A to the earlier leave", d.CopyFrom("A", "older"))
+		})
+	}
 }
 
 func TestGivingUpWritesOffOnlyOneAnswer(t *testing.T) {
