@@ -5,6 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <dispatch/dispatch.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,9 @@ static BOOL writeDone = NO;
 static CGPoint lastPosted;
 static atomic_bool downPending;
 static atomic_bool driverShouldStop;
+static atomic_long squareWindowNumber;
+static pthread_mutex_t postLock = PTHREAD_MUTEX_INITIALIZER;
+static CGPoint squareStart;
 
 static void say(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
@@ -164,15 +168,33 @@ void lanhopProbePostLeftMouse(int phase, double x, double y) {
 	}
 }
 
-bool lanhopProbeReleasePendingDown(void) {
+static bool releaseOnSquareLocked(bool moveBack) {
 	if (!atomic_load(&downPending)) {
 		return false;
 	}
-	double x = 0;
-	double y = 0;
-	lanhopProbeCursor(&x, &y);
-	lanhopProbePostLeftMouse(LANHOP_PROBE_UP, x, y);
+	if (moveBack) {
+		lanhopProbePostLeftMouse(LANHOP_PROBE_DRAGGED, squareStart.x, squareStart.y);
+	}
+	lanhopProbePostLeftMouse(LANHOP_PROBE_UP, squareStart.x, squareStart.y);
 	return true;
+}
+
+static bool postUnlessStopping(int phase, CGPoint at) {
+	pthread_mutex_lock(&postLock);
+	bool posting = !atomic_load(&driverShouldStop);
+	if (posting) {
+		lanhopProbePostLeftMouse(phase, at.x, at.y);
+	}
+	pthread_mutex_unlock(&postLock);
+	return posting;
+}
+
+bool lanhopProbeReleasePendingDown(void) {
+	pthread_mutex_lock(&postLock);
+	atomic_store(&driverShouldStop, true);
+	bool released = releaseOnSquareLocked(true);
+	pthread_mutex_unlock(&postLock);
+	return released;
 }
 
 int lanhopProbeDisplays(double *rects, int capacity) {
@@ -384,12 +406,43 @@ static void stopSoon(void) {
 	});
 }
 
-static void releaseAtCursor(NSString *why) {
-	double x = 0;
-	double y = 0;
-	lanhopProbeCursor(&x, &y);
-	lanhopProbePostLeftMouse(LANHOP_PROBE_UP, x, y);
-	say(@"%@: posted a left mouse up at %.0f,%.0f and moved nothing", why, x, y);
+static void releaseOnSquare(NSString *why, bool moveBack) {
+	pthread_mutex_lock(&postLock);
+	bool released = releaseOnSquareLocked(moveBack);
+	pthread_mutex_unlock(&postLock);
+	if (released) {
+		say(@"%@: posted a left mouse up back on the square at %.0f,%.0f", why, squareStart.x, squareStart.y);
+	} else {
+		say(@"%@", why);
+	}
+}
+
+static NSString *windowCovering(CGPoint at) {
+	CGWindowID own = (CGWindowID)atomic_load(&squareWindowNumber);
+	if (own == 0) {
+		return @"an unknown window (the square has no window number yet)";
+	}
+	CFArrayRef above = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenAboveWindow, own);
+	if (above == NULL) {
+		return nil;
+	}
+	NSString *found = nil;
+	for (NSDictionary *info in (NSArray *)above) {
+		CGRect bounds;
+		CFDictionaryRef bounding = (CFDictionaryRef)[info objectForKey:(id)kCGWindowBounds];
+		if (bounding == NULL || !CGRectMakeWithDictionaryRepresentation(bounding, &bounds) || !CGRectContainsPoint(bounds, at)) {
+			continue;
+		}
+		NSNumber *alpha = [info objectForKey:(id)kCGWindowAlpha];
+		if (alpha != nil && [alpha doubleValue] <= 0) {
+			continue;
+		}
+		NSString *owner = [info objectForKey:(id)kCGWindowOwnerName];
+		found = [NSString stringWithFormat:@"a window of %@ at layer %@", owner != nil ? owner : @"another program", [info objectForKey:(id)kCGWindowLayer]];
+		break;
+	}
+	CFRelease(above);
+	return found;
 }
 
 static bool pauseUnlessStopping(useconds_t microseconds) {
@@ -404,56 +457,68 @@ static bool pauseUnlessStopping(useconds_t microseconds) {
 }
 
 static void drive(dispatch_group_t group, dispatch_semaphore_t downSeen, dispatch_semaphore_t began, CGPoint start, CGPoint target, int steps, double holdSeconds) {
+	squareStart = start;
 	dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-		if (!pauseUnlessStopping(700000)) {
-			return;
-		}
-		double x = 0;
-		double y = 0;
-		lanhopProbeCursor(&x, &y);
-		if (fabs(x - start.x) > cursorTolerance || fabs(y - start.y) > cursorTolerance) {
-			say(@"the cursor moved from %.0f,%.0f to %.0f,%.0f before the posted mouse down, so nothing was posted", start.x, start.y, x, y);
-			stopSoon();
-			return;
-		}
-		say(@"posting a left mouse down at %.0f,%.0f (display points, origin at the top left)", start.x, start.y);
-		lanhopProbePostLeftMouse(LANHOP_PROBE_DOWN, start.x, start.y);
-		if (dispatch_semaphore_wait(downSeen, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) != 0) {
-			releaseAtCursor(@"the square did not get the posted mouse down within 1 s");
-			stopSoon();
-			return;
-		}
-		CGPoint at = start;
-		for (int i = 1; i <= 6; i++) {
-			if (!pauseUnlessStopping(i == 1 ? 100000 : 20000)) {
-				releaseAtCursor(@"the probe is stopping");
+		@autoreleasepool {
+			if (!pauseUnlessStopping(700000)) {
 				return;
 			}
-			at = CGPointMake(start.x + 3 * i, start.y);
-			lanhopProbePostLeftMouse(LANHOP_PROBE_DRAGGED, at.x, at.y);
-		}
-		say(@"posted 6 mouse dragged events of 3 points inside the square");
-		if (dispatch_semaphore_wait(began, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
-			releaseAtCursor(@"no drag session began within 2 s of the posted events");
-			stopSoon();
-			return;
-		}
-		say(@"moving to %.0f,%.0f in %d posted mouse dragged events", target.x, target.y, steps);
-		CGPoint from = at;
-		for (int i = 1; i <= steps; i++) {
-			if (!pauseUnlessStopping(20000)) {
-				releaseAtCursor(@"the probe is stopping");
+			double x = 0;
+			double y = 0;
+			lanhopProbeCursor(&x, &y);
+			if (fabs(x - start.x) > cursorTolerance || fabs(y - start.y) > cursorTolerance) {
+				say(@"the cursor moved from %.0f,%.0f to %.0f,%.0f before the posted mouse down, so nothing was posted", start.x, start.y, x, y);
+				stopSoon();
 				return;
 			}
-			double share = (double)i / steps;
-			lanhopProbePostLeftMouse(LANHOP_PROBE_DRAGGED, from.x + (target.x - from.x) * share, from.y + (target.y - from.y) * share);
+			NSString *covering = windowCovering(start);
+			if (covering != nil) {
+				say(@"%@ covers the square at %.0f,%.0f, so nothing was posted", covering, start.x, start.y);
+				stopSoon();
+				return;
+			}
+			say(@"posting a left mouse down at %.0f,%.0f, the middle of the square (display points, origin at the top left)", start.x, start.y);
+			if (!postUnlessStopping(LANHOP_PROBE_DOWN, start)) {
+				return;
+			}
+			if (dispatch_semaphore_wait(downSeen, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) != 0) {
+				releaseOnSquare(@"the square did not get the posted mouse down within 1 s, so nothing moved", false);
+				stopSoon();
+				return;
+			}
+			CGPoint at = start;
+			for (int i = 1; i <= 6; i++) {
+				at = CGPointMake(start.x + 3 * i, start.y);
+				if (!pauseUnlessStopping(i == 1 ? 100000 : 20000) || !postUnlessStopping(LANHOP_PROBE_DRAGGED, at)) {
+					releaseOnSquare(@"the probe is stopping", true);
+					return;
+				}
+			}
+			say(@"posted 6 mouse dragged events of 3 points inside the square");
+			if (dispatch_semaphore_wait(began, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
+				releaseOnSquare(@"no drag session began within 2 s of the posted events, so nothing moved", true);
+				stopSoon();
+				return;
+			}
+			say(@"moving to %.0f,%.0f in %d posted mouse dragged events", target.x, target.y, steps);
+			CGPoint from = at;
+			for (int i = 1; i <= steps; i++) {
+				double share = (double)i / steps;
+				CGPoint next = CGPointMake(from.x + (target.x - from.x) * share, from.y + (target.y - from.y) * share);
+				if (!pauseUnlessStopping(20000) || !postUnlessStopping(LANHOP_PROBE_DRAGGED, next)) {
+					releaseOnSquare(@"the probe is stopping", true);
+					return;
+				}
+			}
+			if (!pauseUnlessStopping((useconds_t)(holdSeconds * 1000000))) {
+				releaseOnSquare(@"the probe is stopping", true);
+				return;
+			}
+			say(@"posting a left mouse up at %.0f,%.0f", target.x, target.y);
+			if (!postUnlessStopping(LANHOP_PROBE_UP, target)) {
+				releaseOnSquare(@"the probe is stopping", true);
+			}
 		}
-		if (!pauseUnlessStopping((useconds_t)(holdSeconds * 1000000))) {
-			releaseAtCursor(@"the probe is stopping");
-			return;
-		}
-		say(@"posting a left mouse up at %.0f,%.0f", target.x, target.y);
-		lanhopProbePostLeftMouse(LANHOP_PROBE_UP, target.x, target.y);
 	});
 }
 
@@ -481,8 +546,19 @@ int lanhopProbePromise(const char *path, double toX, double toY, bool manual, in
 		[NSApplication sharedApplication];
 		[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
-		NSPoint mouse = [NSEvent mouseLocation];
-		NSRect frame = NSMakeRect(mouse.x - squareSide / 2, mouse.y - squareSide / 2, squareSide, squareSide);
+		NSScreen *primary = [[NSScreen screens] firstObject];
+		if (primary == nil) {
+			say(@"no screen to put the square on");
+			dispatch_release(downSeen);
+			dispatch_release(began);
+			dispatch_release(driving);
+			return LANHOP_PROBE_NO_SESSION;
+		}
+		double startX = 0;
+		double startY = 0;
+		lanhopProbeCursor(&startX, &startY);
+		CGPoint start = CGPointMake(startX, startY);
+		NSRect frame = NSMakeRect(start.x - squareSide / 2, NSMaxY([primary frame]) - start.y - squareSide / 2, squareSide, squareSide);
 		NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
 		[window setReleasedWhenClosed:NO];
 		[window setLevel:NSStatusWindowLevel];
@@ -494,15 +570,13 @@ int lanhopProbePromise(const char *path, double toX, double toY, bool manual, in
 		} else {
 			[NSApp activateIgnoringOtherApps:YES];
 		}
-		say(@"a blue square of %.0f points is under the cursor at %.0f,%.0f (screen points, origin at the bottom left)", squareSide, mouse.x, mouse.y);
+		atomic_store(&squareWindowNumber, (long)[window windowNumber]);
+		say(@"a blue square of %.0f points is centred on the cursor at %.0f,%.0f (display points, origin at the top left)", squareSide, start.x, start.y);
 
 		if (manual) {
-			say(@"-manual: drag from the blue square by hand within %.0f s and drop on a Finder window or the desktop", timeoutSeconds);
+			say(@"-manual: drag from the blue square by hand within %.0f s and drop it on the Finder window of the scratch target folder", timeoutSeconds);
 		} else {
-			double x = 0;
-			double y = 0;
-			lanhopProbeCursor(&x, &y);
-			drive(driving, downSeen, began, CGPointMake(x, y), CGPointMake(toX, toY), steps, holdSeconds);
+			drive(driving, downSeen, began, start, CGPointMake(toX, toY), steps, holdSeconds);
 		}
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			if (!sessionEnded) {
@@ -519,7 +593,7 @@ int lanhopProbePromise(const char *path, double toX, double toY, bool manual, in
 			say(@"the posted events were still running 5 s after the end");
 		}
 		if (lanhopProbeReleasePendingDown()) {
-			say(@"posted the pending left mouse up at the cursor");
+			say(@"posted the pending left mouse up back on the square at %.0f,%.0f", squareStart.x, squareStart.y);
 		}
 		[window orderOut:nil];
 		[window close];

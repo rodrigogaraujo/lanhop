@@ -115,7 +115,7 @@ func parseCommand(args []string, home string) (command, error) {
 		set.DurationVar(&c.runFor, "for", 5*time.Minute, "")
 	case "cancel":
 		set.DurationVar(&c.every, "every", 20*time.Millisecond, "")
-		set.DurationVar(&c.wait, "wait", 800*time.Millisecond, "")
+		set.DurationVar(&c.wait, "wait", 2*time.Second, "")
 		set.DurationVar(&c.gap, "gap", 20*time.Millisecond, "")
 		set.DurationVar(&c.after, "after", 3*time.Second, "")
 		set.DurationVar(&c.timeout, "timeout", 2*time.Minute, "")

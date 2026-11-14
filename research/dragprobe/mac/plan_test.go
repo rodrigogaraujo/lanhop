@@ -34,10 +34,10 @@ func TestAManualPromiseWaitsLongerAndFlagsMayFollowTheFile(t *testing.T) {
 	}
 }
 
-func TestCancelWaits800MillisecondsByDefault(t *testing.T) {
+func TestCancelWaitsTwoSecondsByDefault(t *testing.T) {
 	c, err := parseCommand([]string{"cancel", "-log", "~/probe.log"}, "/Users/someone")
 
-	if err != nil || c.wait != 800*time.Millisecond || c.every != 20*time.Millisecond || c.logPath != "/Users/someone/probe.log" {
+	if err != nil || c.wait != 2*time.Second || c.every != 20*time.Millisecond || c.logPath != "/Users/someone/probe.log" {
 		t.Errorf("parsed %+v, %v", c, err)
 	}
 }

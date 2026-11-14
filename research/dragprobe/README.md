@@ -45,7 +45,7 @@ gh run download "$run" --repo rodrigogaraujo/lanhop -n lanhop-dragprobe-linux-am
 ## Recovery
 
 - If the system behaves as if a mouse button is still held, click once.
-- On the Mac, a probe that stops, on a time limit, an error or `pkill`, first posts the mouse up of any mouse down it posted.
+- On the Mac, a probe that stops, on a time limit, an error or `pkill`, first posts the mouse up of any mouse down it posted. It posts that mouse up back on its own blue square, which refuses the drop.
 - On Linux, the pointer grab of `drop` and `grab` ends when the probe exits, even if it crashes.
 - **Do not press Ctrl+Z** on a Linux probe. It freezes the probe with the pointer grab held, so the mouse stops working until the probe is resumed (`fg`) or killed.
 
@@ -90,7 +90,7 @@ Every command starts the app with `open -n -W ~/lanhop-dragprobe/lanhop-dragprob
    open -n -W ~/lanhop-dragprobe/lanhop-dragprobe.app --args cancel
    ```
 
-   Start dragging `throwaway.txt`, hold it still over the `target` folder, and keep the button held. About 800 ms after the drag starts, the probe posts Escape and a mouse up.
+   Start dragging `throwaway.txt`, bring it over the `target` folder within 2 seconds, hold it still there, and keep the button held. About 2 seconds after the drag starts, the probe posts Escape and a mouse up. `-wait` changes the delay, up to 10s.
    - Watch whether the drag image slides back at that moment, while the button is still held.
    - Then release, and check that `target` is still empty.
    - The log shows the left button state from the hardware, and with the posted events counted.
@@ -112,8 +112,9 @@ Every command starts the app with `open -n -W ~/lanhop-dragprobe/lanhop-dragprob
    ```
 
    Rest the cursor about 300 points to the left of the open Finder window of `target`. Without `-to`, the probe drags 300 points to the right of the cursor. Press Enter, and do not touch the mouse until the log says the probe ended.
-   - The probe posts a mouse down on its square, a few small drag steps, then a drag to the target and a mouse up there.
-   - If the square does not get the mouse down, or no drag session begins, the probe posts only a mouse up at the cursor, moves nothing, and says why in the log.
+   - The probe puts its square around the cursor and posts a mouse down in the middle of it, then a few small drag steps, then a drag to the target and a mouse up there.
+   - It posts nothing if the cursor moved, or if another window, such as a notification, covers the square. The log says which.
+   - If the square does not get the mouse down, or no drag session begins, the probe posts only a mouse up on its square, moves nothing, and says why in the log.
    - Look for the same lines as in step 3. Delete the copies from `target` afterwards.
    - Flags: `-to x,y` (display points from the top left of the main display, as the log prints them), `-dx`, `-dy`, `-steps` (at most 200), `-hold` (at most 3s), `-timeout`.
 
@@ -149,7 +150,7 @@ Every command starts the app with `open -n -W ~/lanhop-dragprobe/lanhop-dragprob
    ~/lanhop-dragprobe cancel
    ```
 
-   Start dragging `throwaway.txt` in Nautilus, hold it over `target`, and keep the button held. About 800 ms after the drag starts, the probe checks that X reports button 1 held, then sends Escape and a left button release through its uinput device.
+   Start dragging `throwaway.txt` in Nautilus, bring it over `target` quickly, hold it still there, and keep the button held. About 800 ms after the drag starts, the probe checks that X reports button 1 held, then sends Escape and a left button release through its uinput device. Use `-wait 2s` if 800 ms is too short to reach `target`.
    - Watch whether the drag ends while you still hold the button. Then release and check that `target` is empty.
    - If X does not report button 1 held at that moment, the probe sends nothing and says so.
 

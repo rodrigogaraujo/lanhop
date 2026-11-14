@@ -160,7 +160,7 @@ func mayPost() bool {
 }
 
 func watch(c command) int {
-	printer.Say("watching the drag pasteboard every %v for %v; start dragging a file in Finder", c.every, c.runFor)
+	printer.Say("watching the drag pasteboard every %v for %v; drag the throwaway file in Finder and drop it back where it was", c.every, c.runFor)
 	last := changeCount()
 	printer.Say("drag pasteboard change count now: %d", last)
 	deadline := time.Now().Add(c.runFor)
@@ -185,7 +185,7 @@ func cancel(c command) int {
 	if !mayPost() {
 		return 1
 	}
-	printer.Say("start dragging a file in Finder, hold it still over a folder, and keep the button held; the probe acts %v after it sees the drag", c.wait)
+	printer.Say("start dragging the throwaway file in Finder, hold it still over the scratch target folder, and keep the button held; the probe acts %v after it sees the drag", c.wait)
 	last := changeCount()
 	deadline := time.Now().Add(c.timeout)
 	for {

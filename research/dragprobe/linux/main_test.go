@@ -47,6 +47,8 @@ func TestWrongCommandLinesAreRefused(t *testing.T) {
 		{"drop", "a", "b"},
 		{"watch", "file"},
 		{"grab", "-dx", "x"},
+		{"cancel", "-gap", "1001ms"},
+		{"cancel", "-gap", "-1ms"},
 	} {
 		if _, err := parse(args); err == nil {
 			t.Errorf("parse(%q) was accepted", args)
