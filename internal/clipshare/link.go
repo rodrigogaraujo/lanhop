@@ -10,6 +10,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
+	"github.com/rodrigogaraujo/lanhop/internal/identity"
 )
 
 type Conn interface {
@@ -33,6 +34,7 @@ type delivery struct {
 type link struct {
 	conn         Conn
 	name         string
+	fingerprint  identity.Fingerprint
 	silenceLimit time.Duration
 	log          io.Writer
 
@@ -46,7 +48,9 @@ type link struct {
 	wake            chan struct{}
 	closing         chan struct{}
 
-	assembler clipboard.Assembler
+	assembler         clipboard.Assembler
+	describedFiles    int32
+	filesDescribedYet bool
 }
 
 func startLink(conn Conn, name string, silenceLimit time.Duration, log io.Writer) *link {
@@ -62,10 +66,14 @@ func startLink(conn Conn, name string, silenceLimit time.Duration, log io.Writer
 	return l
 }
 
-func (l *link) sendFrame(frame event.Event) {
+func (l *link) sendFrame(frame event.Event) (queued bool) {
+	return l.sendFrames(frame)
+}
+
+func (l *link) sendFrames(frames ...event.Event) (queued bool) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	l.queue(&delivery{slices: [][]event.Event{{frame}}, inTheWindow: clipboard.IsCopyFrame(frame)})
+	return l.queue(&delivery{slices: [][]event.Event{frames}, inTheWindow: clipboard.IsCopyFrame(frames[0])})
 }
 
 func (l *link) announce(announced *features.Set) {
@@ -157,6 +165,18 @@ func (l *link) take(frame event.Event) (text string, progress clipboard.Progress
 		l.breakOff()
 	}
 	return text, progress, err
+}
+
+func (l *link) filesDescribed(filesAndFolders int32) {
+	l.describedFiles, l.filesDescribedYet = filesAndFolders, true
+}
+
+func (l *link) filesSized(kibibytes int32) (clipboard.FileCopy, bool) {
+	if !l.filesDescribedYet {
+		return clipboard.FileCopy{}, false
+	}
+	l.filesDescribedYet = false
+	return clipboard.FileCopy{FilesAndFolders: int(l.describedFiles), Bytes: int64(kibibytes) * 1024}, true
 }
 
 func (l *link) close() {

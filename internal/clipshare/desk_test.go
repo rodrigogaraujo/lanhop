@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/arrival"
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
@@ -47,11 +48,13 @@ type timedWrite struct {
 type fakeClipboard struct {
 	mutex      sync.Mutex
 	text       string
+	paths      []string
 	refusal    error
 	mark       int64
 	marksTaken int
 	reads      int
 	writes     []timedWrite
+	fileWrites []timedFileWrite
 	readGate   chan struct{}
 	markGate   chan struct{}
 }
@@ -99,13 +102,16 @@ func (f *fakeClipboard) Read() (string, error) {
 	if f.refusal != nil {
 		return "", f.refusal
 	}
+	if f.paths != nil {
+		return "", clipboard.ErrNotText
+	}
 	return f.text, nil
 }
 
 func (f *fakeClipboard) Write(text string) (int64, error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	f.text, f.refusal = text, nil
+	f.text, f.paths, f.refusal = text, nil, nil
 	f.mark++
 	f.writes = append(f.writes, timedWrite{text: text, at: time.Now()})
 	return f.mark, nil
@@ -114,14 +120,14 @@ func (f *fakeClipboard) Write(text string) (int64, error) {
 func (f *fakeClipboard) personCopies(text string) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	f.text, f.refusal = text, nil
+	f.text, f.paths, f.refusal = text, nil, nil
 	f.mark++
 }
 
 func (f *fakeClipboard) personCopiesWhatLanhopDoesNotCarry(refusal error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	f.text, f.refusal = "", refusal
+	f.text, f.paths, f.refusal = "", nil, refusal
 	f.mark++
 }
 
@@ -287,14 +293,19 @@ func stopsWithinPatience(t *testing.T, running *sync.WaitGroup, what string) {
 }
 
 type sideUnderTest struct {
-	name       string
-	number     int
-	identity   *identity.Identity
-	clipboard  *fakeClipboard
-	switchedOn atomic.Bool
-	log        *logBook
-	replay     *timedReplay
-	runtime    *Side
+	name        string
+	number      int
+	identity    *identity.Identity
+	clipboard   *fakeClipboard
+	switchedOn  atomic.Bool
+	filesOn     atomic.Bool
+	arrivals    *arrival.Folder
+	arrivalDir  string
+	pace        *transport.Pace
+	dataAddress string
+	log         *logBook
+	replay      *timedReplay
+	runtime     *Side
 }
 
 type deskUnderTest struct {
@@ -304,6 +315,11 @@ type deskUnderTest struct {
 	sides      map[string]*sideUnderTest
 	clipboard  *fakeClipboard
 	switchedOn atomic.Bool
+	filesOn    atomic.Bool
+	files      bool
+	arrivals   *arrival.Folder
+	arrivalDir string
+	pace       *transport.Pace
 	log        *logBook
 	capture    *fakeCapture
 	runtime    *Central
@@ -312,23 +328,41 @@ type deskUnderTest struct {
 	connected  []string
 }
 
+type deskSetup struct {
+	board          *fakeClipboard
+	open           func() (Clipboard, error)
+	files          bool
+	bytesPerSecond int
+}
+
 func newDesk(t *testing.T, sideNames ...string) *deskUnderTest {
 	t.Helper()
 	board := holding("what the central held before")
-	return newDeskWithAClipboard(t, board, opening(board), sideNames...)
+	return newDeskWith(t, deskSetup{board: board, open: opening(board)}, sideNames...)
 }
 
 func newDeskWithAClipboard(t *testing.T, board *fakeClipboard, open func() (Clipboard, error), sideNames ...string) *deskUnderTest {
+	t.Helper()
+	return newDeskWith(t, deskSetup{board: board, open: open}, sideNames...)
+}
+
+func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderTest {
 	t.Helper()
 	d := &deskUnderTest{
 		t:         t,
 		identity:  newIdentity(t),
 		sides:     make(map[string]*sideUnderTest),
-		clipboard: board,
+		clipboard: setup.board,
+		files:     setup.files,
 		log:       &logBook{},
 		capture:   &fakeCapture{events: make(chan event.Event)},
 	}
 	d.switchedOn.Store(true)
+	if setup.files {
+		d.filesOn.Store(true)
+		d.pace = transport.NewPace(setup.bytesPerSecond)
+		d.arrivalDir, d.arrivals = openArrivals(t, 0)
+	}
 	for i, name := range sideNames {
 		side := &sideUnderTest{
 			name:      name,
@@ -339,10 +373,17 @@ func newDeskWithAClipboard(t *testing.T, board *fakeClipboard, open func() (Clip
 			replay:    &timedReplay{},
 		}
 		side.switchedOn.Store(true)
+		if setup.files {
+			side.filesOn.Store(true)
+			side.pace = transport.NewPace(setup.bytesPerSecond)
+			side.arrivalDir, side.arrivals = openArrivals(t, 0)
+		}
 		d.sides[name] = side
 		d.peers = append(d.peers, trust.Peer{Name: name, Fingerprint: side.identity.Fingerprint})
 	}
-	listener, err := transport.Listen("127.0.0.1:0", transportFor(d.identity), pairedMachines(d.peers))
+	listening := transportFor(d.identity)
+	listening.DataPace = d.pace
+	listener, err := transport.Listen("127.0.0.1:0", listening, pairedMachines(d.peers))
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -357,7 +398,13 @@ func newDeskWithAClipboard(t *testing.T, board *fakeClipboard, open func() (Clip
 		Watch: edge.DefaultSettings(),
 	})
 	machine.OnReceivers(d.noteConnected)
-	d.runtime = NewCentral(Config{Open: open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: d.log})
+	config := Config{Open: setup.open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: d.log}
+	if setup.files {
+		config.FilesOn = d.filesOn.Load
+		config.Arrivals = d.arrivals
+		config.AwaitData = listener.AwaitData
+	}
+	d.runtime = NewCentral(config)
 	machine.ShareClipboard(d.runtime)
 
 	ctx, stop := context.WithCancel(context.Background())
@@ -407,20 +454,33 @@ func (d *deskUnderTest) waitUntilConnected(name string) {
 func (d *deskUnderTest) sideJoins(name string) *sideUnderTest {
 	d.t.Helper()
 	side := d.sides[name]
-	d.startSide(side, d.address, opening(side.clipboard))
+	d.startSide(side, d.address, d.clipboardOpener(side.clipboard))
 	return side
 }
 
 func (d *deskUnderTest) sideJoinsOverASlowLink(name string) *sideUnderTest {
 	d.t.Helper()
 	side := d.sides[name]
-	d.startSide(side, throttledProxyTo(d.t, d.address, twentyMegabitsPerSecond), opening(side.clipboard))
+	d.startSide(side, throttledProxyTo(d.t, d.address, twentyMegabitsPerSecond), d.clipboardOpener(side.clipboard))
 	return side
+}
+
+func (d *deskUnderTest) clipboardOpener(board *fakeClipboard) func() (Clipboard, error) {
+	if d.files {
+		return opening(takingFiles{board})
+	}
+	return opening(board)
 }
 
 func (d *deskUnderTest) startSide(side *sideUnderTest, address string, open func() (Clipboard, error)) {
 	d.t.Helper()
-	side.runtime = NewSide(Config{Open: open, SwitchedOn: side.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: side.log})
+	config := Config{Open: open, SwitchedOn: side.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: side.log}
+	if d.files {
+		config.FilesOn = side.filesOn.Load
+		config.Arrivals = side.arrivals
+		config.DialData = d.dataDialerOf(side)
+	}
+	side.runtime = NewSide(config)
 	ctx, stop := context.WithCancel(context.Background())
 	var running sync.WaitGroup
 	running.Add(2)
@@ -467,7 +527,7 @@ func (d *deskUnderTest) waitUntilTheCentralIs(on bool) {
 	d.t.Helper()
 	eventually(d.t, "the central following its switch", func() bool {
 		answer := make(chan bool, 1)
-		d.runtime.tell(func() { answer <- d.runtime.on })
+		d.runtime.tell(func() { answer <- d.runtime.on != 0 })
 		select {
 		case got := <-answer:
 			return got == on
@@ -483,7 +543,7 @@ func namesTakingPart(t *testing.T, c *Central) []string {
 	c.tell(func() {
 		var names []string
 		for l, machine := range c.sides {
-			if machine.takes {
+			if machine.takes != 0 {
 				names = append(names, l.name)
 			}
 		}
