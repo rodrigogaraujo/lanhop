@@ -59,14 +59,18 @@ static CGEventSourceRef eventSource(void) {
 	return source;
 }
 
-static void post(CGEventRef event, uint64_t flags) {
+static void postAt(CGEventRef event, uint64_t flags, CGEventTapLocation where) {
 	if (event == NULL) {
 		return;
 	}
 	CGEventSetFlags(event, (CGEventFlags)flags);
 	CGEventSetIntegerValueField(event, kCGEventSourceUserData, LANHOP_MARKER);
-	CGEventPost(kCGHIDEventTap, event);
+	CGEventPost(where, event);
 	CFRelease(event);
+}
+
+static void post(CGEventRef event, uint64_t flags) {
+	postAt(event, flags, kCGHIDEventTap);
 }
 
 static CGEventType mouseType(int action, int button) {
@@ -105,7 +109,7 @@ void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, bool autorepeat, 
 	post(event, flags);
 }
 
-void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags) {
+static void postMouseAt(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags, CGEventTapLocation where) {
 	CGEventRef event = CGEventCreateMouseEvent(eventSource(), mouseType(action, button), CGPointMake(x, y), (CGMouseButton)button);
 	if (event == NULL) {
 		return;
@@ -117,7 +121,15 @@ void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks,
 		CGEventSetIntegerValueField(event, kCGMouseEventDeltaX, deltaX);
 		CGEventSetIntegerValueField(event, kCGMouseEventDeltaY, deltaY);
 	}
-	post(event, flags);
+	postAt(event, flags, where);
+}
+
+void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags) {
+	postMouseAt(action, x, y, button, clicks, deltaX, deltaY, flags, kCGHIDEventTap);
+}
+
+void lanhopPostMouseAtSession(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags) {
+	postMouseAt(action, x, y, button, clicks, deltaX, deltaY, flags, kCGSessionEventTap);
 }
 
 void lanhopPostScroll(int32_t vertical, int32_t horizontal, uint64_t flags) {

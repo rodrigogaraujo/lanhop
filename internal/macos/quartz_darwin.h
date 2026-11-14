@@ -49,6 +49,7 @@ bool lanhopCanListen(void);
 bool lanhopIsTrusted(void);
 void lanhopPostKey(uint16_t keyCode, bool down, bool modifier, bool autorepeat, uint64_t flags);
 void lanhopPostMouse(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags);
+void lanhopPostMouseAtSession(int action, double x, double y, int button, int64_t clicks, int64_t deltaX, int64_t deltaY, uint64_t flags);
 void lanhopPostScroll(int32_t vertical, int32_t horizontal, uint64_t flags);
 void lanhopCursor(double *x, double *y);
 void lanhopPlaceCursor(double x, double y);
