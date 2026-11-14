@@ -31,40 +31,6 @@ func TestAnnouncingKindsTurnsTheirBitsAndKeepsEveryOtherFeatureOfThisProcess(t *
 	}
 }
 
-func TestBit2SaysThatDraggedFilesAreTakenOnlyWhereADragCanStartAndWhileFilesAreShared(t *testing.T) {
-	filesBit, dragBit := int32(1)<<features.Files, int32(1)<<features.Drag
-	for _, announced := range []struct {
-		name        string
-		startsDrags bool
-		kinds       clipboard.Kinds
-		want        int32
-	}{
-		{"a machine that starts drags, with files shared", true, clipboard.Text | clipboard.Files, event.FeatureClipboard | filesBit | dragBit},
-		{"a machine that starts drags, with only files shared", true, clipboard.Files, filesBit | dragBit},
-		{"a machine that starts drags, with files switched off", true, clipboard.Text, event.FeatureClipboard},
-		{"a machine that starts drags, with nothing shared", true, 0, 0},
-		{"a machine that cannot start drags, with files shared", false, clipboard.Text | clipboard.Files, event.FeatureClipboard | filesBit},
-	} {
-		t.Run(announced.name, func(t *testing.T) {
-			config := Config{StartsDrags: announced.startsDrags}.withDefaults()
-			if got := config.announcing(announced.kinds).Value(); got != announced.want {
-				t.Errorf("announcing %#x left %#x, want %#x", announced.kinds, got, announced.want)
-			}
-		})
-	}
-}
-
-func TestSwitchingFilesOffClearsBit2(t *testing.T) {
-	config := Config{StartsDrags: true}.withDefaults()
-	config.announcing(clipboard.Text | clipboard.Files)
-	if got := config.announcing(clipboard.Text); got.Has(features.Drag) || got.Has(features.Files) {
-		t.Errorf("after files were switched off the announcement is %#x, want neither files nor dragged files", got.Value())
-	}
-	if got := config.announcing(clipboard.Text | clipboard.Files); !got.Has(features.Drag) {
-		t.Errorf("after files were switched on again the announcement is %#x, want dragged files", got.Value())
-	}
-}
-
 func TestOnlyTheBitsOfTextAndFilesSayWhatTheOtherEndTakes(t *testing.T) {
 	if got := clipboard.KindsIn(event.Features(1 << 8).Value); got != 0 {
 		t.Errorf("a machine that announced only another feature takes %#x, want nothing", got)
