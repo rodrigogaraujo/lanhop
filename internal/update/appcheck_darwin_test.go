@@ -125,11 +125,14 @@ func throughAnArchive(t *testing.T, app string) string {
 		if err != nil {
 			return err
 		}
-		relative, err := filepath.Rel(filepath.Dir(app), path)
+		relative, err := filepath.Rel(app, path)
 		if err != nil {
 			return err
 		}
-		header.Name = root + "/" + filepath.ToSlash(relative)
+		header.Name = root + "/lanhop.app"
+		if relative != "." {
+			header.Name += "/" + filepath.ToSlash(relative)
+		}
 		if entry.IsDir() {
 			header.Name += "/"
 		}
@@ -159,5 +162,9 @@ func throughAnArchive(t *testing.T, app string) string {
 	if err := unpack(packed.Bytes(), into, root); err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(into, root, "lanhop.app")
+	unpacked := filepath.Join(into, root, "lanhop.app")
+	if _, err := os.Stat(filepath.Join(unpacked, "Contents", "MacOS", "lanhop")); err != nil {
+		t.Fatalf("the app did not come out of the archive whole: %v", err)
+	}
+	return unpacked
 }
