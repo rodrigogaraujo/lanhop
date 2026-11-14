@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -65,7 +64,7 @@ const (
 )
 
 var (
-	ErrNoAnswer    = errors.New("x11: the program that owns the clipboard did not answer")
+	ErrNoAnswer    = errors.New("x11: the program that owns the clipboard or the drag did not answer")
 	ErrRefused     = errors.New("x11: the X server did not let lanhop own the clipboard")
 	ErrNoXFixes    = errors.New("x11: the X server has no XFIXES extension")
 	ErrNotAbsolute = errors.New("x11: a file is not given by an absolute path")
@@ -86,11 +85,6 @@ const (
 	refusedHint
 )
 
-type selectionNotify struct {
-	target   uint32
-	property uint32
-}
-
 type offer struct {
 	target uint32
 	kind   uint32
@@ -109,13 +103,12 @@ func (h heldCopy) holdsFiles() bool {
 }
 
 type Clipboard struct {
+	*selectionReader
 	c            *conn
 	window       uint32
 	atoms        atoms
 	xfixesEvent  byte
 	writer       *propertyWriter
-	notifies     chan selectionNotify
-	newValues    chan uint32
 	times        chan uint32
 	state        sync.Mutex
 	mark         int64
@@ -123,9 +116,6 @@ type Clipboard struct {
 	ownedSince   uint32
 	held         heldCopy
 	extraOffers  map[uint32][]byte
-	readTimeout  time.Duration
-	reader       atomic.Uint32
-	retired      []retiredWindow
 	wholeRead    time.Duration
 	handleEvents func(event []byte)
 }
@@ -140,11 +130,9 @@ func openNamed(value, authority string) (*Clipboard, error) {
 
 func open(d display, cookie []byte) (*Clipboard, error) {
 	board := &Clipboard{
-		notifies:    make(chan selectionNotify, 8),
-		newValues:   make(chan uint32, 64),
-		times:       make(chan uint32, 8),
-		readTimeout: answerTimeout,
-		wholeRead:   wholeReadTimeout,
+		selectionReader: newSelectionReader(),
+		times:           make(chan uint32, 8),
+		wholeRead:       wholeReadTimeout,
 	}
 	c, err := dial(d, cookie, board.handle)
 	if err != nil {
@@ -185,17 +173,13 @@ func (b *Clipboard) prepare() error {
 	}
 	b.writer = newPropertyWriter(b.c, b.atoms.incr)
 
-	reply, err := b.c.call(newRequest(opQueryExtension, 0).u16(uint16(len("XFIXES"))).u16(0).raw([]byte("XFIXES")).done())
+	xfixes, firstEvent, err := queryXFixes(b.c)
 	if err != nil {
 		return err
 	}
-	if reply[8] == 0 {
-		return ErrNoXFixes
-	}
-	xfixes := reply[9]
-	b.xfixesEvent = reply[10]
-	if _, err := b.c.call(newRequest(xfixes, xfixesQueryVersion).u32(5).u32(0).done()); err != nil {
-		return fmt.Errorf("x11: XFIXES did not answer: %w", err)
+	b.xfixesEvent = firstEvent
+	if err := agreeXFixesVersion(b.c, xfixes); err != nil {
+		return err
 	}
 
 	b.window = b.c.newID()
@@ -208,7 +192,7 @@ func (b *Clipboard) prepare() error {
 	if err := b.c.send(newRequest(xfixes, xfixesSelectSelectionInput).u32(b.window).u32(b.atoms.clipboard).u32(selectionEventsMask).done()); err != nil {
 		return err
 	}
-	if err := b.openReader(); err != nil {
+	if err := b.attach(b.c, b.atoms.clipboard, b.atoms.ownProperty, b.atoms.incr); err != nil {
 		return err
 	}
 	if _, err := b.owner(); err != nil {
@@ -407,16 +391,7 @@ func (b *Clipboard) ReadFiles() ([]string, error) {
 	if !found {
 		return nil, clipboard.ErrNotFiles
 	}
-	list, err := b.convert(target, fileListLimit, until)
-	switch {
-	case errors.Is(err, errTargetRefused):
-		return nil, clipboard.ErrNotFiles
-	case errors.Is(err, clipboard.ErrTooLarge):
-		return nil, fmt.Errorf("%w: the list is longer than %d bytes", clipboard.ErrTooManyFiles, fileListLimit)
-	case err != nil:
-		return nil, err
-	}
-	return pathsInList(string(list), target == b.atoms.gnomeFiles)
+	return b.readPaths(target, currentTime, target == b.atoms.gnomeFiles, until)
 }
 
 func (b *Clipboard) fileListTarget(offered []uint32) (uint32, bool) {
@@ -486,18 +461,11 @@ func (b *Clipboard) markedPrivate(offered []uint32, until time.Time) bool {
 }
 
 func (b *Clipboard) targetsOffered(until time.Time) ([]uint32, error) {
-	data, err := b.convert(b.atoms.targets, 4096, until)
+	offered, err := b.offeredTargets(b.atoms.targets, currentTime, until)
 	if errors.Is(err, errTargetRefused) {
 		return []uint32{b.atoms.utf8String}, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	offered := make([]uint32, 0, len(data)/4)
-	for i := 0; i+4 <= len(data); i += 4 {
-		offered = append(offered, binary.LittleEndian.Uint32(data[i:i+4]))
-	}
-	return offered, nil
+	return offered, err
 }
 
 func (b *Clipboard) offersFiles(offered []uint32, until time.Time) bool {
@@ -540,154 +508,6 @@ func (b *Clipboard) textTarget(offered []uint32) (uint32, bool) {
 	return 0, false
 }
 
-var errTargetRefused = errors.New("x11: the owner of the clipboard refused that format")
-
-func (b *Clipboard) openReader() error {
-	window := b.c.newID()
-	create := newRequest(opCreateWindow, 0).u32(window).u32(b.c.root).
-		u16(0).u16(0).u16(1).u16(1).u16(0).u16(classInputOnly).u32(0).
-		u32(attributeEventMask).u32(propertyChangeMask).done()
-	if err := b.c.send(create); err != nil {
-		return err
-	}
-	b.reader.Store(window)
-	return nil
-}
-
-type retiredWindow struct {
-	window uint32
-	since  time.Time
-}
-
-func (b *Clipboard) leaveTheOwnerNothingToWriteInto() {
-	abandoned := b.reader.Load()
-	if err := b.openReader(); err != nil {
-		return
-	}
-	now := time.Now()
-	for len(b.retired) > 0 && (now.Sub(b.retired[0].since) > transferLifetime || len(b.retired) >= retiredAtMost) {
-		b.c.send(newRequest(opDestroyWindow, 0).u32(b.retired[0].window).done())
-		b.retired = b.retired[1:]
-	}
-	b.retired = append(b.retired, retiredWindow{window: abandoned, since: now})
-}
-
-func (b *Clipboard) connectionLost() bool {
-	select {
-	case <-b.c.closed:
-		return true
-	default:
-		return false
-	}
-}
-
-func (b *Clipboard) convert(target uint32, limit int, until time.Time) ([]byte, error) {
-	if !time.Now().Before(until) {
-		return nil, ErrNoAnswer
-	}
-	data, err := b.askTheOwner(target, limit, until)
-	if err != nil && !errors.Is(err, errTargetRefused) && !b.connectionLost() {
-		b.leaveTheOwnerNothingToWriteInto()
-	}
-	return data, err
-}
-
-func (b *Clipboard) askTheOwner(target uint32, limit int, until time.Time) ([]byte, error) {
-	reader := b.reader.Load()
-	drain(b.notifies)
-	if err := b.c.send(newRequest(opDeleteProperty, 0).u32(reader).u32(b.atoms.ownProperty).done()); err != nil {
-		return nil, err
-	}
-	request := newRequest(opConvertSelection, 0).u32(reader).u32(b.atoms.clipboard).u32(target).u32(b.atoms.ownProperty).u32(currentTime).done()
-	if err := b.c.send(request); err != nil {
-		return nil, err
-	}
-	deadline := b.nextStepDeadline(until)
-	for {
-		select {
-		case got := <-b.notifies:
-			if got.target != target {
-				continue
-			}
-			if got.property == atomNone {
-				return nil, errTargetRefused
-			}
-			drain(b.newValues)
-			return b.receive(limit, until)
-		case <-deadline:
-			return nil, ErrNoAnswer
-		case <-b.c.closed:
-			return nil, b.c.err()
-		}
-	}
-}
-
-func (b *Clipboard) receive(limit int, until time.Time) ([]byte, error) {
-	kind, data, tooLarge, err := b.takeProperty(limit)
-	if err != nil {
-		return nil, err
-	}
-	if kind != b.atoms.incr {
-		if tooLarge {
-			return nil, clipboard.ErrTooLarge
-		}
-		return data, nil
-	}
-	var whole []byte
-	for {
-		if err := b.waitForNewValue(b.nextStepDeadline(until)); err != nil {
-			return nil, err
-		}
-		_, part, tooLarge, err := b.takeProperty(limit - len(whole))
-		if err != nil {
-			return nil, err
-		}
-		if tooLarge {
-			return nil, clipboard.ErrTooLarge
-		}
-		if len(part) == 0 {
-			return whole, nil
-		}
-		whole = append(whole, part...)
-	}
-}
-
-func (b *Clipboard) nextStepDeadline(until time.Time) <-chan time.Time {
-	return time.After(min(b.readTimeout, time.Until(until)))
-}
-
-func (b *Clipboard) waitForNewValue(deadline <-chan time.Time) error {
-	for {
-		select {
-		case property := <-b.newValues:
-			if property == b.atoms.ownProperty {
-				return nil
-			}
-		case <-deadline:
-			return ErrNoAnswer
-		case <-b.c.closed:
-			return b.c.err()
-		}
-	}
-}
-
-func (b *Clipboard) takeProperty(limit int) (kind uint32, data []byte, tooLarge bool, err error) {
-	units := uint32(limit/4 + 1)
-	reply, err := b.c.call(newRequest(opGetProperty, 1).u32(b.reader.Load()).u32(b.atoms.ownProperty).u32(0).u32(0).u32(units).done())
-	if err != nil {
-		return 0, nil, false, err
-	}
-	format := int(reply[1])
-	kind = binary.LittleEndian.Uint32(reply[8:12])
-	after := binary.LittleEndian.Uint32(reply[12:16])
-	length := int(binary.LittleEndian.Uint32(reply[16:20])) * max(format/8, 1)
-	if format == 0 {
-		length = 0
-	}
-	data = reply[32 : 32+min(length, len(reply)-32)]
-	return kind, data, after > 0 || len(data) > limit, nil
-}
-
 func (b *Clipboard) serverTime() (uint32, error) {
 	drain(b.times)
 	b.writer.changeMode(b.window, b.atoms.timeProperty, atomString, 8, nil, modeAppend)
@@ -702,11 +522,7 @@ func (b *Clipboard) serverTime() (uint32, error) {
 }
 
 func (b *Clipboard) owner() (uint32, error) {
-	reply, err := b.c.call(newRequest(opGetSelectionOwner, 0).u32(b.atoms.clipboard).done())
-	if err != nil {
-		return 0, err
-	}
-	return binary.LittleEndian.Uint32(reply[8:12]), nil
+	return ownerOf(b.c, b.atoms.clipboard)
 }
 
 func (b *Clipboard) handle(event []byte) {
@@ -719,11 +535,7 @@ func (b *Clipboard) handle(event []byte) {
 			b.state.Unlock()
 		}
 	case code == eventSelectionNotify:
-		got := selectionNotify{target: binary.LittleEndian.Uint32(event[16:20]), property: binary.LittleEndian.Uint32(event[20:24])}
-		select {
-		case b.notifies <- got:
-		default:
-		}
+		b.notified(event)
 	case code == eventSelectionRequest:
 		b.answer(event)
 	case code == eventSelectionClear:
@@ -736,19 +548,13 @@ func (b *Clipboard) handle(event []byte) {
 		window := binary.LittleEndian.Uint32(event[4:8])
 		property := binary.LittleEndian.Uint32(event[8:12])
 		state := event[16]
-		if window == b.window || window == b.reader.Load() {
-			if state != propertyNewValue {
-				return
+		if window == b.window {
+			if state == propertyNewValue && property == b.atoms.timeProperty {
+				push(b.times, binary.LittleEndian.Uint32(event[12:16]))
 			}
-			target := b.newValues
-			value := property
-			if property == b.atoms.timeProperty {
-				target, value = b.times, binary.LittleEndian.Uint32(event[12:16])
-			}
-			select {
-			case target <- value:
-			default:
-			}
+			return
+		}
+		if b.propertyChanged(window, property, state) {
 			return
 		}
 		if state == propertyDeleted {
