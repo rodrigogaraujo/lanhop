@@ -91,28 +91,28 @@ func (r *dropRun) hand() {
 }
 
 func (r *dropRun) cancel(removal *remover) {
-	removal.giveUp(r.arrival)
-	r.end(true)
+	removal.giveUpAfter(r.end(true), r.arrival)
 }
 
 func (r *dropRun) refused(removal *remover) {
+	lastCall := r.end(false)
 	if !r.taken {
-		removal.giveUp(r.arrival)
+		removal.giveUpAfter(lastCall, r.arrival)
 	}
-	r.end(false)
 }
 
-func (r *dropRun) end(cancelTheSession bool) {
+func (r *dropRun) end(cancelTheSession bool) (lastCall <-chan struct{}) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.over {
-		return
+		return r.lastCall
 	}
 	r.over = true
 	close(r.stop)
 	if cancelTheSession && r.session != nil {
 		r.callLater(r.session, DropSession.Cancel)
 	}
+	return r.lastCall
 }
 
 type remover struct {
@@ -120,12 +120,19 @@ type remover struct {
 }
 
 func (r *remover) giveUp(arrived *arrival.Arrival) {
+	r.giveUpAfter(nil, arrived)
+}
+
+func (r *remover) giveUpAfter(lastCall <-chan struct{}, arrived *arrival.Arrival) {
 	if arrived == nil {
 		return
 	}
 	r.removing.Add(1)
 	go func() {
 		defer r.removing.Done()
+		if lastCall != nil {
+			<-lastCall
+		}
 		arrived.GiveUp()
 	}()
 }

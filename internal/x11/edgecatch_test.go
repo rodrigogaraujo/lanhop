@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -605,4 +606,106 @@ func TestClosingTheEdgeWhileItReadsADropFinishesTheDropAsNotTaken(t *testing.T) 
 		t.Errorf("the source got a second XdndFinished %+v", reply)
 	}
 	checkGone(t, observer, catch)
+}
+
+func queueAtTheEdge(catch *EdgeCatch, kind uint32, data [5]uint32) {
+	catch.messages <- clientMessage{window: catch.window, kind: kind, data: data}
+}
+
+func waitUntilQueuedAtTheEdge(t *testing.T, catch *EdgeCatch, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for len(catch.messages) != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d messages wait at the edge, want %d", len(catch.messages), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func closeInTheBackground(catch *EdgeCatch) <-chan error {
+	closed := make(chan error, 1)
+	go func() { closed <- catch.Close() }()
+	<-catch.stop
+	return closed
+}
+
+func waitForClose(t *testing.T, closed <-chan error) {
+	t.Helper()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+func checkNeverAskedForTheList(t *testing.T, source *xdndSource) {
+	t.Helper()
+	syncWith(t, source.c)
+	for {
+		select {
+		case asked := <-source.asked:
+			if asked.target == "text/uri-list" {
+				t.Errorf("the edge asked for text/uri-list at time %d after it began to close", asked.time)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func TestADropStillQueuedWhenTheEdgeClosesIsFinishedAsNotTaken(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	catch := catchOn(t, drags)
+	observer := dialForTest(t, display, func([]byte) {})
+	source := startXdndSource(t, display, filesOffer(pathsDraggedAfter...))
+	source.own(t)
+	dropped := source.serverTime(t)
+	_, ungrab := grabTheServer(t, display)
+
+	queueAtTheEdge(catch, catch.atoms.enter, [5]uint32{source.window, xdndVersion << 24, catch.atoms.uriList})
+	queueAtTheEdge(catch, catch.atoms.position, [5]uint32{source.window, 0, inTheStripX<<16 | inTheStripY, currentTime, catch.atoms.actionCopy})
+	queueAtTheEdge(catch, catch.atoms.drop, [5]uint32{source.window, 0, dropped})
+	waitUntilQueuedAtTheEdge(t, catch, 1)
+	closed := closeInTheBackground(catch)
+	ungrab()
+
+	if finished := source.finished(t, catch.window); finished.accepted || finished.action != "" {
+		t.Errorf("XdndFinished = %+v, want a drop not taken, with no action", finished)
+	}
+	waitForClose(t, closed)
+	checkGone(t, observer, catch)
+	checkNeverAskedForTheList(t, source)
+}
+
+func TestADropTheEdgeTookJustAsItClosesIsFinishedAsNotTakenWithoutReadingIt(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	catch := catchOn(t, drags)
+	observer := dialForTest(t, display, func([]byte) {})
+	source := startXdndSource(t, display, filesOffer(pathsDraggedAfter...))
+	target := enterTheEdge(t, drags, source, catch)
+	source.position(target, inTheStripX, inTheStripY, source.serverTime(t), "XdndActionCopy")
+	source.status(t, target)
+	waitForEdgeAccepted(t, catch)
+	dropped := source.serverTime(t)
+
+	catch.finishing.Lock()
+	letTheEdgeFinish := sync.OnceFunc(catch.finishing.Unlock)
+	defer letTheEdgeFinish()
+	queueAtTheEdge(catch, catch.atoms.drop, [5]uint32{source.window, 0, dropped})
+	waitUntilQueuedAtTheEdge(t, catch, 0)
+	closed := closeInTheBackground(catch)
+	letTheEdgeFinish()
+
+	if finished := source.finished(t, target); finished.accepted || finished.action != "" {
+		t.Errorf("XdndFinished = %+v, want a drop not taken, with no action", finished)
+	}
+	waitForClose(t, closed)
+	checkGone(t, observer, catch)
+	checkNeverAskedForTheList(t, source)
 }

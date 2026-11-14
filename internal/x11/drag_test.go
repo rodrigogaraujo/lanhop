@@ -928,7 +928,7 @@ func TestNoDropIsAcceptedOrSentOnceCancelHasBeenCalled(t *testing.T) {
 		}
 		run.end(err)
 	})
-	t.Run("a drop the target already accepted", func(t *testing.T) {
+	t.Run("a drop on a target the drag entered", func(t *testing.T) {
 		run := desk.idleRun()
 		addresses, err := fileAddresses(arrivedPaths)
 		if err != nil {
