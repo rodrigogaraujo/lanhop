@@ -12,6 +12,7 @@ import "C"
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 	"unsafe"
@@ -25,17 +26,18 @@ var (
 	_ [0]struct{} = [windowReady - C.LANHOP_DROP_WINDOW_READY]struct{}{}
 	_ [0]struct{} = [windowNotShown - C.LANHOP_DROP_WINDOW_NOT_SHOWN]struct{}{}
 	_ [0]struct{} = [windowCovered - C.LANHOP_DROP_WINDOW_COVERED]struct{}{}
+	_ [0]struct{} = [windowMissesTheCursor - C.LANHOP_DROP_WINDOW_MISSES_THE_CURSOR]struct{}{}
 )
 
 var (
-	ErrDropRunning  = errors.New("macos: a drag session of lanhop is already running")
+	ErrDropRunning  = errors.New("macos: a drag session of lanhop is still running")
 	ErrCannotPost   = errors.New("macos: this program is not allowed to post the mouse events that start a drag")
 	ErrNoDropWindow = errors.New("macos: AppKit gave lanhop no window to start the drag from")
 )
 
 type Drop struct {
 	id         uint64
-	native     unsafe.Pointer
+	window     dropWindow
 	write      WriteFile
 	writing    context.Context
 	stopWrites context.CancelFunc
@@ -54,8 +56,39 @@ var drops = struct {
 	sync.Mutex
 	last    uint64
 	byID    map[uint64]*Drop
-	session *Drop
+	session uint64
 }{byID: map[uint64]*Drop{}}
+
+type nativeWindow struct {
+	pointer unsafe.Pointer
+}
+
+func (w nativeWindow) state() windowState {
+	return windowState(C.lanhopDropWindowState(w.pointer))
+}
+
+func (w nativeWindow) takesTheMouseAtHome() bool {
+	return bool(C.lanhopDropWindowTakesTheMouseAtHome(w.pointer))
+}
+
+func (w nativeWindow) close() bool {
+	return bool(C.lanhopDropClose(w.pointer))
+}
+
+func openDropWindow(id uint64, files []PromisedFile, home Point) (dropWindow, error) {
+	names := joinTerminated(promisedNames(files))
+	kinds := joinTerminated(promisedKinds(files))
+	cNames := C.CString(names)
+	defer C.free(unsafe.Pointer(cNames))
+	cKinds := C.CString(kinds)
+	defer C.free(unsafe.Pointer(cKinds))
+	pointer := C.lanhopDropOpen(C.uint64_t(id), cNames, C.int64_t(len(names)), cKinds, C.int64_t(len(kinds)), C.int(len(files)),
+		C.double(home.X), C.double(home.Y), C.double(dropWindowSide))
+	if pointer == nil {
+		return nil, ErrNoDropWindow
+	}
+	return nativeWindow{pointer: pointer}, nil
+}
 
 func StartDrop(ctx context.Context, files []PromisedFile, write WriteFile) (*Drop, error) {
 	if err := checkPromisedFiles(files, clipboard.FilesAndFoldersLimit); err != nil {
@@ -64,7 +97,7 @@ func StartDrop(ctx context.Context, files []PromisedFile, write WriteFile) (*Dro
 	if write == nil {
 		return nil, ErrNoWriter
 	}
-	if !mainThreadServed.Load() {
+	if !mainThreadIsServed() {
 		return nil, ErrNoMainThread
 	}
 	if !CanPost() {
@@ -89,7 +122,7 @@ func StartDrop(ctx context.Context, files []PromisedFile, write WriteFile) (*Dro
 func registerDrop(count int, write WriteFile, button *heldDown) (*Drop, error) {
 	drops.Lock()
 	defer drops.Unlock()
-	if drops.session != nil {
+	if drops.session != 0 {
 		return nil, ErrDropRunning
 	}
 	drops.last++
@@ -106,7 +139,7 @@ func registerDrop(count int, write WriteFile, button *heldDown) (*Drop, error) {
 		ended:      newLatch(),
 	}
 	drops.byID[drop.id] = drop
-	drops.session = drop
+	drops.session = drop.id
 	return drop, nil
 }
 
@@ -114,8 +147,13 @@ func forgetDrop(drop *Drop) {
 	drops.Lock()
 	defer drops.Unlock()
 	delete(drops.byID, drop.id)
-	if drops.session == drop {
-		drops.session = nil
+}
+
+func sessionOver(id uint64) {
+	drops.Lock()
+	defer drops.Unlock()
+	if drops.session == id {
+		drops.session = 0
 	}
 }
 
@@ -126,29 +164,19 @@ func dropWithID(id uint64) *Drop {
 }
 
 func (d *Drop) start(ctx context.Context, files []PromisedFile, plan dragPlan) error {
-	names := joinTerminated(promisedNames(files))
-	kinds := joinTerminated(promisedKinds(files))
-	cNames := C.CString(names)
-	defer C.free(unsafe.Pointer(cNames))
-	cKinds := C.CString(kinds)
-	defer C.free(unsafe.Pointer(cKinds))
-	d.native = C.lanhopDropOpen(C.uint64_t(d.id), cNames, C.int64_t(len(names)), cKinds, C.int64_t(len(kinds)), C.int(len(files)),
-		C.double(plan.start.X), C.double(plan.start.Y), C.double(dropWindowSide))
-	if d.native == nil {
-		return ErrNoDropWindow
+	window, err := openDropWindow(d.id, files, plan.start)
+	if err != nil {
+		return err
 	}
+	d.window = window
 	return dragStart{
 		plan:     plan,
 		button:   d.button,
-		window:   d.windowState,
+		window:   window.state,
 		downSeen: d.downSeen.done,
 		began:    d.began.done,
 		timing:   timingOfTheProbe,
 	}.run(ctx)
-}
-
-func (d *Drop) windowState() windowState {
-	return windowState(C.lanhopDropWindowState(d.native))
 }
 
 func (d *Drop) Ended() <-chan struct{} {
@@ -171,8 +199,8 @@ func (d *Drop) Close() {
 		d.promises.close()
 		d.endTheSession()
 		forgetDrop(d)
-		if d.native != nil {
-			C.lanhopDropClose(d.native)
+		if d.window == nil || !d.window.close() {
+			sessionOver(d.id)
 		}
 	})
 }
@@ -186,8 +214,13 @@ func (d *Drop) endTheSession() {
 		return
 	default:
 	}
-	if !d.button.releaseAtHome() {
+	if !d.button.pending() {
 		return
+	}
+	if d.window != nil && d.window.takesTheMouseAtHome() {
+		d.button.releaseAtHome()
+	} else if d.button.releaseHere() {
+		log.Printf("macos: the window of lanhop no longer takes the mouse where the drag started, so the button of the drag was released where the cursor is")
 	}
 	timer := time.NewTimer(dropEndLimit)
 	defer timer.Stop()
@@ -211,12 +244,14 @@ func (d *Drop) sessionEnded(operation Operation, buttonDown bool) {
 	if !buttonDown {
 		d.button.handOver()
 	}
-	drops.Lock()
-	if drops.session == d {
-		drops.session = nil
-	}
-	drops.Unlock()
 	d.ended.fire()
+}
+
+func endedSession(id uint64, operation Operation, buttonDown bool) {
+	sessionOver(id)
+	if drop := dropWithID(id); drop != nil {
+		drop.sessionEnded(operation, buttonDown)
+	}
 }
 
 func writePromisedFile(id uint64, file int, destination string) error {
@@ -243,9 +278,12 @@ func lanhopDropBegan(id C.uint64_t) {
 
 //export lanhopDropEnded
 func lanhopDropEnded(id C.uint64_t, operation C.uint64_t, buttonDown C.bool) {
-	if drop := dropWithID(uint64(id)); drop != nil {
-		drop.sessionEnded(Operation(operation), bool(buttonDown))
-	}
+	endedSession(uint64(id), Operation(operation), bool(buttonDown))
+}
+
+//export lanhopDropAbandoned
+func lanhopDropAbandoned(id C.uint64_t) {
+	sessionOver(uint64(id))
 }
 
 //export lanhopDropWrite

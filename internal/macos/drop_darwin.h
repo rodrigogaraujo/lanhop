@@ -6,9 +6,13 @@
 #define LANHOP_DROP_WINDOW_READY 0
 #define LANHOP_DROP_WINDOW_NOT_SHOWN 1
 #define LANHOP_DROP_WINDOW_COVERED 2
+#define LANHOP_DROP_WINDOW_MISSES_THE_CURSOR 3
 
 bool lanhopOnMainThread(void);
+bool lanhopHasGUISession(void);
 void lanhopAppRun(void);
+void lanhopExitOnMainThread(int code);
 void *lanhopDropOpen(uint64_t drop, const char *names, int64_t namesLength, const char *kinds, int64_t kindsLength, int count, double x, double y, double side);
 int lanhopDropWindowState(void *drop);
-void lanhopDropClose(void *drop);
+bool lanhopDropWindowTakesTheMouseAtHome(void *drop);
+bool lanhopDropClose(void *drop);

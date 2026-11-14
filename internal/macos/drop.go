@@ -230,11 +230,19 @@ const (
 	windowReady windowState = iota
 	windowNotShown
 	windowCovered
+	windowMissesTheCursor
 )
+
+type dropWindow interface {
+	state() windowState
+	takesTheMouseAtHome() bool
+	close() (sessionPending bool)
+}
 
 var (
 	ErrDropWindowNotShown = errors.New("macos: the window of lanhop did not appear under the cursor, so nothing was posted")
 	ErrDropWindowCovered  = errors.New("macos: another window covers the cursor, so nothing was posted")
+	ErrDropWindowMissed   = errors.New("macos: the window of lanhop does not take the mouse at the cursor, so nothing was posted")
 	ErrCursorMoved        = errors.New("macos: the cursor moved before the mouse down that starts the drag, so nothing was posted")
 	ErrDownNotSeen        = errors.New("macos: the window of lanhop did not get the posted mouse down, so it was released")
 	ErrDragDidNotBegin    = errors.New("macos: no drag session began after the posted mouse down, so it was released")
@@ -301,13 +309,17 @@ func (s dragStart) run(ctx context.Context) error {
 func (s dragStart) waitForTheWindow(ctx context.Context) error {
 	deadline := time.Now().Add(s.timing.showLimit)
 	for {
-		switch s.window() {
+		state := s.window()
+		switch state {
 		case windowReady:
 			return nil
 		case windowCovered:
 			return ErrDropWindowCovered
 		}
 		if !time.Now().Before(deadline) {
+			if state == windowMissesTheCursor {
+				return ErrDropWindowMissed
+			}
 			return ErrDropWindowNotShown
 		}
 		if err := sleepUnlessDone(ctx, s.timing.showPoll); err != nil {

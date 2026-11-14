@@ -5,8 +5,10 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <dispatch/dispatch.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "_cgo_export.h"
 
@@ -23,24 +25,54 @@ static const CGFloat pileShift = 4;
 static const NSUInteger pileDepth = 4;
 static const NSInteger concurrentWrites = 4;
 static const CGFloat nearlyClear = 0.01;
+static const int64_t abandonAfterSeconds = 10;
 
 bool lanhopOnMainThread(void) {
 	return pthread_main_np() != 0;
 }
 
+bool lanhopHasGUISession(void) {
+	CFDictionaryRef session = CGSessionCopyCurrentDictionary();
+	if (session == NULL) {
+		return false;
+	}
+	CFRelease(session);
+	return true;
+}
+
+@interface LanhopAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation LanhopAppDelegate
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+	kill(getpid(), SIGTERM);
+	return NSTerminateLater;
+}
+
+@end
+
+static LanhopAppDelegate *appDelegate;
 static id<NSObject> replayingActivity;
 
 void lanhopAppRun(void) {
 	@autoreleasepool {
 		[NSApplication sharedApplication];
 		[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-		NSActivityOptions replaying = NSActivityLatencyCritical | NSActivityUserInitiatedAllowingIdleSystemSleep;
-		replayingActivity = [[[NSProcessInfo processInfo] beginActivityWithOptions:replaying reason:@"lanhop replays the keyboard and mouse of another machine"] retain];
+		appDelegate = [[LanhopAppDelegate alloc] init];
+		[NSApp setDelegate:appDelegate];
+		replayingActivity = [[[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep reason:@"lanhop replays the keyboard and mouse of another machine"] retain];
 		dispatch_async(dispatch_get_main_queue(), ^{
 			lanhopAppKitReady();
 		});
 	}
 	[NSApp run];
+}
+
+void lanhopExitOnMainThread(int code) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		lanhopExitNow(code);
+	});
 }
 
 static void runOnMainThread(void (^work)(void)) {
@@ -164,8 +196,12 @@ static BOOL coveredAt(CGWindowID own, CGPoint at) {
 	BOOL asked;
 	BOOL ended;
 	BOOL closed;
+	BOOL flushed;
+	BOOL abandoned;
 }
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin;
+- (void)closeWindow;
+- (void)abandon;
 @end
 
 @implementation LanhopDropView
@@ -201,26 +237,53 @@ static BOOL coveredAt(CGWindowID own, CGPoint at) {
 @implementation LanhopDropSource
 
 - (void)dealloc {
-	NSWindow *shown = window;
-	LanhopDropView *content = view;
 	NSOperationQueue *queue = writes;
-	void (^closeWindow)(void) = ^{
-		[content forgetSource];
-		[shown orderOut:nil];
-		[shown close];
-		[shown release];
-		[queue release];
-	};
-	[writes cancelAllOperations];
+	[queue cancelAllOperations];
+	[self closeWindow];
 	if ([NSThread isMainThread]) {
-		closeWindow();
+		[queue release];
 	} else {
-		dispatch_async(dispatch_get_main_queue(), closeWindow);
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[queue release];
+		});
 	}
 	[frontBefore release];
 	[names release];
 	[kinds release];
 	[super dealloc];
+}
+
+- (void)closeWindow {
+	NSWindow *shown = window;
+	LanhopDropView *content = view;
+	window = nil;
+	view = nil;
+	if (shown == nil) {
+		return;
+	}
+	void (^closing)(void) = ^{
+		[content forgetSource];
+		[shown orderOut:nil];
+		[shown close];
+		[shown release];
+	};
+	if ([NSThread isMainThread]) {
+		closing();
+	} else {
+		dispatch_async(dispatch_get_main_queue(), closing);
+	}
+}
+
+- (void)abandon {
+	if (ended) {
+		return;
+	}
+	ended = YES;
+	abandoned = YES;
+	[writes cancelAllOperations];
+	[self closeWindow];
+	giveBackActivation(frontBefore);
+	lanhopDropAbandoned(dropID);
 }
 
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin {
@@ -254,6 +317,13 @@ static BOOL coveredAt(CGWindowID own, CGPoint at) {
 }
 
 - (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
+	if (abandoned) {
+		abandoned = NO;
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[self release];
+		});
+		return;
+	}
 	if (ended) {
 		return;
 	}
@@ -361,25 +431,67 @@ void *lanhopDropOpen(uint64_t dropID, const char *names, int64_t namesLength, co
 	return opened;
 }
 
-int lanhopDropWindowState(void *drop) {
-	LanhopDropSource *source = (LanhopDropSource *)drop;
-	@autoreleasepool {
-		if (source->windowNumber == 0 || !onScreen(source->windowNumber)) {
-			return LANHOP_DROP_WINDOW_NOT_SHOWN;
-		}
-		return coveredAt(source->windowNumber, source->home) ? LANHOP_DROP_WINDOW_COVERED : LANHOP_DROP_WINDOW_READY;
+static BOOL takesTheMouseAtHome(LanhopDropSource *source) {
+	NSScreen *primary = [[NSScreen screens] firstObject];
+	if (primary == nil || source->window == nil || ![source->window isVisible]) {
+		return NO;
 	}
+	NSPoint home = NSMakePoint(source->home.x, NSMaxY([primary frame]) - source->home.y);
+	return [NSWindow windowNumberAtPoint:home belowWindowWithWindowNumber:0] == [source->window windowNumber];
 }
 
-void lanhopDropClose(void *drop) {
+int lanhopDropWindowState(void *drop) {
 	LanhopDropSource *source = (LanhopDropSource *)drop;
-	dispatch_async(dispatch_get_main_queue(), ^{
+	__block int state = LANHOP_DROP_WINDOW_NOT_SHOWN;
+	runOnMainThread(^{
+		@autoreleasepool {
+			if (source->window == nil) {
+				return;
+			}
+			if (!source->flushed) {
+				[source->window displayIfNeeded];
+				source->flushed = YES;
+			}
+			if (source->windowNumber == 0 || !onScreen(source->windowNumber)) {
+				state = LANHOP_DROP_WINDOW_NOT_SHOWN;
+			} else if (coveredAt(source->windowNumber, source->home)) {
+				state = LANHOP_DROP_WINDOW_COVERED;
+			} else if (!takesTheMouseAtHome(source)) {
+				state = LANHOP_DROP_WINDOW_MISSES_THE_CURSOR;
+			} else {
+				state = LANHOP_DROP_WINDOW_READY;
+			}
+		}
+	});
+	return state;
+}
+
+bool lanhopDropWindowTakesTheMouseAtHome(void *drop) {
+	LanhopDropSource *source = (LanhopDropSource *)drop;
+	__block bool takes = false;
+	runOnMainThread(^{
+		@autoreleasepool {
+			takes = takesTheMouseAtHome(source);
+		}
+	});
+	return takes;
+}
+
+bool lanhopDropClose(void *drop) {
+	LanhopDropSource *source = (LanhopDropSource *)drop;
+	__block bool pending = false;
+	runOnMainThread(^{
 		source->closed = YES;
 		[source->window orderOut:nil];
 		giveBackActivation(source->frontBefore);
 		if (source->asked && !source->ended) {
+			pending = true;
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, abandonAfterSeconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+				[source abandon];
+			});
 			return;
 		}
 		[source release];
 	});
+	return pending;
 }

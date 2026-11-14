@@ -247,6 +247,7 @@ func TestNothingIsPostedWhenTheWindowOfLanhopIsNotUnderTheCursor(t *testing.T) {
 	}{
 		{windowNotShown, ErrDropWindowNotShown},
 		{windowCovered, ErrDropWindowCovered},
+		{windowMissesTheCursor, ErrDropWindowMissed},
 	}
 	for _, c := range cases {
 		s := startOnTheLeftEdge(appKitAnswers{window: c.window, seesDown: true, begins: true})
@@ -329,6 +330,7 @@ func TestEveryFailedStartLeavesNoMouseDownWithoutItsUp(t *testing.T) {
 	for _, answers := range []appKitAnswers{
 		{window: windowNotShown},
 		{window: windowCovered},
+		{window: windowMissesTheCursor},
 		{window: windowReady},
 		{window: windowReady, seesDown: true},
 		{window: windowReady, begins: true},

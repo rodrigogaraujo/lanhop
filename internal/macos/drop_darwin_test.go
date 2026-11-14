@@ -6,21 +6,60 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 )
+
+type fakeDropWindow struct {
+	mu             sync.Mutex
+	homeIsOurs     bool
+	sessionPending bool
+	closed         int
+}
+
+func (w *fakeDropWindow) state() windowState {
+	return windowReady
+}
+
+func (w *fakeDropWindow) takesTheMouseAtHome() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.homeIsOurs
+}
+
+func (w *fakeDropWindow) close() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed++
+	return w.sessionPending
+}
+
+func (w *fakeDropWindow) closings() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
+}
 
 func writeNothing(context.Context, int, string) error {
 	return nil
 }
 
-func registeredDrop(t *testing.T, screen *dropScreen, write WriteFile) *Drop {
+func registeredDrop(t *testing.T, screen *dropScreen, write WriteFile, window *fakeDropWindow) *Drop {
 	t.Helper()
 	drop, err := registerDrop(1, write, newHeldDown(screen, leftEdge))
 	if err != nil {
 		t.Fatalf("registerDrop: %v", err)
 	}
-	t.Cleanup(drop.Close)
+	drop.window = window
+	t.Cleanup(func() {
+		drop.Close()
+		sessionOver(drop.id)
+	})
 	return drop
+}
+
+func ourWindow() *fakeDropWindow {
+	return &fakeDropWindow{homeIsOurs: true}
 }
 
 func TestADropNeedsTheAppKitRunLoopOfTheMainThread(t *testing.T) {
@@ -44,22 +83,47 @@ func TestADropChecksItsFilesAndItsWriterFirst(t *testing.T) {
 }
 
 func TestOnlyOneDragSessionOfLanhopRunsAtOnce(t *testing.T) {
-	first := registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing)
+	first := registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing, ourWindow())
 	if _, err := registerDrop(1, writeNothing, newHeldDown(&dropScreen{cursor: leftEdge}, leftEdge)); !errors.Is(err, ErrDropRunning) {
 		t.Errorf("a second drop during the session gave %v, want ErrDropRunning", err)
 	}
 
-	first.sessionEnded(OperationCopy, false)
+	endedSession(first.id, OperationCopy, false)
 
-	registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing)
+	registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing, ourWindow())
+}
+
+func TestASessionStillRunningAfterCloseKeepsOthersOutUntilItsEnd(t *testing.T) {
+	window := &fakeDropWindow{homeIsOurs: true, sessionPending: true}
+	first := registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing, window)
+
+	first.Close()
+
+	if window.closings() != 1 {
+		t.Errorf("the window was closed %d times, want once", window.closings())
+	}
+	if _, err := registerDrop(1, writeNothing, newHeldDown(&dropScreen{cursor: leftEdge}, leftEdge)); !errors.Is(err, ErrDropRunning) {
+		t.Fatalf("a drop while the closed session has not ended gave %v, want ErrDropRunning", err)
+	}
+	endedSession(first.id, OperationNone, false)
+	registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing, ourWindow())
+}
+
+func TestASessionThatNeverEndsIsAbandonedAndLetsTheNextDropStart(t *testing.T) {
+	first := registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing, &fakeDropWindow{sessionPending: true})
+	first.Close()
+
+	sessionOver(first.id)
+
+	registeredDrop(t, &dropScreen{cursor: leftEdge}, writeNothing, ourWindow())
 }
 
 func TestADropTheDestinationAcceptedPostsNothingMoreWhenItCloses(t *testing.T) {
 	screen := &dropScreen{cursor: leftEdge}
-	drop := registeredDrop(t, screen, writeNothing)
+	drop := registeredDrop(t, screen, writeNothing, ourWindow())
 	drop.button.press()
 
-	drop.sessionEnded(OperationCopy, false)
+	endedSession(drop.id, OperationCopy, false)
 	drop.Close()
 
 	if !isClosed(drop.Ended()) {
@@ -73,10 +137,10 @@ func TestADropTheDestinationAcceptedPostsNothingMoreWhenItCloses(t *testing.T) {
 
 func TestClosingARunningSessionReleasesTheButtonInTheWindowOfLanhop(t *testing.T) {
 	screen := &dropScreen{cursor: leftEdge}
-	drop := registeredDrop(t, screen, writeNothing)
+	drop := registeredDrop(t, screen, writeNothing, ourWindow())
 	screen.onPost = func(mouse MouseEvent) {
 		if mouse.Action == MouseUp {
-			go drop.sessionEnded(OperationNone, false)
+			go endedSession(drop.id, OperationNone, false)
 		}
 	}
 	drop.button.press()
@@ -96,12 +160,33 @@ func TestClosingARunningSessionReleasesTheButtonInTheWindowOfLanhop(t *testing.T
 	)
 }
 
+func TestClosingARunningSessionWhoseWindowLostTheHomePointReleasesWhereTheCursorIs(t *testing.T) {
+	screen := &dropScreen{cursor: leftEdge}
+	drop := registeredDrop(t, screen, writeNothing, &fakeDropWindow{homeIsOurs: false})
+	screen.onPost = func(mouse MouseEvent) {
+		if mouse.Action == MouseUp {
+			go endedSession(drop.id, OperationNone, false)
+		}
+	}
+	drop.button.press()
+	drop.button.drag(Point{X: 3, Y: 400})
+	screen.moveTo(Point{X: 803, Y: 250})
+
+	drop.Close()
+
+	expectEvents(t, screen.events(),
+		postedDown(leftEdge),
+		postedDrag(Point{X: 3, Y: 400}, 3),
+		postedUp(Point{X: 803, Y: 250}),
+	)
+}
+
 func TestASessionEndedWithTheButtonStillDownIsReleasedWhereTheCursorIs(t *testing.T) {
 	screen := &dropScreen{cursor: leftEdge}
-	drop := registeredDrop(t, screen, writeNothing)
+	drop := registeredDrop(t, screen, writeNothing, ourWindow())
 	drop.button.press()
 	screen.moveTo(Point{X: 803, Y: 250})
-	drop.sessionEnded(OperationNone, true)
+	endedSession(drop.id, OperationNone, true)
 
 	drop.Close()
 
@@ -117,8 +202,8 @@ func TestTheDestinationWritesThroughTheDropUntilItCloses(t *testing.T) {
 		}
 		return nil
 	}
-	drop := registeredDrop(t, &dropScreen{cursor: leftEdge}, write)
-	drop.sessionEnded(OperationCopy, false)
+	drop := registeredDrop(t, &dropScreen{cursor: leftEdge}, write, ourWindow())
+	endedSession(drop.id, OperationCopy, false)
 
 	if err := writePromisedFile(drop.id, 0, "/Users/me/Desktop/report.pdf"); err != nil {
 		t.Fatalf("write: %v", err)
