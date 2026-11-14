@@ -12,7 +12,11 @@ import (
 )
 
 func openDropsFor(central bool, hand *dropReplay, log io.Writer) (clipshare.Drops, func(), error) {
-	drops := newPromiseDrops(startAppKitDrop, hand, carryTheQuarantine, log)
+	start := startAppKitDrop
+	if central {
+		start = startAppKitDropUnderTheCursor
+	}
+	drops := newPromiseDrops(start, hand, carryTheQuarantine, log)
 	return drops, drops.close, nil
 }
 
@@ -25,11 +29,19 @@ func (d appKitDrop) Accepted() bool {
 }
 
 func startAppKitDrop(ctx context.Context, files []clipshare.DroppedFile, write writePromise) (promisedDrop, error) {
+	return startAppKitDropWith(ctx, macos.StartDrop, files, write)
+}
+
+func startAppKitDropUnderTheCursor(ctx context.Context, files []clipshare.DroppedFile, write writePromise) (promisedDrop, error) {
+	return startAppKitDropWith(ctx, macos.StartDropUnderTheCursor, files, write)
+}
+
+func startAppKitDropWith(ctx context.Context, start func(context.Context, []macos.PromisedFile, macos.WriteFile) (*macos.Drop, error), files []clipshare.DroppedFile, write writePromise) (promisedDrop, error) {
 	promised := make([]macos.PromisedFile, len(files))
 	for i, file := range files {
 		promised[i] = macos.PromisedFile{Name: file.Name, Folder: file.Folder}
 	}
-	drop, err := macos.StartDrop(ctx, promised, macos.WriteFile(write))
+	drop, err := start(ctx, promised, macos.WriteFile(write))
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +94,16 @@ func endSourceDragHere() error {
 
 func dragLeavesHandler(hand *dropReplay, log io.Writer, stayed func()) func(context.Context) {
 	return func(ctx context.Context) {
-		endTheSourceDragUnderAShield(ctx, shieldTheCursor, endSourceDragHere, hand, log, stayed)
+		endTheSourceDragUnderAShield(ctx, shieldTheCursor, endTheReplayedSourceDrag, hand, log, stayed)
 	}
+}
+
+func endTheReplayedSourceDrag(under io.Closer) error {
+	at := macos.Quartz{}.Cursor()
+	if shield, shielded := under.(*macos.Shield); shielded {
+		at = shield.At()
+	}
+	return macos.EndReplayedSourceDrag(at)
 }
 
 func shieldTheCursor(ctx context.Context) (io.Closer, error) {

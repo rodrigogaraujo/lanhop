@@ -25,11 +25,18 @@ func TestOnAMacTheDragThatLeftIsEndedUnderTheShieldAndThenItsButtonIsForgotten(t
 		log.record("shield")
 		return closerFunc(func() error { log.record("shield closed"); return nil }), nil
 	}
-	end := func() error { log.record("source drag ended"); return nil }
+	end := func(under io.Closer) error {
+		if under == nil {
+			log.record("source drag ended with no shield")
+			return nil
+		}
+		log.record("source drag ended under the shield")
+		return nil
+	}
 
 	endTheSourceDragUnderAShield(context.Background(), shield, end, hand, &screen{}, func() { log.record("told the central") })
 
-	expectEntries(t, "the steps", log.seen(), "shield", "source drag ended", "shield closed", "forget 0")
+	expectEntries(t, "the steps", log.seen(), "shield", "source drag ended under the shield", "shield closed", "forget 0")
 }
 
 func TestOnAMacTheDragThatLeftIsStillEndedWhenTheShieldFails(t *testing.T) {
@@ -37,7 +44,7 @@ func TestOnAMacTheDragThatLeftIsStillEndedWhenTheShieldFails(t *testing.T) {
 	hand := newDropReplay(keepingReplayLog{log}, nil)
 	said := &screen{}
 	shield := func(context.Context) (io.Closer, error) { return nil, errors.New("no window") }
-	end := func() error { log.record("source drag ended"); return nil }
+	end := func(io.Closer) error { log.record("source drag ended"); return nil }
 
 	endTheSourceDragUnderAShield(context.Background(), shield, end, hand, said, func() { log.record("told the central") })
 
@@ -54,7 +61,7 @@ func TestOnACentralMacTheDragThatLeftIsEndedWithoutAReplay(t *testing.T) {
 		return closerFunc(func() error { log.record("shield closed"); return nil }), nil
 	}
 
-	endTheSourceDragUnderAShield(context.Background(), shield, func() error { log.record("source drag ended"); return nil }, nil, &screen{}, nil)
+	endTheSourceDragUnderAShield(context.Background(), shield, func(io.Closer) error { log.record("source drag ended"); return nil }, nil, &screen{}, nil)
 
 	expectEntries(t, "the steps", log.seen(), "shield", "source drag ended", "shield closed")
 }
@@ -66,7 +73,7 @@ func TestOnAMacASourceDragThatCannotBeEndedAsksTheCentralToCancelTheDrop(t *test
 		return closerFunc(func() error { log.record("shield closed"); return nil }), nil
 	}
 
-	endTheSourceDragUnderAShield(context.Background(), shield, func() error { return errors.New("not allowed to post") }, hand, &screen{}, func() { log.record("told the central") })
+	endTheSourceDragUnderAShield(context.Background(), shield, func(io.Closer) error { return errors.New("not allowed to post") }, hand, &screen{}, func() { log.record("told the central") })
 
 	expectEntries(t, "the steps", log.seen(), "told the central", "shield closed", "forget 0")
 }

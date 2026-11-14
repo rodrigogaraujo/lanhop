@@ -35,7 +35,7 @@ func captureWhenAllowed(allowed bool) (inputCapture, error) {
 
 func endTheDragHere(done context.Context, capture sharer.Capture, log io.Writer) func() error {
 	return func() error {
-		if err := endTheSourceDragUnderAShield(done, shieldTheCursor, endSourceDragHere, nil, log, nil); err != nil {
+		if err := endTheSourceDragUnderAShield(done, shieldTheCursor, func(io.Closer) error { return endSourceDragHere() }, nil, log, nil); err != nil {
 			return err
 		}
 		if left, marks := capture.(marksTheLeftButton); marks {

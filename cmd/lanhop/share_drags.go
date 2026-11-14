@@ -43,6 +43,7 @@ type dragsOfTheCentral struct {
 	reset   func()
 
 	mutex        sync.Mutex
+	ownDock      edge.Side
 	toldNotTaken map[string]bool
 }
 
@@ -52,6 +53,7 @@ func newDragsOfTheCentral(name string, drops clipshare.Drops, endHere func() err
 
 func (d *dragsOfTheCentral) wire(machine *sharer.Sharer, central *clipshare.Central, allowed func() bool) {
 	d.central, d.machine, d.allowed = central, machine, allowed
+	central.OnOwnDragCounted(d.ownDragCounted)
 	central.OnSideDrags(d.sideDragStarted, d.sideDragEnded)
 	central.OnSideDragStayed(d.sideDragStayed)
 	central.OnSideDock(d.sideDock)
@@ -89,8 +91,17 @@ func followTheDragSwitch(done context.Context, allowed func() bool, describing f
 }
 
 func (d *dragsOfTheCentral) DragSeen(paths []string, dock edge.Side) {
+	d.mutex.Lock()
+	d.ownDock = dock
+	d.mutex.Unlock()
 	d.central.DragSeen(paths)
-	d.machine.DragStarted(sharer.Drag{Origin: d.name, Files: len(paths), Dock: dock})
+}
+
+func (d *dragsOfTheCentral) ownDragCounted(files int) {
+	d.mutex.Lock()
+	dock := d.ownDock
+	d.mutex.Unlock()
+	d.machine.DragStarted(sharer.Drag{Origin: d.name, Files: files, Dock: dock})
 }
 
 func (d *dragsOfTheCentral) DragGone() {
@@ -127,15 +138,17 @@ func (d *dragsOfTheCentral) sideDock(origin string, dock edge.Side) {
 	d.machine.SetDock(origin, dock)
 }
 
-func (d *dragsOfTheCentral) crossing(crossing sharer.DragCrossing) {
+func (d *dragsOfTheCentral) crossing(crossing sharer.DragCrossing) error {
 	if crossing.From == crossing.Origin && crossing.Origin != d.name {
 		if err := d.central.DragLeaves(crossing.Origin); err != nil {
-			fmt.Fprintf(d.log, "lanhop could not tell %q to end the file drag that left it: %s\n", crossing.Origin, forTheLog(err))
+			fmt.Fprintf(d.log, "The file drag on %q stays there, because lanhop could not tell it that the drag leaves: %s\n", crossing.Origin, forTheLog(err))
+			return err
 		}
 	}
 	if crossing.To == crossing.Origin {
 		d.central.DragCancelled()
 	}
+	return nil
 }
 
 func (d *dragsOfTheCentral) entered(crossing sharer.DragCrossing) {
@@ -158,7 +171,7 @@ func (d *dragsOfTheCentral) entered(crossing sharer.DragCrossing) {
 
 func (d *dragsOfTheCentral) endTheDragHere() bool {
 	if err := d.endHere(); err != nil {
-		fmt.Fprintf(d.log, "The file drag on this machine does not cross, because lanhop could not end it here: %s\n", forTheLog(err))
+		fmt.Fprintf(d.log, "The file drag that left this machine is cancelled, and nothing is dropped, because lanhop could not end it here: %s\n", forTheLog(err))
 		d.machine.DragCancelled()
 		d.central.DragCancelled()
 		return false
