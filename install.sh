@@ -1083,8 +1083,8 @@ remove_arrivals() {
   if [ ! -e "$arrival_directory" ] && [ ! -L "$arrival_directory" ]; then
     return 0
   fi
-  if rm -rf "$arrival_directory"; then
-    rmdir "$(dirname "$arrival_directory")" 2>/dev/null || true
+  if rm -rf -- "$arrival_directory"; then
+    rmdir -- "$(dirname -- "$arrival_directory")" 2>/dev/null || true
     say "Removed $arrival_directory, with the files that arrived from other machines"
   else
     problem "could not remove $arrival_directory, which holds the files that arrived from other machines"
