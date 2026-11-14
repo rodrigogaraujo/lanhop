@@ -236,3 +236,30 @@ func TestLosingTheXServerEndsTheWatcher(t *testing.T) {
 
 	checkWatchEnds(t, watch)
 }
+
+func TestTheWatcherStillReadsTheListWhenTheSourceRefusesTargets(t *testing.T) {
+	display := startXvfb(t)
+	watch := watchOn(t, display)
+	source := startXdndSource(t, display, sourceOffer{types: nautilusTypes, list: listOf(pathsDraggedAfter...), refuseTargets: true})
+
+	source.own(t)
+
+	checkStarted(t, nextDragEvent(t, watch), pathsDraggedAfter)
+}
+
+func TestANewOwnerThatComesWhileTheWatcherWaitsForItsReaderIsNotLost(t *testing.T) {
+	display := startXvfb(t)
+	watch := watchOn(t, display)
+	first := startXdndSource(t, display, filesOffer("/home/someone/first.txt"))
+	second := startXdndSource(t, display, filesOffer(pathsDraggedAfter...))
+
+	first.own(t)
+	first.wasAsked(t, "text/uri-list")
+	first.letGo(t)
+	second.own(t)
+	syncWith(t, watch.c)
+
+	checkStarted(t, nextDragEvent(t, watch), []string{"/home/someone/first.txt"})
+	checkEnded(t, nextDragEvent(t, watch))
+	checkStarted(t, nextDragEvent(t, watch), pathsDraggedAfter)
+}
