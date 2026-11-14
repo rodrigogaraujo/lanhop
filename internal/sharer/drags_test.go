@@ -27,6 +27,11 @@ func dragCrosses(crossing DragCrossing) string {
 		crossing.Files, crossing.Origin, crossing.From, crossing.To, crossing.Button)
 }
 
+func dragEnters(crossing DragCrossing) string {
+	return fmt.Sprintf("a drag of %d files from %s entered %s from %s with button %#x held",
+		crossing.Files, crossing.Origin, crossing.To, crossing.From, crossing.Button)
+}
+
 func dragIsBlocked(blocked BlockedDrag) string {
 	switch blocked.Block {
 	case DragCannotReach:
@@ -39,8 +44,20 @@ func dragIsBlocked(blocked BlockedDrag) string {
 	return "the central says something unknown about " + blocked.Machine
 }
 
+func dragIsUnblocked(unblocked BlockedDrag) string {
+	return "the central takes back that " + dragIsBlocked(unblocked)
+}
+
+func crossingOf(origin, from, to string, files int) DragCrossing {
+	return DragCrossing{Origin: origin, From: from, To: to, Files: files, Button: event.ButtonLeft}
+}
+
 func dragged(origin, from, to string, files int) string {
-	return dragCrosses(DragCrossing{Origin: origin, From: from, To: to, Files: files, Button: event.ButtonLeft})
+	return dragCrosses(crossingOf(origin, from, to, files))
+}
+
+func entered(origin, from, to string, files int) string {
+	return dragEnters(crossingOf(origin, from, to, files))
 }
 
 func cannotReach(machine string) string {
@@ -53,6 +70,10 @@ func filesOff(machine string) string {
 
 func cannotLeave(machine string) string {
 	return dragIsBlocked(BlockedDrag{Machine: machine, Block: DragCannotLeave})
+}
+
+func takenBack(machine string, block DragBlock) string {
+	return dragIsUnblocked(BlockedDrag{Machine: machine, Block: block})
 }
 
 func (s *sharing) hears(receiver *fakeReceiver, frames ...event.Event) {
@@ -94,6 +115,11 @@ func (s *sharing) dragStartsOn(origin string, files int, dock edge.Side) {
 	s.sharer.DragStarted(Drag{Origin: origin, Files: files, Dock: dock})
 }
 
+func (s *sharing) waitsForTheInputBack() {
+	s.t.Helper()
+	s.eventually("giving the input back", func() bool { return s.journal.has(gaveInputBack) })
+}
+
 func announcingHere(bits ...int) *features.Set {
 	own := new(features.Set)
 	for _, bit := range bits {
@@ -106,11 +132,17 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 	crossedToDesk := story(
 		then(dragged(thisMachine, thisMachine, "desk", 2), tookInput),
 		gets(desk, enteredAt(0, 16384)...),
+		then(entered(thisMachine, thisMachine, "desk", 2)),
 	)
+	dragsHere := func(s *sharing, dock edge.Side) {
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 2, dock)
+	}
 	tests := []struct {
 		name      string
 		layout    string
 		dragsStay bool
+		noHooks   bool
 		cursorY   int
 		connect   func(s *sharing)
 		act       func(s *sharing)
@@ -119,8 +151,7 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 		{
 			name: "it crosses with the button held after a push of 600 ms toward a neighbour that takes dragged files",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, dragReportsToCross)
 			},
 			want: crossedToDesk,
@@ -128,11 +159,17 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 		{
 			name: "it does not cross after the push of the cursor alone, nor just before 600 ms",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, dragReportsToCross-1)
 			},
-			want: nil,
+		},
+		{
+			name:    "without a hook for the crossing, the held button blocks as before",
+			noHooks: true,
+			act: func(s *sharing) {
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 3*dragReportsToCross)
+			},
 		},
 		{
 			name: "a button held without a file drag never crosses",
@@ -140,7 +177,6 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 				s.holdsTheButton()
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
 			name: "a drag told before the button is held is ignored",
@@ -149,7 +185,6 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 				s.holdsTheButton()
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
 			name: "a drag told for a machine that does not have the cursor is ignored",
@@ -158,18 +193,35 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 				s.dragStartsOn("desk", 2, noDock)
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
-			name:    "toward a neighbour that does not take dragged files nothing crosses, and the central says so once",
-			connect: func(s *sharing) { s.connectNotTakingDrags(desk) },
+			name: "a second drag told while one is in progress is ignored",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
-				s.pushes(1, 0, 3*dragReportsToCross)
+				dragsHere(s, noDock)
+				s.moves(0, 1)
+				s.dragStartsOn(thisMachine, 5, noDock)
+				s.pushes(1, 0, dragReportsToCross)
+			},
+			want: crossedToDesk,
+		},
+		{
+			name: "a release of the button ends the drag, so a new press does not cross",
+			act: func(s *sharing) {
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 30)
 				s.releasesTheButton()
 				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 1, noDock)
+				s.pushes(1, 0, 3*dragReportsToCross)
+			},
+		},
+		{
+			name:    "toward a neighbour that shares files but does not take dragged files nothing crosses, and the central says so once",
+			connect: func(s *sharing) { s.connectNotTakingDrags(desk) },
+			act: func(s *sharing) {
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 3*dragReportsToCross)
+				s.releasesTheButton()
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 2*dragReportsToCross)
 			},
 			want: then(cannotReach("desk")),
@@ -178,21 +230,18 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 			name:    "toward a neighbour with file sharing off nothing crosses, and the central says that file sharing is off there",
 			connect: func(s *sharing) { s.hears(s.connectSaying(desk), filesAreOff) },
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
 			want: then(filesOff("desk")),
 		},
 		{
-			name:    "a neighbour that announced nothing has file sharing off",
+			name:    "toward a neighbour that never announced anything, as an older lanhop, nothing crosses and nothing is said",
 			connect: func(s *sharing) { s.connect(desk) },
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
-				s.pushes(1, 0, 2*dragReportsToCross)
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: then(filesOff("desk")),
 		},
 		{
 			name: "a neighbour that stopped taking dragged files is not crossed",
@@ -201,47 +250,47 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 				s.hears(receiver, takesNoDrags)
 			},
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 2*dragReportsToCross)
 			},
 			want: then(cannotReach("desk")),
 		},
 		{
-			name:    "a neighbour that is not connected stays a plain edge, with nothing said",
-			layout:  "me laptop desk",
-			connect: func(s *sharing) { s.connectTakingDrags(desk) },
+			name:   "a neighbour that is not connected stays a plain edge, with nothing said",
+			layout: "me laptop desk",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 2*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
 			name:    "in a corner nothing crosses",
 			cursorY: 10,
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
-			name: "nothing crosses through the edge where the Dock sits, and nothing is said",
+			name: "nothing crosses through the edge where the Dock of the drag sits, and nothing is said",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, edge.Right)
+				dragsHere(s, edge.Right)
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
+		},
+		{
+			name: "nothing crosses through the edge where the Dock of this machine was set",
+			act: func(s *sharing) {
+				s.sharer.SetDock(thisMachine, edge.Right)
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 3*dragReportsToCross)
+			},
 		},
 		{
 			name: "the Dock on another edge leaves this one crossing",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, edge.Bottom)
+				s.sharer.SetDock(thisMachine, edge.Right)
+				dragsHere(s, edge.Bottom)
 				s.pushes(1, 0, dragReportsToCross)
 			},
 			want: crossedToDesk,
@@ -254,34 +303,47 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 				s.dragStartsOn(thisMachine, 2, noDock)
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
 			name: "a key held on the central keeps blocking, so it is not left held here",
 			act: func(s *sharing) {
 				s.captures(press(keyLeftShift), event.Sync())
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
 		},
 		{
-			name: "the drag ending before the push time blocks again while the button stays held",
+			name: "a drag cancelled before the push time blocks again while the button stays held",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 30)
-				s.sharer.DragEnded()
+				s.sharer.DragCancelled()
 				s.pushes(1, 0, 3*dragReportsToCross)
 			},
-			want: nil,
+		},
+		{
+			name: "the drag ending on its origin before the push time blocks again",
+			act: func(s *sharing) {
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 30)
+				s.sharer.SourceDragEnded(thisMachine)
+				s.pushes(1, 0, 3*dragReportsToCross)
+			},
+		},
+		{
+			name: "the end of a drag on another machine changes nothing",
+			act: func(s *sharing) {
+				dragsHere(s, noDock)
+				s.pushes(1, 0, 30)
+				s.sharer.SourceDragEnded("desk")
+				s.pushes(1, 0, dragReportsToCross-30)
+			},
+			want: crossedToDesk,
 		},
 		{
 			name: "the button released before the push time ends the drag, and the cursor alone crosses after its own push",
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 30)
 				s.releasesTheButton()
 				s.pushes(1, 0, reportsToCross)
@@ -295,12 +357,10 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 			name:      "a central whose file drags cannot leave never lets one cross, and says so once",
 			dragsStay: true,
 			act: func(s *sharing) {
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 3*dragReportsToCross)
 				s.releasesTheButton()
-				s.holdsTheButton()
-				s.dragStartsOn(thisMachine, 2, noDock)
+				dragsHere(s, noDock)
 				s.pushes(1, 0, 2*dragReportsToCross)
 			},
 			want: then(cannotLeave(thisMachine)),
@@ -325,6 +385,7 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 			}
 			s := newSharing(t, desk, laptop)
 			s.dragsStay = test.dragsStay
+			s.noDragHooks = test.noHooks
 			s.desk.Store(drawn(t, layout))
 			s.startWithAScreen(ownDesktop)
 			if test.connect == nil {
@@ -359,67 +420,85 @@ func TestTheFileDraggedAcrossIsCarriedOnTheNeighbourWithoutReplayingThePress(t *
 	s.expectJournal(story(
 		then(dragged(thisMachine, thisMachine, "desk", 4), tookInput),
 		gets(desk, enteredAt(0, 16384)...),
+		then(entered(thisMachine, thisMachine, "desk", 4)),
 		gets(desk, positioned(300, 16384)...),
 		gets(desk, release(event.ButtonLeft), event.Sync()),
 	))
 }
 
 func TestADragInProgressCrossesOnAndBackUnderTheSameRules(t *testing.T) {
-	t.Run("A to B to A: back to the machine where the drag started, which needs no bit 2", func(t *testing.T) {
-		s := startSharingWithLayout(t, "me desk", desk)
-		s.connectTakingDrags(desk)
+	toDesk := story(
+		then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
+		gets(desk, enteredAt(0, 16384)...),
+		then(entered(thisMachine, thisMachine, "desk", 1)),
+	)
+	dragToDesk := func(s *sharing) {
 		s.screen.cursorIsAt(1000, 125)
-
 		s.holdsTheButton()
 		s.dragStartsOn(thisMachine, 1, noDock)
 		s.pushes(1, 0, dragReportsToCross)
+	}
+
+	t.Run("A to B to A: back to the origin, which needs no bit 2 and ends the drag", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+
+		dragToDesk(s)
 		s.pushes(-1, 0, dragReportsToCross)
+		s.pushes(1, 0, 3*dragReportsToCross)
 
 		s.expectJournal(story(
-			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
-			gets(desk, enteredAt(0, 16384)...),
+			toDesk,
 			gets(desk, times(dragReportsToCross, positioned(0, 16384)...)...),
 			then(dragged(thisMachine, "desk", thisMachine, 1)),
 			gets(desk, event.Leave()),
-			then(gaveInputBack, cursorPlacedAt(1000, 125)),
+			then(gaveInputBack, cursorPlacedAt(1000, 125), entered(thisMachine, "desk", thisMachine, 1)),
 		))
 	})
 	t.Run("A to B to C: on to a third machine that takes dragged files", func(t *testing.T) {
 		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
 		s.connectTakingDrags(desk)
 		s.connectTakingDrags(laptop)
-		s.screen.cursorIsAt(1000, 125)
 
-		s.holdsTheButton()
-		s.dragStartsOn(thisMachine, 1, noDock)
-		s.pushes(1, 0, dragReportsToCross)
+		dragToDesk(s)
 		s.moves(700, 0)
 		s.pushes(1, 0, dragReportsToCross-1)
 
 		s.expectJournal(story(
-			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
-			gets(desk, enteredAt(0, 16384)...),
+			toDesk,
 			gets(desk, times(dragReportsToCross, positioned(farEdge, 16384)...)...),
 			then(dragged(thisMachine, "desk", "laptop", 1)),
 			gets(desk, event.Leave()),
 			gets(laptop, enteredAt(0, 16384)...),
+			then(entered(thisMachine, "desk", "laptop", 1)),
+		))
+	})
+	t.Run("A to B to C: not through the edge of B where the Dock of B sits", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+		s.connectTakingDrags(desk)
+		s.connectTakingDrags(laptop)
+		s.sharer.SetDock("desk", edge.Right)
+
+		dragToDesk(s)
+		s.moves(700, 0)
+		s.pushes(1, 0, 2*dragReportsToCross-1)
+
+		s.expectJournal(story(
+			toDesk,
+			gets(desk, times(2*dragReportsToCross, positioned(farEdge, 16384)...)...),
 		))
 	})
 	t.Run("A to B to C: not on to a third machine that does not take dragged files", func(t *testing.T) {
 		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
 		s.connectTakingDrags(desk)
 		s.connectNotTakingDrags(laptop)
-		s.screen.cursorIsAt(1000, 125)
 
-		s.holdsTheButton()
-		s.dragStartsOn(thisMachine, 1, noDock)
-		s.pushes(1, 0, dragReportsToCross)
+		dragToDesk(s)
 		s.moves(700, 0)
 		s.pushes(1, 0, 2*dragReportsToCross-1)
 
 		s.expectJournal(story(
-			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
-			gets(desk, enteredAt(0, 16384)...),
+			toDesk,
 			gets(desk, times(dragReportsToCross, positioned(farEdge, 16384)...)...),
 			then(cannotReach("laptop")),
 			gets(desk, times(dragReportsToCross, positioned(farEdge, 16384)...)...),
@@ -429,56 +508,167 @@ func TestADragInProgressCrossesOnAndBackUnderTheSameRules(t *testing.T) {
 		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
 		s.connectTakingDrags(desk)
 		s.connectTakingDrags(laptop)
-		s.screen.cursorIsAt(1000, 125)
 
-		s.holdsTheButton()
-		s.dragStartsOn(thisMachine, 1, noDock)
-		s.pushes(1, 0, dragReportsToCross)
+		dragToDesk(s)
 		s.moves(700, 0)
 		s.pushes(1, 0, dragReportsToCross-2)
 
 		s.expectJournal(story(
-			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
-			gets(desk, enteredAt(0, 16384)...),
+			toDesk,
 			gets(desk, times(dragReportsToCross-1, positioned(farEdge, 16384)...)...),
 		))
 	})
-	t.Run("A to B, then the drag ends and the held button blocks again", func(t *testing.T) {
+	t.Run("A to B to C: the drag ending on its origin after it crossed away changes nothing", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+		s.connectTakingDrags(desk)
+		s.connectTakingDrags(laptop)
+
+		dragToDesk(s)
+		s.sharer.SourceDragEnded(thisMachine)
+		s.moves(700, 0)
+		s.pushes(1, 0, dragReportsToCross-1)
+
+		s.expectJournal(story(
+			toDesk,
+			gets(desk, times(dragReportsToCross, positioned(farEdge, 16384)...)...),
+			then(dragged(thisMachine, "desk", "laptop", 1)),
+			gets(desk, event.Leave()),
+			gets(laptop, enteredAt(0, 16384)...),
+			then(entered(thisMachine, "desk", "laptop", 1)),
+		))
+	})
+	t.Run("A to B, then a cancel ends the drag and the held button blocks again", func(t *testing.T) {
 		s := startSharingWithLayout(t, "me desk", desk)
 		s.connectTakingDrags(desk)
-		s.screen.cursorIsAt(1000, 125)
 
-		s.holdsTheButton()
-		s.dragStartsOn(thisMachine, 1, noDock)
-		s.pushes(1, 0, dragReportsToCross)
-		s.sharer.DragEnded()
+		dragToDesk(s)
+		s.sharer.DragCancelled()
 		s.pushes(-1, 0, 2*dragReportsToCross)
 
 		s.expectJournal(story(
-			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
-			gets(desk, enteredAt(0, 16384)...),
+			toDesk,
 			gets(desk, times(2*dragReportsToCross, positioned(0, 16384)...)...),
 		))
 	})
 	t.Run("A to B, then the button is released and the cursor alone crosses back without a drag", func(t *testing.T) {
 		s := startSharingWithLayout(t, "me desk", desk)
 		s.connectTakingDrags(desk)
-		s.screen.cursorIsAt(1000, 125)
 
-		s.holdsTheButton()
-		s.dragStartsOn(thisMachine, 1, noDock)
-		s.pushes(1, 0, dragReportsToCross)
+		dragToDesk(s)
 		s.releasesTheButton()
 		s.pushes(-1, 0, reportsToCross)
 
 		s.expectJournal(story(
-			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
-			gets(desk, enteredAt(0, 16384)...),
+			toDesk,
 			gets(desk, release(event.ButtonLeft), event.Sync()),
 			gets(desk, times(reportsToCross, positioned(0, 16384)...)...),
 			gets(desk, event.Leave()),
 			then(gaveInputBack, cursorPlacedAt(1000, 125)),
 		))
+	})
+}
+
+func TestADragEndsWhenFocusMovesOtherwiseThanByItsCrossing(t *testing.T) {
+	t.Run("the origin side is lost while it has the cursor, and the button held on the central does not cross", func(t *testing.T) {
+		s := startSharingWithLayout(t, "laptop me desk", desk, laptop)
+		lost := s.connect(desk)
+		s.connectTakingDrags(laptop)
+
+		s.focusOn(2)
+		s.holdsTheButton()
+		s.dragStartsOn("desk", 1, noDock)
+		s.moves(1, 0)
+		lost.loseConnection()
+		s.waitsForTheInputBack()
+		s.screen.cursorIsAt(0, 125)
+		s.pushes(-1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			gets(desk, press(event.ButtonLeft), event.Sync()),
+			gets(desk, positioned(32867, centre)...),
+			then(closed(desk), gaveInputBack),
+		))
+	})
+	t.Run("the origin is the central, the drag crossed to B, and B is lost", func(t *testing.T) {
+		s := startSharingWithLayout(t, "laptop me desk", desk, laptop)
+		lost := s.connectTakingDrags(desk)
+		s.connectTakingDrags(laptop)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 1, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+		lost.loseConnection()
+		s.waitsForTheInputBack()
+		s.screen.cursorIsAt(0, 125)
+		s.pushes(-1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(story(
+			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
+			gets(desk, enteredAt(0, 16384)...),
+			then(entered(thisMachine, thisMachine, "desk", 1)),
+			then(closed(desk), gaveInputBack),
+		))
+	})
+	t.Run("the machine holding the drag connects again, so its input is given back", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 1, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+		s.connectTakingDrags(desk)
+		s.pushes(1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(story(
+			then(dragged(thisMachine, thisMachine, "desk", 1), tookInput),
+			gets(desk, enteredAt(0, 16384)...),
+			then(entered(thisMachine, thisMachine, "desk", 1)),
+			then(gaveInputBack, closed(desk)),
+		))
+	})
+	t.Run("the origin side is forgotten while the drag leaves it, so the drag ends without entering", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop tablet", desk, laptop, tablet)
+		leaving := s.connect(desk)
+		s.connectTakingDrags(laptop)
+		s.connectTakingDrags(tablet)
+
+		s.focusOn(2)
+		s.moves(400, 0)
+		s.holdsTheButton()
+		s.dragStartsOn("desk", 1, noDock)
+		leaving.leaveFails.Store(true)
+		s.pushes(1, 0, dragReportsToCross)
+		s.moves(700, 0)
+		s.pushes(1, 0, 2*dragReportsToCross-1)
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			gets(desk, positioned(farEdge, centre)...),
+			gets(desk, press(event.ButtonLeft), event.Sync()),
+			gets(desk, times(dragReportsToCross, positioned(farEdge, centre)...)...),
+			then(dragged("desk", "desk", "laptop", 1), closed(desk)),
+			gets(laptop, enteredAt(0, centre)...),
+			gets(laptop, times(2*dragReportsToCross, positioned(farEdge, centre)...)...),
+		))
+	})
+	t.Run("the neighbour cannot be entered, so the drag ends without entering", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk", desk)
+		refusing := s.connectTakingDrags(desk)
+		refusing.sendFails.Store(true)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 1, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+		s.connectTakingDrags(desk)
+		s.pushes(1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(then(dragged(thisMachine, thisMachine, "desk", 1), tookInput, gaveInputBack, closed(desk)))
 	})
 }
 
@@ -498,7 +688,7 @@ func TestADragThatStartsOnASideMachine(t *testing.T) {
 		)
 	}
 
-	t.Run("A to B to A: on to the next machine, and back to the origin, which needs no bit 2", func(t *testing.T) {
+	t.Run("A to B to A: the origin side gets no release, and back at the origin the drag ends", func(t *testing.T) {
 		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
 		s.connect(desk)
 		s.connectTakingDrags(laptop)
@@ -507,17 +697,46 @@ func TestADragThatStartsOnASideMachine(t *testing.T) {
 		s.pushes(1, 0, dragReportsToCross)
 		s.moves(-700, 0)
 		s.pushes(-1, 0, dragReportsToCross-1)
+		s.pushes(1, 0, 2*dragReportsToCross)
 
 		s.expectJournal(story(
 			holdingOnDesk(farEdge),
 			gets(desk, times(dragReportsToCross, positioned(farEdge, centre)...)...),
 			then(dragged("desk", "desk", "laptop", 3)),
-			gets(desk, release(event.ButtonLeft), event.Sync(), event.Leave()),
+			gets(desk, event.Sync(), event.Leave()),
 			gets(laptop, enteredAt(0, centre)...),
+			then(entered("desk", "desk", "laptop", 3)),
 			gets(laptop, times(dragReportsToCross, positioned(0, centre)...)...),
 			then(dragged("desk", "laptop", "desk", 3)),
 			gets(laptop, event.Leave()),
 			gets(desk, enteredAt(farEdge, centre)...),
+			then(entered("desk", "laptop", "desk", 3)),
+			gets(desk, times(2*dragReportsToCross, positioned(farEdge, centre)...)...),
+		))
+	})
+	t.Run("the origin side gets the release of every other key, but not of the button", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+		s.connect(desk)
+		s.connectTakingDrags(laptop)
+
+		s.focusOn(2)
+		s.moves(400, 0)
+		s.captures(press(keyLeftShift), event.Sync())
+		s.holdsTheButton()
+		s.dragStartsOn("desk", 3, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			gets(desk, positioned(farEdge, centre)...),
+			gets(desk, press(keyLeftShift), event.Sync()),
+			gets(desk, press(event.ButtonLeft), event.Sync()),
+			gets(desk, times(dragReportsToCross, positioned(farEdge, centre)...)...),
+			then(dragged("desk", "desk", "laptop", 3)),
+			gets(desk, release(keyLeftShift), event.Sync(), event.Leave()),
+			gets(laptop, enteredAt(0, centre)...),
+			then(entered("desk", "desk", "laptop", 3)),
 		))
 	})
 	t.Run("toward the central, which shares files but does not take dragged files", func(t *testing.T) {
@@ -565,8 +784,36 @@ func TestADragThatStartsOnASideMachine(t *testing.T) {
 			holdingOnDesk(0),
 			gets(desk, times(dragReportsToCross, positioned(0, centre)...)...),
 			then(dragged("desk", "desk", thisMachine, 3)),
-			gets(desk, release(event.ButtonLeft), event.Sync(), event.Leave()),
-			then(gaveInputBack, cursorPlacedAt(1000, 250)),
+			gets(desk, event.Sync(), event.Leave()),
+			then(gaveInputBack, cursorPlacedAt(1000, 250), entered("desk", "desk", thisMachine, 3)),
+		))
+	})
+	t.Run("into a central whose own drags stay there, and on to the origin and to a machine without bit 2", func(t *testing.T) {
+		s := newSharing(t, desk, laptop)
+		s.features = announcingHere(features.Clipboard, features.Files, features.Drag)
+		s.dragsStay = true
+		s.desk.Store(drawn(t, "laptop me desk"))
+		s.startWithAScreen(ownDesktop)
+		s.connect(desk)
+		s.connectNotTakingDrags(laptop)
+
+		startOnDesk(s, noDock, -400)
+		s.pushes(-1, 0, dragReportsToCross)
+		s.screen.cursorIsAt(0, 125)
+		s.pushes(-1, 0, dragReportsToCross)
+		s.screen.cursorIsAt(1000, 125)
+		s.pushes(1, 0, dragReportsToCross)
+
+		s.expectJournal(story(
+			holdingOnDesk(0),
+			gets(desk, times(dragReportsToCross, positioned(0, centre)...)...),
+			then(dragged("desk", "desk", thisMachine, 3)),
+			gets(desk, event.Sync(), event.Leave()),
+			then(gaveInputBack, cursorPlacedAt(1000, 250), entered("desk", "desk", thisMachine, 3)),
+			then(cannotReach("laptop")),
+			then(dragged("desk", thisMachine, "desk", 3), tookInput),
+			gets(desk, enteredAt(0, 16384)...),
+			then(entered("desk", thisMachine, "desk", 3)),
 		))
 	})
 	t.Run("not through the edge where the Dock of the side machine sits", func(t *testing.T) {
@@ -580,6 +827,35 @@ func TestADragThatStartsOnASideMachine(t *testing.T) {
 		s.expectJournal(story(
 			holdingOnDesk(farEdge),
 			gets(desk, times(2*dragReportsToCross, positioned(farEdge, centre)...)...),
+		))
+	})
+	t.Run("not through the edge where the Dock set for the side machine sits", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+		s.connectTakingDrags(desk)
+		s.connectTakingDrags(laptop)
+		s.sharer.SetDock("desk", edge.Right)
+
+		startOnDesk(s, noDock, 400)
+		s.pushes(1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(story(
+			holdingOnDesk(farEdge),
+			gets(desk, times(2*dragReportsToCross, positioned(farEdge, centre)...)...),
+		))
+	})
+	t.Run("the drag ending on the origin side before it crossed ends it", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+		s.connectTakingDrags(desk)
+		s.connectTakingDrags(laptop)
+
+		startOnDesk(s, noDock, 400)
+		s.pushes(1, 0, 30)
+		s.sharer.SourceDragEnded("desk")
+		s.pushes(1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(story(
+			holdingOnDesk(farEdge),
+			gets(desk, times(30+2*dragReportsToCross, positioned(farEdge, centre)...)...),
 		))
 	})
 	t.Run("a drag told for the central while a side machine has the cursor is ignored", func(t *testing.T) {
@@ -619,7 +895,7 @@ func TestTheCentralSaysOncePerRunForEachMachineThatADraggedFileCannotReach(t *te
 	s.expectJournal(then(cannotReach("desk"), cannotReach("laptop")))
 }
 
-func TestEachReasonADraggedFileCannotReachAMachineIsSaidOncePerRun(t *testing.T) {
+func TestANoticeIsTakenBackOnceTheMachineAnnouncesWhatAllowsTheDrag(t *testing.T) {
 	s := startSharingWithLayout(t, "me desk", desk)
 	receiver := s.connectSaying(desk)
 	s.screen.cursorIsAt(1000, 125)
@@ -630,16 +906,30 @@ func TestEachReasonADraggedFileCannotReachAMachineIsSaidOncePerRun(t *testing.T)
 		s.releasesTheButton()
 	}
 
-	s.hears(receiver, filesAreOff)
-	dragAcross()
-	s.hears(receiver, takesNoDrags)
 	dragAcross()
 	s.hears(receiver, filesAreOff)
 	dragAcross()
+	dragAcross()
 	s.hears(receiver, takesNoDrags)
+	dragAcross()
+	s.hears(receiver, takesNoDrags)
+	dragAcross()
+	s.hears(receiver, takesDrags)
 	dragAcross()
 
-	s.expectJournal(then(filesOff("desk"), cannotReach("desk")))
+	s.expectJournal(story(
+		then(
+			filesOff("desk"),
+			takenBack("desk", FilesOffThere),
+			cannotReach("desk"),
+			takenBack("desk", DragCannotReach),
+			dragged(thisMachine, thisMachine, "desk", 1),
+			tookInput,
+		),
+		gets(desk, enteredAt(0, 16384)...),
+		then(entered(thisMachine, thisMachine, "desk", 1)),
+		gets(desk, release(event.ButtonLeft), event.Sync()),
+	))
 }
 
 func TestTheClipboardAndTheEdgesHearTheSameFeaturesFrame(t *testing.T) {
@@ -659,5 +949,6 @@ func TestTheClipboardAndTheEdgesHearTheSameFeaturesFrame(t *testing.T) {
 		clipboardHears(fmt.Sprintf("desk says %+v", takesDrags)),
 		dragged(thisMachine, thisMachine, "desk", 1),
 		tookInput,
+		entered(thisMachine, thisMachine, "desk", 1),
 	)
 }

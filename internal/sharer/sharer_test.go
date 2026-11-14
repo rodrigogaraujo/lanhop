@@ -153,6 +153,7 @@ type fakeReceiver struct {
 	sendFails  atomic.Bool
 	sendPanics atomic.Bool
 	sendHangs  atomic.Bool
+	leaveFails atomic.Bool
 }
 
 func (r *fakeReceiver) Send(events ...event.Event) error {
@@ -163,7 +164,7 @@ func (r *fakeReceiver) Send(events ...event.Event) error {
 		<-r.shut
 		return errConnectionLost
 	}
-	if r.sendFails.Load() {
+	if r.sendFails.Load() || r.leaveFails.Load() && slices.Contains(events, event.Leave()) {
 		return errConnectionLost
 	}
 	for _, entry := range gets(r.peer, events...) {
@@ -236,6 +237,7 @@ type sharing struct {
 	speed       Speed
 	features    *features.Set
 	dragsStay   bool
+	noDragHooks bool
 	sharer      *Sharer
 	onReceivers func(names []string)
 	clipboard   Clipboard
@@ -280,8 +282,12 @@ func (s *sharing) start(capture Capture) {
 	})
 	s.sharer.trustCheckInterval = testTrustCheck
 	s.sharer.now = s.clock.now
-	s.sharer.OnDragCrossing(func(crossing DragCrossing) { s.journal.note(dragCrosses(crossing)) })
-	s.sharer.OnBlockedDrag(func(blocked BlockedDrag) { s.journal.note(dragIsBlocked(blocked)) })
+	if !s.noDragHooks {
+		s.sharer.OnDragCrossing(func(crossing DragCrossing) { s.journal.note(dragCrosses(crossing)) })
+		s.sharer.OnDragEntered(func(crossing DragCrossing) { s.journal.note(dragEnters(crossing)) })
+		s.sharer.OnBlockedDrag(func(blocked BlockedDrag) { s.journal.note(dragIsBlocked(blocked)) })
+		s.sharer.OnDragUnblocked(func(unblocked BlockedDrag) { s.journal.note(dragIsUnblocked(unblocked)) })
+	}
 	if s.onReceivers != nil {
 		s.sharer.OnReceivers(s.onReceivers)
 	}
