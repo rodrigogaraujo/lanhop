@@ -202,12 +202,16 @@ func (h *heldDown) releaseAtHome() bool {
 }
 
 func (h *heldDown) releaseHere() bool {
+	return h.releaseAt(h.screen.Cursor())
+}
+
+func (h *heldDown) releaseAt(at Point) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.down {
 		return false
 	}
-	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: h.screen.Cursor(), Clicks: 1})
+	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Clicks: 1})
 	h.down = false
 	return true
 }
@@ -235,8 +239,9 @@ const (
 
 type dropWindow interface {
 	state() windowState
-	takesTheMouseAtHome() bool
-	close() (sessionPending bool)
+	refuseDrops() error
+	takeTheMouseAt(at Point) (bool, error)
+	close() error
 }
 
 var (
@@ -310,14 +315,14 @@ func (s dragStart) waitForTheWindow(ctx context.Context) error {
 	deadline := time.Now().Add(s.timing.showLimit)
 	for {
 		state := s.window()
-		switch state {
-		case windowReady:
+		if state == windowReady {
 			return nil
-		case windowCovered:
-			return ErrDropWindowCovered
 		}
 		if !time.Now().Before(deadline) {
-			if state == windowMissesTheCursor {
+			switch state {
+			case windowCovered:
+				return ErrDropWindowCovered
+			case windowMissesTheCursor:
 				return ErrDropWindowMissed
 			}
 			return ErrDropWindowNotShown

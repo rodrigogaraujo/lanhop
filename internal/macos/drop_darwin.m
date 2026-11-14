@@ -6,6 +6,7 @@
 #include <dispatch/dispatch.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -26,6 +27,10 @@ static const NSUInteger pileDepth = 4;
 static const NSInteger concurrentWrites = 4;
 static const CGFloat nearlyClear = 0.01;
 static const int64_t abandonAfterSeconds = 10;
+static const int64_t quitBackstopSeconds = 15;
+static const double mainThreadLimitSeconds = 2;
+
+static atomic_bool exitAsked;
 
 bool lanhopOnMainThread(void) {
 	return pthread_main_np() != 0;
@@ -46,7 +51,12 @@ bool lanhopHasGUISession(void) {
 @implementation LanhopAppDelegate
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
-	kill(getpid(), SIGTERM);
+	if (!atomic_load(&exitAsked)) {
+		kill(getpid(), SIGTERM);
+	}
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, quitBackstopSeconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+		[NSApp replyToApplicationShouldTerminate:YES];
+	});
 	return NSTerminateLater;
 }
 
@@ -69,7 +79,14 @@ void lanhopAppRun(void) {
 	[NSApp run];
 }
 
+void lanhopAppQuit(void) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[NSApp terminate:nil];
+	});
+}
+
 void lanhopExitOnMainThread(int code) {
+	atomic_store(&exitAsked, true);
 	dispatch_async(dispatch_get_main_queue(), ^{
 		lanhopExitNow(code);
 	});
@@ -81,6 +98,34 @@ static void runOnMainThread(void (^work)(void)) {
 	} else {
 		dispatch_sync(dispatch_get_main_queue(), work);
 	}
+}
+
+@interface LanhopAnswer : NSObject {
+@public
+	int value;
+}
+@end
+
+@implementation LanhopAnswer
+@end
+
+static int answerOnMainThread(int late, int (^work)(void)) {
+	if ([NSThread isMainThread]) {
+		return work();
+	}
+	LanhopAnswer *answer = [[LanhopAnswer alloc] init];
+	dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+	dispatch_async(dispatch_get_main_queue(), ^{
+		answer->value = work();
+		dispatch_semaphore_signal(answered);
+	});
+	int value = late;
+	if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(mainThreadLimitSeconds * NSEC_PER_SEC))) == 0) {
+		value = answer->value;
+	}
+	dispatch_release(answered);
+	[answer release];
+	return value;
 }
 
 static NSArray<NSString *> *listOf(const char *joined, int64_t length, int count) {
@@ -150,27 +195,9 @@ static BOOL onScreen(CGWindowID own) {
 	return shown;
 }
 
-static BOOL coveredAt(CGWindowID own, CGPoint at) {
-	CFArrayRef above = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenAboveWindow, own);
-	if (above == NULL) {
-		return NO;
-	}
-	BOOL covered = NO;
-	for (NSDictionary *info in (NSArray *)above) {
-		CGRect bounds;
-		CFDictionaryRef bounding = (CFDictionaryRef)[info objectForKey:(id)kCGWindowBounds];
-		if (bounding == NULL || !CGRectMakeWithDictionaryRepresentation(bounding, &bounds) || !CGRectContainsPoint(bounds, at)) {
-			continue;
-		}
-		NSNumber *alpha = [info objectForKey:(id)kCGWindowAlpha];
-		if (alpha != nil && [alpha doubleValue] <= 0) {
-			continue;
-		}
-		covered = YES;
-		break;
-	}
-	CFRelease(above);
-	return covered;
+static NSPoint onTheScreens(CGPoint at) {
+	NSScreen *primary = [[NSScreen screens] firstObject];
+	return NSMakePoint(at.x, (primary != nil ? NSMaxY([primary frame]) : 0) - at.y);
 }
 
 @class LanhopDropSource;
@@ -198,6 +225,7 @@ static BOOL coveredAt(CGWindowID own, CGPoint at) {
 	BOOL closed;
 	BOOL flushed;
 	BOOL abandoned;
+	BOOL refusing;
 }
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin;
 - (void)closeWindow;
@@ -283,7 +311,7 @@ static BOOL coveredAt(CGWindowID own, CGPoint at) {
 	[writes cancelAllOperations];
 	[self closeWindow];
 	giveBackActivation(frontBefore);
-	lanhopDropAbandoned(dropID);
+	lanhopDropSessionOver(dropID);
 }
 
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin {
@@ -309,7 +337,7 @@ static BOOL coveredAt(CGWindowID own, CGPoint at) {
 }
 
 - (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
-	return NSDragOperationCopy;
+	return refusing ? NSDragOperationNone : NSDragOperationCopy;
 }
 
 - (void)draggingSession:(NSDraggingSession *)session willBeginAtPoint:(NSPoint)screenPoint {
@@ -431,67 +459,80 @@ void *lanhopDropOpen(uint64_t dropID, const char *names, int64_t namesLength, co
 	return opened;
 }
 
-static BOOL takesTheMouseAtHome(LanhopDropSource *source) {
-	NSScreen *primary = [[NSScreen screens] firstObject];
-	if (primary == nil || source->window == nil || ![source->window isVisible]) {
-		return NO;
+static NSInteger windowTakingTheMouseAt(CGPoint at) {
+	return [NSWindow windowNumberAtPoint:onTheScreens(at) belowWindowWithWindowNumber:0];
+}
+
+static int stateOf(LanhopDropSource *source) {
+	if (source->window == nil) {
+		return LANHOP_DROP_WINDOW_NOT_SHOWN;
 	}
-	NSPoint home = NSMakePoint(source->home.x, NSMaxY([primary frame]) - source->home.y);
-	return [NSWindow windowNumberAtPoint:home belowWindowWithWindowNumber:0] == [source->window windowNumber];
+	if (!source->flushed) {
+		[source->window displayIfNeeded];
+		source->flushed = YES;
+	}
+	if (source->windowNumber == 0 || !onScreen(source->windowNumber)) {
+		return LANHOP_DROP_WINDOW_NOT_SHOWN;
+	}
+	NSInteger taking = windowTakingTheMouseAt(source->home);
+	if (taking == [source->window windowNumber]) {
+		return LANHOP_DROP_WINDOW_READY;
+	}
+	return taking > 0 ? LANHOP_DROP_WINDOW_COVERED : LANHOP_DROP_WINDOW_MISSES_THE_CURSOR;
+}
+
+static int moveUnder(LanhopDropSource *source, CGPoint at) {
+	if (source->window == nil || ![source->window isVisible]) {
+		return LANHOP_DROP_MISSES_THE_MOUSE;
+	}
+	NSPoint cursor = onTheScreens(at);
+	NSRect frame = [source->window frame];
+	[source->window setFrameOrigin:NSMakePoint(cursor.x - NSWidth(frame) / 2, cursor.y - NSHeight(frame) / 2)];
+	[source->window displayIfNeeded];
+	return windowTakingTheMouseAt(at) == [source->window windowNumber] ? LANHOP_DROP_TAKES_THE_MOUSE : LANHOP_DROP_MISSES_THE_MOUSE;
 }
 
 int lanhopDropWindowState(void *drop) {
 	LanhopDropSource *source = (LanhopDropSource *)drop;
-	__block int state = LANHOP_DROP_WINDOW_NOT_SHOWN;
-	runOnMainThread(^{
+	return answerOnMainThread(LANHOP_DROP_WINDOW_NOT_SHOWN, ^int(void) {
 		@autoreleasepool {
-			if (source->window == nil) {
-				return;
-			}
-			if (!source->flushed) {
-				[source->window displayIfNeeded];
-				source->flushed = YES;
-			}
-			if (source->windowNumber == 0 || !onScreen(source->windowNumber)) {
-				state = LANHOP_DROP_WINDOW_NOT_SHOWN;
-			} else if (coveredAt(source->windowNumber, source->home)) {
-				state = LANHOP_DROP_WINDOW_COVERED;
-			} else if (!takesTheMouseAtHome(source)) {
-				state = LANHOP_DROP_WINDOW_MISSES_THE_CURSOR;
-			} else {
-				state = LANHOP_DROP_WINDOW_READY;
-			}
+			return stateOf(source);
 		}
 	});
-	return state;
 }
 
-bool lanhopDropWindowTakesTheMouseAtHome(void *drop) {
+bool lanhopDropRefuseDrops(void *drop) {
 	LanhopDropSource *source = (LanhopDropSource *)drop;
-	__block bool takes = false;
-	runOnMainThread(^{
+	return answerOnMainThread(0, ^int(void) {
+		source->refusing = YES;
+		return 1;
+	}) == 1;
+}
+
+int lanhopDropTakeTheMouseAt(void *drop, double x, double y) {
+	LanhopDropSource *source = (LanhopDropSource *)drop;
+	return answerOnMainThread(LANHOP_DROP_MAIN_THREAD_LATE, ^int(void) {
 		@autoreleasepool {
-			takes = takesTheMouseAtHome(source);
+			return moveUnder(source, CGPointMake(x, y));
 		}
 	});
-	return takes;
 }
 
 bool lanhopDropClose(void *drop) {
 	LanhopDropSource *source = (LanhopDropSource *)drop;
-	__block bool pending = false;
-	runOnMainThread(^{
+	return answerOnMainThread(0, ^int(void) {
 		source->closed = YES;
+		source->refusing = YES;
 		[source->window orderOut:nil];
 		giveBackActivation(source->frontBefore);
 		if (source->asked && !source->ended) {
-			pending = true;
 			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, abandonAfterSeconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 				[source abandon];
 			});
-			return;
+			return 1;
 		}
+		lanhopDropSessionOver(source->dropID);
 		[source release];
-	});
-	return pending;
+		return 1;
+	}) == 1;
 }

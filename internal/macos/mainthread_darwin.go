@@ -52,20 +52,23 @@ func ServeMainThread(program func() int) {
 	case <-appKitWanted:
 	}
 	C.lanhopAppRun()
-	select {}
+	os.Exit(<-exitCodes)
 }
 
 func exitOnTheMainThread(code int) {
 	mainThread.Lock()
-	if mainThread.appKit {
-		mainThread.Unlock()
-		C.lanhopExitOnMainThread(C.int(code))
-		select {}
-	}
 	mainThread.exiting = true
+	appKit := mainThread.appKit
 	mainThread.Unlock()
 	exitCodes <- code
+	if appKit {
+		C.lanhopExitOnMainThread(C.int(code))
+	}
 	select {}
+}
+
+func askAppKitToQuit() {
+	C.lanhopAppQuit()
 }
 
 func mainThreadIsServed() bool {

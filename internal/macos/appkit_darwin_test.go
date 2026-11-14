@@ -9,7 +9,9 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -28,12 +30,12 @@ func init() {
 
 func TestMain(m *testing.M) {
 	if os.Getenv(appKitWindowCheck) == "1" {
-		ServeMainThread(openAndCloseTheDropWindow)
+		ServeMainThread(openTheDropWindowThenQuit)
 	}
 	os.Exit(m.Run())
 }
 
-func openAndCloseTheDropWindow() int {
+func openTheDropWindowThenQuit() int {
 	if err := startAppKit(); errors.Is(err, ErrNoGUISession) {
 		fmt.Println(err)
 		return appKitWithoutGUISession
@@ -56,16 +58,30 @@ func openAndCloseTheDropWindow() int {
 	for deadline := time.Now().Add(5 * time.Second); state != windowReady && time.Now().Before(deadline); state = window.state() {
 		time.Sleep(20 * time.Millisecond)
 	}
-	takesTheMouse := window.takesTheMouseAtHome()
-	pending := window.close()
-	fmt.Printf("window at %+v: state %d, takes the mouse at home %v, session pending after close %v\n", home, state, takesTheMouse, pending)
-	if state != windowReady || !takesTheMouse || pending {
+	taken, _ := window.takeTheMouseAt(home)
+	err = window.close()
+	fmt.Printf("window at %+v: state %d, takes the mouse there %v, close %v\n", home, state, taken, err)
+	if state != windowReady || !taken || err != nil {
 		return 1
 	}
-	return appKitWindowCheckPassed
+	return quitThroughTheShutdownOfLanhop()
 }
 
-func TestTheDropWindowOpensAndClosesOnTheAppKitRunLoopOfTheMainThread(t *testing.T) {
+func quitThroughTheShutdownOfLanhop() int {
+	terminated := make(chan os.Signal, 1)
+	signal.Notify(terminated, syscall.SIGTERM)
+	askAppKitToQuit()
+	select {
+	case <-terminated:
+		fmt.Println("asking AppKit to quit sent SIGTERM to lanhop")
+		return appKitWindowCheckPassed
+	case <-time.After(10 * time.Second):
+		fmt.Println("asking AppKit to quit sent no SIGTERM within 10 s")
+		return 1
+	}
+}
+
+func TestTheDropWindowAndAQuitOfTheAppWorkOnTheAppKitRunLoopOfTheMainThread(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")

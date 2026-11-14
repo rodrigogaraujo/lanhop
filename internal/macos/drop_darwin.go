@@ -20,7 +20,11 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 )
 
-const dropEndLimit = 2 * time.Second
+const (
+	dropEndLimit     = 2 * time.Second
+	dropReleaseLimit = time.Second
+	dropReleasePoll  = 20 * time.Millisecond
+)
 
 var (
 	_ [0]struct{} = [windowReady - C.LANHOP_DROP_WINDOW_READY]struct{}{}
@@ -30,26 +34,28 @@ var (
 )
 
 var (
-	ErrDropRunning  = errors.New("macos: a drag session of lanhop is still running")
-	ErrCannotPost   = errors.New("macos: this program is not allowed to post the mouse events that start a drag")
-	ErrNoDropWindow = errors.New("macos: AppKit gave lanhop no window to start the drag from")
+	ErrDropRunning    = errors.New("macos: a drag session of lanhop is still running")
+	ErrCannotPost     = errors.New("macos: this program is not allowed to post the mouse events that start a drag")
+	ErrNoDropWindow   = errors.New("macos: AppKit gave lanhop no window to start the drag from")
+	ErrMainThreadLate = errors.New("macos: the main thread did not answer in time")
 )
 
 type Drop struct {
-	id         uint64
-	window     dropWindow
-	write      WriteFile
-	writing    context.Context
-	stopWrites context.CancelFunc
-	promises   *promises
-	button     *heldDown
-	downSeen   *latch
-	began      *latch
-	ended      *latch
-	state      sync.Mutex
-	operation  Operation
-	downAtEnd  bool
-	closing    sync.Once
+	id           uint64
+	window       dropWindow
+	releaseLimit time.Duration
+	write        WriteFile
+	writing      context.Context
+	stopWrites   context.CancelFunc
+	promises     *promises
+	button       *heldDown
+	downSeen     *latch
+	began        *latch
+	ended        *latch
+	state        sync.Mutex
+	operation    Operation
+	downAtEnd    bool
+	closing      sync.Once
 }
 
 var drops = struct {
@@ -67,12 +73,28 @@ func (w nativeWindow) state() windowState {
 	return windowState(C.lanhopDropWindowState(w.pointer))
 }
 
-func (w nativeWindow) takesTheMouseAtHome() bool {
-	return bool(C.lanhopDropWindowTakesTheMouseAtHome(w.pointer))
+func (w nativeWindow) refuseDrops() error {
+	if !bool(C.lanhopDropRefuseDrops(w.pointer)) {
+		return ErrMainThreadLate
+	}
+	return nil
 }
 
-func (w nativeWindow) close() bool {
-	return bool(C.lanhopDropClose(w.pointer))
+func (w nativeWindow) takeTheMouseAt(at Point) (bool, error) {
+	switch C.lanhopDropTakeTheMouseAt(w.pointer, C.double(at.X), C.double(at.Y)) {
+	case C.LANHOP_DROP_TAKES_THE_MOUSE:
+		return true, nil
+	case C.LANHOP_DROP_MISSES_THE_MOUSE:
+		return false, nil
+	}
+	return false, ErrMainThreadLate
+}
+
+func (w nativeWindow) close() error {
+	if !bool(C.lanhopDropClose(w.pointer)) {
+		return ErrMainThreadLate
+	}
+	return nil
 }
 
 func openDropWindow(id uint64, files []PromisedFile, home Point) (dropWindow, error) {
@@ -128,15 +150,16 @@ func registerDrop(count int, write WriteFile, button *heldDown) (*Drop, error) {
 	drops.last++
 	writing, stopWrites := context.WithCancel(context.Background())
 	drop := &Drop{
-		id:         drops.last,
-		write:      write,
-		writing:    writing,
-		stopWrites: stopWrites,
-		promises:   newPromises(count),
-		button:     button,
-		downSeen:   newLatch(),
-		began:      newLatch(),
-		ended:      newLatch(),
+		id:           drops.last,
+		releaseLimit: dropReleaseLimit,
+		write:        write,
+		writing:      writing,
+		stopWrites:   stopWrites,
+		promises:     newPromises(count),
+		button:       button,
+		downSeen:     newLatch(),
+		began:        newLatch(),
+		ended:        newLatch(),
 	}
 	drops.byID[drop.id] = drop
 	drops.session = drop.id
@@ -199,8 +222,10 @@ func (d *Drop) Close() {
 		d.promises.close()
 		d.endTheSession()
 		forgetDrop(d)
-		if d.window == nil || !d.window.close() {
+		if d.window == nil {
 			sessionOver(d.id)
+		} else if err := d.window.close(); err != nil {
+			log.Printf("macos: closing the window of the drag: %v; the next drop waits until AppKit lets the session go", err)
 		}
 	})
 }
@@ -217,16 +242,42 @@ func (d *Drop) endTheSession() {
 	if !d.button.pending() {
 		return
 	}
-	if d.window != nil && d.window.takesTheMouseAtHome() {
-		d.button.releaseAtHome()
-	} else if d.button.releaseHere() {
-		log.Printf("macos: the window of lanhop no longer takes the mouse where the drag started, so the button of the drag was released where the cursor is")
+	if d.window == nil {
+		d.button.releaseHere()
+		log.Printf("macos: the drag had no window of lanhop, so its button was released where the cursor is")
+	} else {
+		d.releaseOverTheWindow()
 	}
 	timer := time.NewTimer(dropEndLimit)
 	defer timer.Stop()
 	select {
 	case <-d.ended.done:
 	case <-timer.C:
+	}
+}
+
+func (d *Drop) releaseOverTheWindow() {
+	if err := d.window.refuseDrops(); err != nil {
+		log.Printf("macos: refusing drops before the release: %v", err)
+	}
+	deadline := time.Now().Add(d.releaseLimit)
+	for {
+		at := d.button.screen.Cursor()
+		taken, err := d.window.takeTheMouseAt(at)
+		if taken {
+			d.button.releaseAt(at)
+			return
+		}
+		if !time.Now().Before(deadline) {
+			reason := "another window takes the mouse there"
+			if err != nil {
+				reason = err.Error()
+			}
+			log.Printf("macos: the window of lanhop did not take the mouse under the cursor (%s), so the button of the drag was released there with drops refused", reason)
+			d.button.releaseAt(at)
+			return
+		}
+		time.Sleep(dropReleasePoll)
 	}
 }
 
@@ -281,8 +332,8 @@ func lanhopDropEnded(id C.uint64_t, operation C.uint64_t, buttonDown C.bool) {
 	endedSession(uint64(id), Operation(operation), bool(buttonDown))
 }
 
-//export lanhopDropAbandoned
-func lanhopDropAbandoned(id C.uint64_t) {
+//export lanhopDropSessionOver
+func lanhopDropSessionOver(id C.uint64_t) {
 	sessionOver(uint64(id))
 }
 

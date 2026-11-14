@@ -62,6 +62,8 @@ jobs:
           mkdir -p "$LANHOP_CONFIG_DIR" "$answers"
           "$program" share --listen 127.0.0.1:0 >"$answers/share" 2>&1 &
           share=$!
+          watchdog=""
+          trap 'kill -KILL $share $watchdog 2>/dev/null || true' EXIT
           for _ in $(seq 1 60); do
             "$program" status >"$answers/status"
             if ! grep -q "^stopped:" "$answers/status"; then
@@ -76,11 +78,10 @@ jobs:
             exit 1
           fi
           kill -TERM "$share"
-          (sleep 30 && kill -KILL "$share") >/dev/null 2>&1 &
+          perl -e 'sleep 30; kill "KILL", $ARGV[0]' "$share" &
           watchdog=$!
           code=0
           wait "$share" || code=$?
-          kill "$watchdog" 2>/dev/null || true
           cat "$answers/share"
           if [ "$code" -ne 0 ]; then
             echo "::error::lanhop share ended with exit code $code after SIGTERM, want 0"
