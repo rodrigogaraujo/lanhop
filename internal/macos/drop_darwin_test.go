@@ -52,6 +52,17 @@ func TestADropNeedsTheAppKitRunLoopOfTheMainThread(t *testing.T) {
 	}
 }
 
+func TestAShieldNeedsTheAppKitRunLoopOfTheMainThread(t *testing.T) {
+	shield, err := ShieldCursor(context.Background())
+	if shield != nil {
+		shield.Close()
+		t.Error("a shield stood in a program whose main thread runs no AppKit")
+	}
+	if !errors.Is(err, ErrNoMainThread) {
+		t.Errorf("ShieldCursor = %v, want ErrNoMainThread", err)
+	}
+}
+
 func TestADropChecksItsFilesAndItsWriterFirst(t *testing.T) {
 	if _, err := StartDrop(context.Background(), []PromisedFile{{Name: "../report.pdf"}}, writeNothing); !errors.Is(err, ErrPromisedName) {
 		t.Errorf("a name with a slash gave %v, want ErrPromisedName", err)

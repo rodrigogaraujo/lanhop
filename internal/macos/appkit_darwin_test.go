@@ -52,6 +52,10 @@ func openTheDropWindowThenQuit() int {
 	main := displays[0]
 	home := Point{X: math.Round(main.X + main.Width/3), Y: math.Round(main.Y + main.Height/4)}
 	elsewhere := Point{X: math.Round(main.X + main.Width*2/3), Y: math.Round(main.Y + main.Height*3/5)}
+	shielded := Point{X: math.Round(main.X + main.Width/5), Y: math.Round(main.Y + main.Height*4/5)}
+	if code := shieldWithoutTakingTheFocus(shielded); code != 0 {
+		return code
+	}
 	window, err := openDropWindow(0, []PromisedFile{{Name: "report.pdf"}}, home)
 	if err != nil {
 		fmt.Println(err)
@@ -70,6 +74,21 @@ func openTheDropWindowThenQuit() int {
 		return 1
 	}
 	return quitThroughTheShutdownOfLanhop()
+}
+
+func shieldWithoutTakingTheFocus(at Point) int {
+	shield, err := shieldUnder(context.Background(), func() Point { return at })
+	if err != nil {
+		fmt.Println("shield:", err)
+		return 1
+	}
+	active := appIsActive()
+	err = shield.Close()
+	fmt.Printf("shield at %+v took the mouse; lanhop active %v; close %v\n", at, active, err)
+	if active || err != nil {
+		return 1
+	}
+	return 0
 }
 
 func quitThroughTheShutdownOfLanhop() int {
