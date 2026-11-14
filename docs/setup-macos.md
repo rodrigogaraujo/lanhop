@@ -114,11 +114,14 @@ Each macOS archive of a release unpacks to a folder, `lanhop-darwin-arm64` or `l
 
   Or try to open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
 
-- **macOS may take each new build for another program.** An ad hoc signature changes with every build, so a switch that is on for the old app may do nothing for the new one. An app signed with an Apple developer certificate keeps its permissions across updates. This has not been measured yet: if it happens, remove lanhop from the Accessibility list with the **−** button and add it again.
+- **macOS may take each new build for another program.** An ad hoc signature changes with every build. On 2026-11-13, three Macs that moved to the 0.1.1 app lost Accessibility: switching the old line on again did not help, and only removing lanhop and adding it again did. Apple says that an app signed with an Apple developer certificate keeps its permissions across updates. If the switch does nothing after an update, remove lanhop from the Accessibility list with the **−** button and add it again.
+- **A certificate of the project is planned.** The project plans to sign lanhop.app with a self-signed certificate of its own, so that an update keeps Accessibility ([ADR 10](adr/0010-a-stable-signature-from-a-certificate-of-the-project.md)). One run with a test app kept Accessibility across two builds signed with the same certificate. A second run is still to do. Whether Local Network is kept is not measured. The first release signed this way will ask for Accessibility once more.
 
 ## Letting another machine control the Mac
 
-After granting the permission, pair the Mac with the machine that has the keyboard and mouse, then start receiving:
+Once a release brings it, the simplest way is one line: run `lanhop add NAME` on the machine with the keyboard, and type the line it prints on this Mac. See [Adding a machine](../README.md#adding-a-machine).
+
+Or, after granting the permission, pair the Mac with the machine that has the keyboard and mouse, then start receiving:
 
 ```sh
 lanhop pair ADDRESS-OF-THE-OTHER-MACHINE
@@ -135,7 +138,9 @@ Not done yet on a Mac that is being controlled:
 
 ## Sharing the keyboard and mouse of the Mac
 
-On the Mac that has the keyboard and mouse, wait for each other machine to pair, then share:
+Once a release brings it, add each other machine with `lanhop add NAME`, which prints a line to type on that machine. See [Adding a machine](../README.md#adding-a-machine).
+
+Or, on the Mac that has the keyboard and mouse, wait for each other machine to pair, then share:
 
 ```sh
 lanhop pair
