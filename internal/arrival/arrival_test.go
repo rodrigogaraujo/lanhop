@@ -443,9 +443,7 @@ func TestGivingUpBeforeExpectOrAfterARefusedExpectIsSafe(t *testing.T) {
 		t.Errorf("Expect of 101 bytes in a room of 100 = %v, want ErrNoRoom", err)
 	}
 	refused.GiveUp()
-	if _, err := os.Lstat(f.Directory()); err == nil {
-		expectHolds(t, f)
-	}
+	expectHolds(t, f)
 }
 
 func TestEntriesOutOfOrderAreRefused(t *testing.T) {
@@ -523,9 +521,7 @@ func TestAFileCopyOutsideTheLimitsIsRefusedBeforeAnythingIsWritten(t *testing.T)
 			t.Errorf("Expect with %d bytes and %d entries = %v, want ErrOutsideTheLimits", refused.bytes, refused.entries, err)
 		}
 	}
-	if _, err := os.Lstat(f.Directory()); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("the arrival folder was created for a refused copy: %v", err)
-	}
+	expectHolds(t, f)
 	expectingWith(t, f, 2, 4<<30, 10_000).GiveUp()
 }
 

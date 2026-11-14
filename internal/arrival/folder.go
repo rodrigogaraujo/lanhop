@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -23,12 +24,18 @@ const (
 
 	folderName   = "arrived"
 	recordSuffix = ".complete"
+	lockName     = ".lock"
+	plenty       = 1 << 62
 )
+
+var transferFolder = regexp.MustCompile(`^-?[0-9]+-[0-9a-f]{16}$`)
 
 var (
 	ErrNoRoom           = errors.New("arrival: the files do not fit in the room lanhop allows itself, or in the free space of the disk")
 	ErrOutsideTheLimits = errors.New("arrival: a file copy holds from 1 to 10 000 files and folders, and at most 4 GiB")
 	ErrCannotQuarantine = errors.New("arrival: this lanhop was built without cgo, so files that arrive cannot get the quarantine mark of macOS")
+	ErrUnsafeDirectory  = errors.New("arrival: the arrival folder is a link, belongs to another user, or others can write in it")
+	ErrFolderInUse      = errors.New("arrival: another Folder holds this arrival folder")
 	errUnreadableRecord = errors.New("arrival: the record of a completed arrival cannot be read")
 )
 
@@ -37,8 +44,9 @@ type Config struct {
 	Room      int64
 	Margin    int64
 
-	now       func() time.Time
-	freeSpace func(directory string) (int64, error)
+	now           func() time.Time
+	freeSpace     func(directory string) (int64, error)
+	beforePlacing func(final string)
 }
 
 func (c Config) withDefaults() (Config, error) {
@@ -72,6 +80,7 @@ func (c Config) withDefaults() (Config, error) {
 type Folder struct {
 	config  Config
 	mutex   sync.Mutex
+	lock    *os.File
 	writing map[string]*Arrival
 }
 
@@ -89,7 +98,60 @@ func Open(config Config) (*Folder, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Folder{config: config, writing: make(map[string]*Arrival)}, nil
+	if err := prepareDirectory(config.Directory); err != nil {
+		return nil, err
+	}
+	lock, err := lockFolder(filepath.Join(config.Directory, lockName))
+	if err != nil {
+		return nil, err
+	}
+	return &Folder{config: config, lock: lock, writing: make(map[string]*Arrival)}, nil
+}
+
+func (f *Folder) Close() error {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if f.lock == nil {
+		return nil
+	}
+	err := f.lock.Close()
+	f.lock = nil
+	if err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	return nil
+}
+
+func (f *Folder) isOpen() error {
+	if f.lock == nil {
+		return fmt.Errorf("arrival: the folder was closed: %w", fs.ErrClosed)
+	}
+	return nil
+}
+
+func prepareDirectory(directory string) error {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	return checkDirectory(directory)
+}
+
+func checkDirectory(directory string) error {
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		return fmt.Errorf("%w: %s is a link", ErrUnsafeDirectory, directory)
+	case !info.IsDir():
+		return fmt.Errorf("%w: %s is not a folder", ErrUnsafeDirectory, directory)
+	case !ownedByThisUser(info):
+		return fmt.Errorf("%w: %s belongs to another user", ErrUnsafeDirectory, directory)
+	case info.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("%w: %s can be written by others, with mode %v", ErrUnsafeDirectory, directory, info.Mode().Perm())
+	}
+	return nil
 }
 
 func (f *Folder) Directory() string {
@@ -106,8 +168,11 @@ func (f *Folder) start(a *Arrival, bytes int64, entries int) error {
 	}
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	if err := os.MkdirAll(f.config.Directory, 0o700); err != nil {
-		return fmt.Errorf("arrival: %w", err)
+	if err := f.isOpen(); err != nil {
+		return err
+	}
+	if err := prepareDirectory(f.config.Directory); err != nil {
+		return err
 	}
 	completed, _ := f.look()
 	if err := f.makeRoom(completed, bytes); err != nil {
@@ -121,7 +186,13 @@ func (f *Folder) start(a *Arrival, bytes int64, entries int) error {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		return fmt.Errorf("arrival: %w", err)
 	}
-	a.name, a.path, a.bytes, a.entries, a.made = name, path, bytes, entries, make(map[string]made)
+	root, err := os.Lstat(path)
+	if err != nil {
+		os.Remove(path)
+		return fmt.Errorf("arrival: %w", err)
+	}
+	a.name, a.path, a.bytes, a.entries = name, path, bytes, entries
+	a.folders, a.files = map[string]fs.FileInfo{"": root}, make(map[string]bool)
 	f.writing[name] = a
 	return nil
 }
@@ -135,10 +206,18 @@ func (f *Folder) removeFinished(name string) {
 func (f *Folder) RemoveOld() error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
+	if err := f.isOpen(); err != nil {
+		return err
+	}
+	if err := checkDirectory(f.config.Directory); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	completed, failed := f.look()
 	now := f.config.now()
 	for _, arrival := range completed {
-		if now.Sub(arrival.completed) >= KeptFor {
+		if age := now.Sub(arrival.completed); age >= KeptFor || age < 0 {
 			failed = errors.Join(failed, f.remove(arrival.name))
 		}
 	}
@@ -150,31 +229,43 @@ func (f *Folder) makeRoom(completed []completedArrival, bytes int64) error {
 	if err != nil {
 		return fmt.Errorf("arrival: reading the free space of the disk: %w", err)
 	}
+	free = min(max(free, 0), plenty)
 	var reserved, unwritten, kept int64
 	for _, arrival := range f.writing {
-		reserved += arrival.bytes
-		unwritten += arrival.bytes - arrival.written.Load()
+		reserved = addUpTo(reserved, arrival.bytes)
+		unwritten = addUpTo(unwritten, arrival.bytes-arrival.written.Load())
 	}
 	for _, arrival := range completed {
-		kept += arrival.bytes
+		kept = addUpTo(kept, arrival.bytes)
 	}
 	fits := func(kept, free int64) bool {
-		return reserved+kept+bytes <= f.config.Room && free-unwritten-bytes >= f.config.Margin
+		return addUpTo(addUpTo(reserved, kept), bytes) <= f.config.Room && free-unwritten-bytes >= f.config.Margin
 	}
-	if !fits(0, free+kept) {
-		return fmt.Errorf("%w: %d bytes asked, %d bytes still to arrive, %d bytes free on the disk, a room of %d bytes and a margin of %d bytes",
-			ErrNoRoom, bytes, unwritten, free, f.config.Room, f.config.Margin)
+	noRoom := fmt.Errorf("%w: %d bytes asked, %d bytes still to arrive, %d bytes free on the disk, a room of %d bytes and a margin of %d bytes",
+		ErrNoRoom, bytes, unwritten, free, f.config.Room, f.config.Margin)
+	if !fits(0, addUpTo(free, kept)) {
+		return noRoom
 	}
-	for !fits(kept, free) {
+	for len(completed) > 0 && !fits(kept, free) {
 		oldest := completed[0]
 		completed = completed[1:]
 		if err := f.remove(oldest.name); err != nil {
 			return err
 		}
-		kept -= oldest.bytes
-		free += oldest.bytes
+		kept = max(kept-oldest.bytes, 0)
+		free = addUpTo(free, oldest.bytes)
+	}
+	if !fits(kept, free) {
+		return noRoom
 	}
 	return nil
+}
+
+func addUpTo(sum, more int64) int64 {
+	if more > plenty-sum {
+		return plenty
+	}
+	return sum + more
 }
 
 func (f *Folder) look() ([]completedArrival, error) {
@@ -188,11 +279,12 @@ func (f *Folder) look() ([]completedArrival, error) {
 	folders := make(map[string]bool)
 	var records []string
 	for _, entry := range listed {
-		switch name := entry.Name(); {
-		case entry.IsDir():
+		name := entry.Name()
+		switch transfer, isRecord := strings.CutSuffix(name, recordSuffix); {
+		case entry.IsDir() && transferFolder.MatchString(name):
 			folders[name] = true
-		case entry.Type().IsRegular() && strings.HasSuffix(name, recordSuffix):
-			records = append(records, strings.TrimSuffix(name, recordSuffix))
+		case entry.Type().IsRegular() && isRecord && transferFolder.MatchString(transfer):
+			records = append(records, transfer)
 		}
 	}
 	var failed error
@@ -242,7 +334,7 @@ func (f *Folder) readRecord(name string) (completedArrival, error) {
 		return completedArrival{}, err
 	}
 	var nanoseconds, bytes int64
-	if _, err := fmt.Sscanf(string(content), "%d %d", &nanoseconds, &bytes); err != nil || bytes < 0 {
+	if _, err := fmt.Sscanf(string(content), "%d %d", &nanoseconds, &bytes); err != nil || bytes < 0 || bytes > clipboard.FileCopyLimit {
 		return completedArrival{}, errUnreadableRecord
 	}
 	return completedArrival{name: name, completed: time.Unix(0, nanoseconds), bytes: bytes}, nil

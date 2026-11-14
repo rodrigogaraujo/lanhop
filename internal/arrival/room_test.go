@@ -90,7 +90,7 @@ func TestTheRoomIs8GiBAndTheMarginIs256MiBUnlessConfigured(t *testing.T) {
 	}
 	var planted []*Arrival
 	for i := range 3 {
-		planted = append(planted, plantCompleted(t, f, fmt.Sprintf("%d-planted", i), clock.now(), 3<<30))
+		planted = append(planted, plantCompleted(t, f, fmt.Sprintf("%d-%016x", i, i), clock.now(), 3<<30))
 		clock.pass(time.Hour)
 	}
 
@@ -351,8 +351,8 @@ func TestMakingRoomAcrossGoroutinesNeverRemovesAnArrivalInProgress(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) > 3*2 {
-		t.Errorf("the arrival folder holds %d entries after the room of 3 arrivals was made again and again, want at most 3 arrivals and their records", len(listed))
+	if arrivalsAndRecords := len(listed) - 1; arrivalsAndRecords > 3*2 {
+		t.Errorf("the arrival folder holds %d arrivals and records after the room of 3 arrivals was made again and again, want at most 3 arrivals and their records", arrivalsAndRecords)
 	}
 }
 
@@ -375,6 +375,7 @@ func TestTheArrivalFolderLivesInTheCacheOfThePerson(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	defer f.Close()
 	if f.Directory() != want {
 		t.Errorf("the arrival folder is %s, want %s", f.Directory(), want)
 	}
@@ -383,11 +384,12 @@ func TestTheArrivalFolderLivesInTheCacheOfThePerson(t *testing.T) {
 	}
 	elsewhere := filepath.Join(home, "elsewhere")
 	t.Setenv("XDG_CACHE_HOME", elsewhere)
-	f, err = Open(Config{})
+	elsewhereFolder, err := Open(Config{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if want := filepath.Join(elsewhere, "lanhop", "arrived"); f.Directory() != want {
-		t.Errorf("with XDG_CACHE_HOME set, the arrival folder is %s, want %s", f.Directory(), want)
+	defer elsewhereFolder.Close()
+	if want := filepath.Join(elsewhere, "lanhop", "arrived"); elsewhereFolder.Directory() != want {
+		t.Errorf("with XDG_CACHE_HOME set, the arrival folder is %s, want %s", elsewhereFolder.Directory(), want)
 	}
 }

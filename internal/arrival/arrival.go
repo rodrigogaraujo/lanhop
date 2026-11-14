@@ -22,13 +22,6 @@ var (
 	ErrGivenUp           = errors.New("arrival: the arrival was given up, and what arrived of it was removed")
 )
 
-type made uint8
-
-const (
-	madeFolder made = iota + 1
-	madeFile
-)
-
 type Arrival struct {
 	folder   *Folder
 	transfer int
@@ -44,7 +37,8 @@ type Arrival struct {
 	gaveUp        bool
 	entriesSoFar  int
 	bytesSoFar    int64
-	made          map[string]made
+	folders       map[string]fs.FileInfo
+	files         map[string]bool
 	open          *IncomingFile
 	topLevelPaths []string
 }
@@ -53,6 +47,7 @@ type IncomingFile struct {
 	arrival   *Arrival
 	file      *os.File
 	relative  string
+	elements  []string
 	temporary string
 	final     string
 	topLevel  bool
@@ -188,11 +183,15 @@ func (a *Arrival) makeFolder(name string) error {
 		}
 		return fmt.Errorf("arrival: %w", err)
 	}
-	if err := a.markQuarantined(full, name); err != nil {
-		return err
+	identity, err := os.Lstat(full)
+	if err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	if err := markQuarantined(full, a.folder.config.now()); err != nil {
+		return fmt.Errorf("arrival: the quarantine mark on %q: %w", name, err)
 	}
 	a.entriesSoFar++
-	a.made[name] = madeFolder
+	a.folders[name] = identity
 	if len(elements) == 1 {
 		a.topLevelPaths = append(a.topLevelPaths, full)
 	}
@@ -224,9 +223,9 @@ func (a *Arrival) openFile(name string, size int64) (*IncomingFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("arrival: %w", err)
 	}
-	a.open = &IncomingFile{arrival: a, file: file, relative: name, temporary: temporary, final: final, topLevel: len(elements) == 1, size: size}
-	if err := a.markQuarantined(temporary, name); err != nil {
-		return nil, err
+	a.open = &IncomingFile{arrival: a, file: file, relative: name, elements: elements, temporary: temporary, final: final, topLevel: len(elements) == 1, size: size}
+	if err := markFileQuarantined(file, a.folder.config.now()); err != nil {
+		return nil, fmt.Errorf("arrival: the quarantine mark on %q: %w", name, err)
 	}
 	a.entriesSoFar++
 	a.bytesSoFar += size
@@ -238,22 +237,35 @@ func (a *Arrival) placeFor(name string) ([]string, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if a.made[name] != 0 {
+	if a.folders[name] != nil || a.files[name] {
 		return nil, "", fmt.Errorf("%w: %q arrived already", ErrUnsafePath, name)
 	}
-	if parent := strings.Join(elements[:len(elements)-1], "/"); parent != "" {
-		switch a.made[parent] {
-		case madeFile:
-			return nil, "", fmt.Errorf("%w: %q sits under a file", ErrUnsafePath, name)
-		case 0:
-			return nil, "", fmt.Errorf("%w: %q sits in a folder that did not arrive", ErrUnsafePath, name)
-		}
+	parent := strings.Join(elements[:len(elements)-1], "/")
+	switch {
+	case a.files[parent]:
+		return nil, "", fmt.Errorf("%w: %q sits under a file", ErrUnsafePath, name)
+	case a.folders[parent] == nil:
+		return nil, "", fmt.Errorf("%w: %q sits in a folder that did not arrive", ErrUnsafePath, name)
 	}
 	full := filepath.Join(a.path, filepath.Join(elements...))
 	if !strings.HasPrefix(full, a.path+string(filepath.Separator)) {
 		return nil, "", fmt.Errorf("%w: %q leaves the arrival", ErrUnsafePath, name)
 	}
+	if err := a.foldersStillThere(elements); err != nil {
+		return nil, "", err
+	}
 	return elements, full, nil
+}
+
+func (a *Arrival) foldersStillThere(elements []string) error {
+	for depth := range len(elements) {
+		relative := strings.Join(elements[:depth], "/")
+		found, err := os.Lstat(filepath.Join(a.path, filepath.Join(elements[:depth]...)))
+		if err != nil || !os.SameFile(found, a.folders[relative]) {
+			return fmt.Errorf("%w: the folder %q is no longer the one this arrival made", ErrUnsafePath, relative)
+		}
+	}
+	return nil
 }
 
 func safeElements(name string) ([]string, error) {
@@ -287,13 +299,6 @@ func nothingAt(path, name string) error {
 		return fmt.Errorf("%w: %q is there already and this arrival did not make it", ErrUnsafePath, name)
 	case !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("arrival: %w", err)
-	}
-	return nil
-}
-
-func (a *Arrival) markQuarantined(path, name string) error {
-	if err := markQuarantined(path, a.folder.config.now()); err != nil {
-		return fmt.Errorf("arrival: the quarantine mark on %q: %w", name, err)
 	}
 	return nil
 }
@@ -341,15 +346,31 @@ func (i *IncomingFile) whole() error {
 	if err := i.file.Close(); err != nil {
 		return fmt.Errorf("arrival: %w", err)
 	}
-	if err := nothingAt(i.final, i.relative); err != nil {
+	if err := a.foldersStillThere(i.elements); err != nil {
 		return err
 	}
-	if err := os.Rename(i.temporary, i.final); err != nil {
-		return fmt.Errorf("arrival: %w", err)
+	if before := a.folder.config.beforePlacing; before != nil {
+		before(i.final)
 	}
-	a.made[i.relative] = madeFile
+	if err := placeWithoutReplacing(i.temporary, i.final, i.relative); err != nil {
+		return err
+	}
+	a.files[i.relative] = true
 	if i.topLevel {
 		a.topLevelPaths = append(a.topLevelPaths, i.final)
+	}
+	return nil
+}
+
+func placeWithoutReplacing(temporary, final, name string) error {
+	if err := os.Link(temporary, final); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%w: %q is there already and this arrival did not make it: %w", ErrUnsafePath, name, err)
+		}
+		return fmt.Errorf("arrival: placing %q without replacing anything needs a hard link, and the disk refused it: %w", name, err)
+	}
+	if err := os.Remove(temporary); err != nil {
+		return fmt.Errorf("arrival: %w", err)
 	}
 	return nil
 }
@@ -363,7 +384,7 @@ func (a *Arrival) finish() error {
 	case !a.expected:
 		return ErrOutOfOrder
 	case a.open != nil || a.entriesSoFar != a.entries || a.bytesSoFar != a.bytes:
-		return fmt.Errorf("%w: %d of %d files and folders are whole", ErrIncomplete, len(a.made), a.entries)
+		return fmt.Errorf("%w: %d of %d files and folders are whole", ErrIncomplete, len(a.folders)-1+len(a.files), a.entries)
 	}
 	if err := a.folder.writeRecord(a.name, a.folder.config.now(), a.bytes); err != nil {
 		return err

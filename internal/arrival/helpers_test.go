@@ -59,6 +59,7 @@ func openFolder(t *testing.T, room, margin int64) (*Folder, *clock, *disk) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	t.Cleanup(func() { f.Close() })
 	return f, ticking, plenty
 }
 
@@ -188,7 +189,9 @@ func expectHolds(t *testing.T, f *Folder, names ...string) {
 	}
 	var got []string
 	for _, entry := range listed {
-		got = append(got, entry.Name())
+		if entry.Name() != lockName {
+			got = append(got, entry.Name())
+		}
 	}
 	slices.Sort(names)
 	if !slices.Equal(got, names) {

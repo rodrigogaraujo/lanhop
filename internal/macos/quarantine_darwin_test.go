@@ -36,3 +36,18 @@ func TestAFileWithoutTheQuarantineMarkSaysSo(t *testing.T) {
 		t.Errorf("Quarantine of a file never marked = %q, %v, want ENOATTR", got, err)
 	}
 }
+
+func TestTheQuarantineMarkSetThroughAnOpenFileReadsBack(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "arriving")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	const value = "0081;6734a1c0;lanhop;"
+	if err := SetQuarantineOn(file.Fd(), value); err != nil {
+		t.Fatalf("SetQuarantineOn: %v", err)
+	}
+	if got, err := Quarantine(file.Name()); err != nil || got != value {
+		t.Errorf("Quarantine = %q, %v, want %q", got, err, value)
+	}
+}

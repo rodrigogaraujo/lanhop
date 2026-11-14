@@ -4,6 +4,8 @@ package arrival
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 )
 
@@ -15,4 +17,16 @@ func freeSpaceOf(string) (int64, error) {
 
 func flush(file *os.File) error {
 	return file.Sync()
+}
+
+func ownedByThisUser(fs.FileInfo) bool {
+	return true
+}
+
+func lockFolder(path string) (*os.File, error) {
+	lock, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("arrival: %w", err)
+	}
+	return lock, nil
 }
