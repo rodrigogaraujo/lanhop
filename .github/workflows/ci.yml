@@ -220,5 +220,7 @@ jobs:
           scripts/release/sign-apps "$WORK/other-certificate/certificate.p12" "$WORK/other-certificate/password" "$apps/other.app"
           cp -R "$WORK/ad-hoc.app" "$apps/other-identifier.app"
           scripts/release/sign-apps --identifier com.example.other "$WORK/certificate/certificate.p12" "$WORK/certificate/password" "$apps/other-identifier.app"
+          cp -R "$apps/project.app" "$apps/tampered.app"
+          plutil -replace CFBundleShortVersionString -string 9.9.9 "$apps/tampered.app/Contents/Info.plist"
           LANHOP_TEST_SIGNED_APPS="$apps" go test -count=1 -v -run 'TestTheSecurityFrameworkChecksTheRequirement' ./internal/update | tee "$WORK/app-check.log"
           grep -q -- '--- PASS: TestTheSecurityFrameworkChecksTheRequirement' "$WORK/app-check.log"

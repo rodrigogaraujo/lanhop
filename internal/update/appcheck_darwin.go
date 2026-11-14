@@ -67,5 +67,5 @@ func checkApp(app, requirement string) error {
 	}
 	var message [256]C.char
 	C.describeStatus(status, &message[0], C.CFIndex(len(message)))
-	return fmt.Errorf("update: macOS could not check the signature of %s: %s (OSStatus %d)", app, C.GoString(&message[0]), int(status))
+	return fmt.Errorf("%w: macOS does not take the signature of %s: %s (OSStatus %d)", ErrAppNotOurs, app, C.GoString(&message[0]), int(status))
 }

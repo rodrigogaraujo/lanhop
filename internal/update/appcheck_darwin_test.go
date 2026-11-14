@@ -3,8 +3,11 @@
 package update
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,9 +94,70 @@ func TestTheSecurityFrameworkChecksTheRequirement(t *testing.T) {
 
 	projectCertificateLeaves = []string{strings.TrimSpace(string(leaf))}
 	check := ProjectAppCheck()
-	for _, refused := range []string{"other.app", "ad-hoc.app", "other-identifier.app"} {
+	if err := check(throughAnArchive(t, filepath.Join(apps, "project.app"))); err != nil {
+		t.Errorf("the app signed with the certificate of the project was refused after it went through an archive: %v", err)
+	}
+	for _, refused := range []string{"other.app", "ad-hoc.app", "other-identifier.app", "tampered.app"} {
 		if err := check(filepath.Join(apps, refused)); !errors.Is(err, ErrAppNotOurs) {
 			t.Errorf("check of %s = %v, want ErrAppNotOurs", refused, err)
 		}
+		if err := check(throughAnArchive(t, filepath.Join(apps, refused))); !errors.Is(err, ErrAppNotOurs) {
+			t.Errorf("check of %s after it went through an archive = %v, want ErrAppNotOurs", refused, err)
+		}
 	}
+}
+
+func throughAnArchive(t *testing.T, app string) string {
+	t.Helper()
+	const root = "lanhop-darwin-test"
+	var packed bytes.Buffer
+	zipped := gzip.NewWriter(&packed)
+	archive := tar.NewWriter(zipped)
+	err := filepath.WalkDir(app, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(filepath.Dir(app), path)
+		if err != nil {
+			return err
+		}
+		header.Name = root + "/" + filepath.ToSlash(relative)
+		if entry.IsDir() {
+			header.Name += "/"
+		}
+		if err := archive.WriteHeader(header); err != nil {
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = archive.Write(content)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipped.Close(); err != nil {
+		t.Fatal(err)
+	}
+	into := t.TempDir()
+	if err := unpack(packed.Bytes(), into, root); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(into, root, "lanhop.app")
 }

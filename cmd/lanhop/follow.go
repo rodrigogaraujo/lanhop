@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/rodrigogaraujo/lanhop/internal/features"
@@ -43,8 +44,12 @@ func updatesSwitchedOn(directory string) bool {
 
 func followsTheCentral(directory string) func() bool {
 	return func() bool {
-		return os.Getenv(serviceVariable) == "1" && len(projectReleaseKeys) > 0 && updatesSwitchedOn(directory)
+		return os.Getenv(serviceVariable) == "1" && len(projectReleaseKeys) > 0 && canCheckANewProgram() && updatesSwitchedOn(directory)
 	}
+}
+
+func canCheckANewProgram() bool {
+	return runtime.GOOS != "darwin" || checkNewApp != nil
 }
 
 type machineUpdater struct {
