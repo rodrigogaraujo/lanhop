@@ -63,6 +63,15 @@ func TestAShieldNeedsTheAppKitRunLoopOfTheMainThread(t *testing.T) {
 	}
 }
 
+func TestAShieldAskedWithACancelledContextOpensNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	shield, err := ShieldCursor(ctx)
+	if shield != nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("ShieldCursor = %v, %v, want no shield and context.Canceled", shield, err)
+	}
+}
+
 func TestADropChecksItsFilesAndItsWriterFirst(t *testing.T) {
 	if _, err := StartDrop(context.Background(), []PromisedFile{{Name: "../report.pdf"}}, writeNothing); !errors.Is(err, ErrPromisedName) {
 		t.Errorf("a name with a slash gave %v, want ErrPromisedName", err)

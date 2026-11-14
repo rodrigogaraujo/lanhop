@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	quickShieldLimit = 50 * time.Millisecond
+	shortShieldLimit = 50 * time.Millisecond
 	quickShieldPoll  = 5 * time.Millisecond
 )
 
@@ -18,11 +18,18 @@ func cursorAt(p Point) func() Point {
 	return func() Point { return p }
 }
 
+func shieldOver(t *testing.T, window *fakeDropWindow) *Shield {
+	t.Helper()
+	shield := newShield(window, time.Minute)
+	t.Cleanup(func() { shield.Close() })
+	return shield
+}
+
 func TestAShieldCoveredForAMomentStandsOnceItTakesTheMouse(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{false, false, true}}
-	shield := newShield(window)
+	shield := shieldOver(t, window)
 
-	if err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), quickShieldLimit, quickShieldPoll); err != nil {
+	if err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), time.Second, quickShieldPoll); err != nil {
 		t.Fatalf("raise: %v", err)
 	}
 
@@ -42,9 +49,9 @@ func TestAShieldCoveredForAMomentStandsOnceItTakesTheMouse(t *testing.T) {
 
 func TestAShieldThatNeverTakesTheMouseLeavesNothingOnTheScreen(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{false}}
-	shield := newShield(window)
+	shield := shieldOver(t, window)
 
-	err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), quickShieldLimit, quickShieldPoll)
+	err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), shortShieldLimit, quickShieldPoll)
 
 	if !errors.Is(err, ErrShieldMissed) {
 		t.Errorf("raise = %v, want ErrShieldMissed", err)
@@ -56,7 +63,7 @@ func TestAShieldThatNeverTakesTheMouseLeavesNothingOnTheScreen(t *testing.T) {
 
 func TestAShieldClosedWhileItWaitsStopsWaitingAndClosesOnce(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{false}}
-	shield := newShield(window)
+	shield := shieldOver(t, window)
 	window.onTake = func(call int) {
 		if call == 2 {
 			shield.Close()
@@ -75,7 +82,7 @@ func TestAShieldClosedWhileItWaitsStopsWaitingAndClosesOnce(t *testing.T) {
 
 func TestAShieldCancelledWhileItWaitsLeavesNothingOnTheScreen(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{false}}
-	shield := newShield(window)
+	shield := shieldOver(t, window)
 	ctx, cancel := context.WithCancel(context.Background())
 	window.onTake = func(int) { cancel() }
 
@@ -91,9 +98,9 @@ func TestAShieldCancelledWhileItWaitsLeavesNothingOnTheScreen(t *testing.T) {
 
 func TestAShieldWhoseMainThreadAnswersLateIsMissedAndSaysWhy(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{true}, takeLate: true}
-	shield := newShield(window)
+	shield := shieldOver(t, window)
 
-	err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), quickShieldLimit, quickShieldPoll)
+	err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), shortShieldLimit, quickShieldPoll)
 
 	if !errors.Is(err, ErrShieldMissed) || !strings.Contains(err.Error(), ErrMainThreadLate.Error()) {
 		t.Errorf("raise = %v, want ErrShieldMissed with the late main thread", err)
@@ -102,7 +109,7 @@ func TestAShieldWhoseMainThreadAnswersLateIsMissedAndSaysWhy(t *testing.T) {
 
 func TestAShieldFollowsTheCursorUntilItTakesTheMouse(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{false, true}}
-	shield := newShield(window)
+	shield := shieldOver(t, window)
 	where := []Point{finderUnderTheCursor, mailUnderTheCursor}
 	cursor := func() Point {
 		next := where[0]
@@ -112,7 +119,7 @@ func TestAShieldFollowsTheCursorUntilItTakesTheMouse(t *testing.T) {
 		return next
 	}
 
-	if err := shield.raise(context.Background(), cursor, quickShieldLimit, quickShieldPoll); err != nil {
+	if err := shield.raise(context.Background(), cursor, time.Second, quickShieldPoll); err != nil {
 		t.Fatalf("raise: %v", err)
 	}
 	if _, movedTo, _ := window.seen(); !slices.Equal(movedTo, []Point{finderUnderTheCursor, mailUnderTheCursor}) {
@@ -122,8 +129,8 @@ func TestAShieldFollowsTheCursorUntilItTakesTheMouse(t *testing.T) {
 
 func TestClosingAShieldIsBoundedAndSaysWhenTheMainThreadWasLate(t *testing.T) {
 	window := &fakeDropWindow{answers: []bool{true}, closeLate: true}
-	shield := newShield(window)
-	if err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), quickShieldLimit, quickShieldPoll); err != nil {
+	shield := shieldOver(t, window)
+	if err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), time.Second, quickShieldPoll); err != nil {
 		t.Fatalf("raise: %v", err)
 	}
 
@@ -142,5 +149,57 @@ func TestClosingNoShieldDoesNothing(t *testing.T) {
 	var shield *Shield
 	if err := shield.Close(); err != nil {
 		t.Errorf("Close of no shield = %v", err)
+	}
+}
+
+func TestAShieldLeftOpenClosesItselfAfterItsLifetime(t *testing.T) {
+	window := &fakeDropWindow{answers: []bool{true}}
+	shield := newShield(window, 30*time.Millisecond)
+	if err := shield.raise(context.Background(), cursorAt(finderUnderTheCursor), time.Second, quickShieldPoll); err != nil {
+		t.Fatalf("raise: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for _, _, closed := window.seen(); closed == 0 && time.Now().Before(deadline); _, _, closed = window.seen() {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if _, _, closed := window.seen(); closed != 1 {
+		t.Fatalf("the shield left open was closed %d times after its lifetime, want once", closed)
+	}
+	shield.Close()
+	if _, _, closed := window.seen(); closed != 1 {
+		t.Errorf("Close after the lifetime closed the window again: %d closes", closed)
+	}
+}
+
+func TestAShieldWaitingOutALongPollStopsAtOnceWhenClosedOrCancelled(t *testing.T) {
+	const longPoll = time.Second
+	stops := map[string]func(*Shield, context.CancelFunc){
+		"Close":  func(shield *Shield, _ context.CancelFunc) { shield.Close() },
+		"cancel": func(_ *Shield, cancel context.CancelFunc) { cancel() },
+	}
+	for name, stop := range stops {
+		window := &fakeDropWindow{answers: []bool{false}}
+		shield := shieldOver(t, window)
+		ctx, cancel := context.WithCancel(context.Background())
+		window.onTake = func(int) {
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				stop(shield, cancel)
+			}()
+		}
+
+		started := time.Now()
+		err := shield.raise(ctx, cursorAt(finderUnderTheCursor), 10*time.Second, longPoll)
+		took := time.Since(started)
+		cancel()
+
+		if err == nil {
+			t.Errorf("%s: raise stood without the window taking the mouse", name)
+		}
+		if took >= longPoll/2 {
+			t.Errorf("%s: raise returned after %v, want well before the poll of %v", name, took, longPoll)
+		}
 	}
 }
