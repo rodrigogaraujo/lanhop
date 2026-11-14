@@ -16,8 +16,6 @@ import (
 
 const dockCheckInterval = 30 * time.Second
 
-var errNoDragEndsHere = errors.New("lanhop cannot end a file drag on this system")
-
 type dropsOfTheCentral interface {
 	DragSeen(paths []string)
 	DragGone()
@@ -49,7 +47,7 @@ type dragsOfTheCentral struct {
 }
 
 func newDragsOfTheCentral(name string, drops clipshare.Drops, dock func() edge.Side, endHere func() error, log io.Writer) *dragsOfTheCentral {
-	return &dragsOfTheCentral{name: name, drops: drops, dock: dock, endHere: endHere, log: log, toldNotTaken: map[string]bool{}}
+	return &dragsOfTheCentral{name: name, drops: drops, dock: dock, endHere: endHere, log: log, reset: resetLocalDrags, toldNotTaken: map[string]bool{}}
 }
 
 func (d *dragsOfTheCentral) wire(machine *sharer.Sharer, central *clipshare.Central) {
@@ -73,14 +71,11 @@ func (d *dragsOfTheCentral) watch(done context.Context) (stop func()) {
 		defer running.Done()
 		d.keepTheDockFresh(watching, dockCheckInterval)
 	}()
-	drags, stopDrags, resetDrags, err := watchLocalDrags(watching)
+	drags, stopDrags, err := watchLocalDrags(watching)
 	if err != nil {
-		fmt.Fprintf(d.log, "lanhop cannot see a file dragged on this machine, so such a drag cannot cross: %v\n", err)
+		fmt.Fprintf(d.log, "lanhop cannot see a file dragged on this machine, so such a drag cannot cross: %s\n", forTheLog(err))
 	}
 	if drags != nil {
-		d.mutex.Lock()
-		d.reset = resetDrags
-		d.mutex.Unlock()
 		running.Add(1)
 		go func() {
 			defer running.Done()
@@ -159,7 +154,7 @@ func (d *dragsOfTheCentral) sideDragEnded(origin string) {
 func (d *dragsOfTheCentral) crossing(crossing sharer.DragCrossing) {
 	if crossing.From == crossing.Origin && crossing.Origin != d.name {
 		if err := d.central.DragLeaves(crossing.Origin); err != nil {
-			fmt.Fprintf(d.log, "lanhop could not tell %q to end the file drag that left it: %v\n", crossing.Origin, err)
+			fmt.Fprintf(d.log, "lanhop could not tell %q to end the file drag that left it: %s\n", crossing.Origin, forTheLog(err))
 		}
 	}
 	if crossing.To == crossing.Origin {
@@ -180,7 +175,7 @@ func (d *dragsOfTheCentral) entered(crossing sharer.DragCrossing) {
 	case errors.Is(err, clipboard.ErrDropsNotTaken):
 		d.tellDropsNotTaken(crossing.To)
 	default:
-		fmt.Fprintf(d.log, "The file dragged to %q is not dropped there: %v\n", crossing.To, err)
+		fmt.Fprintf(d.log, "The file dragged to %q is not dropped there: %s\n", crossing.To, forTheLog(err))
 		d.machine.DragCancelled()
 	}
 }
@@ -189,7 +184,7 @@ func (d *dragsOfTheCentral) endTheDragHere() bool {
 	d.setOwnDragLeft(true)
 	if err := d.endHere(); err != nil {
 		d.setOwnDragLeft(false)
-		fmt.Fprintf(d.log, "The file drag on this machine does not cross, because lanhop could not end it here: %v\n", err)
+		fmt.Fprintf(d.log, "The file drag on this machine does not cross, because lanhop could not end it here: %s\n", forTheLog(err))
 		d.machine.DragCancelled()
 		d.central.DragCancelled()
 		return false
@@ -211,11 +206,8 @@ func (d *dragsOfTheCentral) leftButton(bool) {
 }
 
 func (d *dragsOfTheCentral) resetLocalDrags() {
-	d.mutex.Lock()
-	reset := d.reset
-	d.mutex.Unlock()
-	if reset != nil {
-		reset()
+	if d.reset != nil {
+		d.reset()
 	}
 }
 

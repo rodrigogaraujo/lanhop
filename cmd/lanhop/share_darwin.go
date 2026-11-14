@@ -38,11 +38,11 @@ func endTheDragHere(done context.Context, capture sharer.Capture, log io.Writer)
 	return func() error {
 		shield, shieldMissed := macos.ShieldCursor(done)
 		if shieldMissed != nil {
-			fmt.Fprintf(log, "lanhop could not put its window under the cursor before it ended the file drag on this Mac: %v\n", shieldMissed)
+			fmt.Fprintf(log, "lanhop could not put its window under the cursor before it ended the file drag on this Mac, and ends it anyway: %s\n", forTheLog(shieldMissed))
 		}
-		ended := macos.EndSourceDrag()
+		ended := endSourceDragHere()
 		if err := shield.Close(); err != nil {
-			fmt.Fprintf(log, "lanhop could not take its window from under the cursor: %v\n", err)
+			fmt.Fprintf(log, "lanhop could not take its window from under the cursor: %s\n", forTheLog(err))
 		}
 		if ended != nil {
 			return ended

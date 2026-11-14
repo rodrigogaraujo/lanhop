@@ -294,7 +294,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	machine.OnDragUnblocked(report.unblockedDrag)
 	drops, closeDrops, err := openDrops(true)
 	if err != nil {
-		fmt.Fprintf(stdout, "Files dragged to this machine cannot be dropped here: %v\n", err)
+		fmt.Fprintf(stdout, "Files dragged to this machine cannot be dropped here: %s\n", forTheLog(err))
 	}
 	if closeDrops != nil {
 		defer closeDrops()

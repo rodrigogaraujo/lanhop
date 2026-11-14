@@ -10,5 +10,5 @@ import (
 )
 
 func endTheDragHere(context.Context, sharer.Capture, io.Writer) func() error {
-	return func() error { return errNoDragEndsHere }
+	return endSourceDragHere
 }
