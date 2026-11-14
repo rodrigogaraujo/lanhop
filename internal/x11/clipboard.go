@@ -7,8 +7,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -58,12 +60,15 @@ const (
 	largestChunk     = 64 << 10
 	privateHintValue = "secret"
 	uriListLimit     = 64 << 10
+	fileListLimit    = 16 << 20
 )
 
 var (
-	ErrNoAnswer = errors.New("x11: the program that owns the clipboard did not answer")
-	ErrRefused  = errors.New("x11: the X server did not let lanhop own the clipboard")
-	ErrNoXFixes = errors.New("x11: the X server has no XFIXES extension")
+	ErrNoAnswer    = errors.New("x11: the program that owns the clipboard did not answer")
+	ErrRefused     = errors.New("x11: the X server did not let lanhop own the clipboard")
+	ErrNoXFixes    = errors.New("x11: the X server has no XFIXES extension")
+	ErrNotAbsolute = errors.New("x11: a file to put on the clipboard is not given by an absolute path")
+	ErrNULInPath   = errors.New("x11: a path to put on the clipboard holds a NUL byte")
 )
 
 type atoms struct {
@@ -83,6 +88,23 @@ const (
 type selectionNotify struct {
 	target   uint32
 	property uint32
+}
+
+type offer struct {
+	target uint32
+	kind   uint32
+	data   []byte
+}
+
+type heldCopy struct {
+	text   []byte
+	paths  []string
+	offers []offer
+	hint   hint
+}
+
+func (h heldCopy) holdsFiles() bool {
+	return len(h.paths) > 0
 }
 
 type transfer struct {
@@ -106,8 +128,7 @@ type Clipboard struct {
 	mark         int64
 	owned        bool
 	ownedSince   uint32
-	text         []byte
-	hint         hint
+	held         heldCopy
 	extraOffers  map[uint32][]byte
 	transfers    []*transfer
 	readTimeout  time.Duration
@@ -241,12 +262,28 @@ func (b *Clipboard) Write(text string) (mark int64, err error) {
 }
 
 func (b *Clipboard) write(text string, offered hint) (int64, error) {
+	return b.own(b.textCopy([]byte(text), offered))
+}
+
+func (b *Clipboard) WriteFiles(paths []string) (mark int64, err error) {
+	return b.writeFiles(paths, noHint)
+}
+
+func (b *Clipboard) writeFiles(paths []string, offered hint) (int64, error) {
+	held, err := b.filesCopy(paths, offered)
+	if err != nil {
+		return 0, err
+	}
+	return b.own(held)
+}
+
+func (b *Clipboard) own(held heldCopy) (int64, error) {
 	now, err := b.serverTime()
 	if err != nil {
 		return 0, err
 	}
 	b.state.Lock()
-	b.owned, b.ownedSince, b.text, b.hint = true, now, []byte(text), offered
+	b.owned, b.ownedSince, b.held = true, now, held
 	b.state.Unlock()
 	if err := b.c.send(newRequest(opSetSelectionOwner, 0).u32(b.window).u32(b.atoms.clipboard).u32(now).done()); err != nil {
 		return 0, err
@@ -257,11 +294,57 @@ func (b *Clipboard) write(text string, offered hint) (int64, error) {
 	}
 	if owner != b.window {
 		b.state.Lock()
-		b.owned, b.text = false, nil
+		b.owned, b.held = false, heldCopy{}
 		b.state.Unlock()
 		return 0, ErrRefused
 	}
 	return b.Mark(), nil
+}
+
+func (b *Clipboard) textCopy(text []byte, offered hint) heldCopy {
+	offers := []offer{
+		{target: b.atoms.utf8String, kind: b.atoms.utf8String, data: text},
+		{target: b.atoms.text, kind: b.atoms.utf8String, data: text},
+		{target: b.atoms.plainUTF8, kind: b.atoms.plainUTF8, data: text},
+		{target: b.atoms.plain, kind: b.atoms.plain, data: text},
+	}
+	if latin1, fitsLatin1 := utf8ToLatin1(text); fitsLatin1 {
+		offers = append(offers, offer{target: atomString, kind: atomString, data: latin1})
+	}
+	return heldCopy{text: text, offers: offers, hint: offered}
+}
+
+func (b *Clipboard) filesCopy(paths []string, offered hint) (heldCopy, error) {
+	if len(paths) == 0 {
+		return heldCopy{}, clipboard.ErrEmpty
+	}
+	addresses := make([]string, len(paths))
+	for i, path := range paths {
+		if !filepath.IsAbs(path) {
+			return heldCopy{}, fmt.Errorf("%w: %q", ErrNotAbsolute, path)
+		}
+		if strings.ContainsRune(path, 0) {
+			return heldCopy{}, fmt.Errorf("%w: %q", ErrNULInPath, path)
+		}
+		addresses[i] = fileAddress(path)
+	}
+	gnomeList := []byte("copy\n" + strings.Join(addresses, "\n"))
+	uriList := []byte(strings.Join(addresses, "\r\n") + "\r\n")
+	offers := []offer{
+		{target: b.atoms.gnomeFiles, kind: b.atoms.gnomeFiles, data: gnomeList},
+		{target: b.atoms.uriList, kind: b.atoms.uriList, data: uriList},
+	}
+	return heldCopy{paths: slices.Clone(paths), offers: offers, hint: offered}, nil
+}
+
+func fileAddress(path string) string {
+	return (&url.URL{Scheme: "file", Path: path}).String()
+}
+
+func (b *Clipboard) heldByLanhop(owner uint32) (heldCopy, bool) {
+	b.state.Lock()
+	defer b.state.Unlock()
+	return b.held, owner == b.window && b.owned
 }
 
 func (b *Clipboard) Read() (string, error) {
@@ -272,25 +355,21 @@ func (b *Clipboard) Read() (string, error) {
 	if owner == atomNone {
 		return "", clipboard.ErrEmpty
 	}
-	b.state.Lock()
-	if owner == b.window && b.owned {
-		private, text := b.hint != noHint, string(b.text)
-		b.state.Unlock()
-		if private {
+	if held, mine := b.heldByLanhop(owner); mine {
+		switch {
+		case held.hint != noHint:
 			return "", clipboard.ErrPrivate
+		case held.holdsFiles():
+			return "", clipboard.ErrNotText
 		}
-		return text, nil
+		return string(held.text), nil
 	}
-	b.state.Unlock()
 	offered, err := b.targetsOffered()
 	if err != nil {
 		return "", err
 	}
-	if slices.Contains(offered, b.atoms.passwordHint) {
-		marker, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16)
-		if err != nil || string(marker) == privateHintValue {
-			return "", clipboard.ErrPrivate
-		}
+	if b.markedPrivate(offered) {
+		return "", clipboard.ErrPrivate
 	}
 	if b.offersFiles(offered) {
 		return "", clipboard.ErrNotText
@@ -310,6 +389,112 @@ func (b *Clipboard) Read() (string, error) {
 		return "", clipboard.ErrNotText
 	}
 	return string(data), nil
+}
+
+func (b *Clipboard) ReadFiles() ([]string, error) {
+	owner, err := b.owner()
+	if err != nil {
+		return nil, err
+	}
+	if owner == atomNone {
+		return nil, clipboard.ErrNotFiles
+	}
+	if held, mine := b.heldByLanhop(owner); mine {
+		switch {
+		case held.hint != noHint:
+			return nil, clipboard.ErrPrivate
+		case !held.holdsFiles():
+			return nil, clipboard.ErrNotFiles
+		}
+		return slices.Clone(held.paths), nil
+	}
+	offered, err := b.targetsOffered()
+	if err != nil {
+		return nil, err
+	}
+	if b.markedPrivate(offered) {
+		return nil, clipboard.ErrPrivate
+	}
+	target, found := b.fileListTarget(offered)
+	if !found {
+		return nil, clipboard.ErrNotFiles
+	}
+	list, err := b.convert(target, fileListLimit)
+	switch {
+	case errors.Is(err, errTargetRefused):
+		return nil, clipboard.ErrNotFiles
+	case errors.Is(err, clipboard.ErrTooLarge):
+		return nil, fmt.Errorf("%w: the list is longer than %d bytes", clipboard.ErrTooManyFiles, fileListLimit)
+	case err != nil:
+		return nil, err
+	}
+	return pathsInList(string(list), target == b.atoms.gnomeFiles)
+}
+
+func (b *Clipboard) fileListTarget(offered []uint32) (uint32, bool) {
+	for _, wanted := range []uint32{b.atoms.gnomeFiles, b.atoms.uriList} {
+		if slices.Contains(offered, wanted) {
+			return wanted, true
+		}
+	}
+	return 0, false
+}
+
+func pathsInList(list string, startsWithCopyOrCut bool) ([]string, error) {
+	rest := list
+	if startsWithCopyOrCut {
+		var action string
+		action, rest, _ = strings.Cut(rest, "\n")
+		if action = strings.Trim(action, " \t\r"); action != "copy" && action != "cut" {
+			return nil, clipboard.ErrNotFiles
+		}
+	}
+	var paths []string
+	for rest != "" {
+		var line string
+		line, rest, _ = strings.Cut(rest, "\n")
+		line = strings.Trim(line, " \t\r")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if len(paths) == clipboard.FilesAndFoldersLimit {
+			return nil, clipboard.ErrTooManyFiles
+		}
+		path, onThisMachine := localPath(line)
+		if !onThisMachine {
+			return nil, clipboard.ErrNotFiles
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil, clipboard.ErrNotFiles
+	}
+	return paths, nil
+}
+
+func localPath(address string) (string, bool) {
+	if strings.ContainsAny(address, "?#") || strings.Contains(address, "%2f") || strings.Contains(address, "%2F") {
+		return "", false
+	}
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme != "file" || parsed.User != nil {
+		return "", false
+	}
+	if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
+		return "", false
+	}
+	if !filepath.IsAbs(parsed.Path) || strings.ContainsRune(parsed.Path, 0) {
+		return "", false
+	}
+	return parsed.Path, true
+}
+
+func (b *Clipboard) markedPrivate(offered []uint32) bool {
+	if !slices.Contains(offered, b.atoms.passwordHint) {
+		return false
+	}
+	marker, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16)
+	return err != nil || string(marker) == privateHintValue
 }
 
 func (b *Clipboard) targetsOffered() ([]uint32, error) {
@@ -501,7 +686,7 @@ func (b *Clipboard) handle(event []byte) {
 	case code == eventSelectionClear:
 		if binary.LittleEndian.Uint32(event[12:16]) == b.atoms.clipboard {
 			b.state.Lock()
-			b.owned, b.text, b.hint = false, nil, noHint
+			b.owned, b.held = false, heldCopy{}
 			b.state.Unlock()
 		}
 	case code == eventPropertyNotify:
@@ -540,12 +725,12 @@ func (b *Clipboard) answer(event []byte) {
 	}
 
 	b.state.Lock()
-	owned, since, text, offered := b.owned, b.ownedSince, b.text, b.hint
+	owned, since, held := b.owned, b.ownedSince, b.held
 	b.state.Unlock()
 
 	answered := uint32(atomNone)
 	if owned && selection == b.atoms.clipboard {
-		if b.provide(requestor, property, target, since, text, offered) {
+		if b.provide(requestor, property, target, since, held) {
 			answered = property
 		}
 	}
@@ -559,8 +744,7 @@ func (b *Clipboard) answer(event []byte) {
 	b.c.send(newRequest(opSendEvent, 0).u32(requestor).u32(0).raw(notify).done())
 }
 
-func (b *Clipboard) provide(requestor, property, target, since uint32, text []byte, offered hint) bool {
-	latin1, fitsLatin1 := utf8ToLatin1(text)
+func (b *Clipboard) provide(requestor, property, target, since uint32, held heldCopy) bool {
 	b.state.Lock()
 	extra, isExtra := b.extraOffers[target]
 	b.state.Unlock()
@@ -570,16 +754,16 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, text []by
 	}
 	switch target {
 	case b.atoms.targets:
-		targets := []uint32{b.atoms.targets, b.atoms.timestamp, b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain}
+		targets := []uint32{b.atoms.targets, b.atoms.timestamp}
+		for _, offered := range held.offers {
+			targets = append(targets, offered.target)
+		}
 		b.state.Lock()
 		for target := range b.extraOffers {
 			targets = append(targets, target)
 		}
 		b.state.Unlock()
-		if fitsLatin1 {
-			targets = append(targets, atomString)
-		}
-		if offered != noHint {
+		if held.hint != noHint {
 			targets = append(targets, b.atoms.passwordHint)
 		}
 		data := make([]byte, 0, len(targets)*4)
@@ -591,23 +775,17 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, text []by
 	case b.atoms.timestamp:
 		b.changeProperty(requestor, property, atomInteger, 32, binary.LittleEndian.AppendUint32(nil, since))
 		return true
-	case atomString:
-		if !fitsLatin1 {
-			return false
-		}
-		return b.give(requestor, property, atomString, latin1)
 	case b.atoms.passwordHint:
-		if offered != secretHint {
+		if held.hint != secretHint {
 			return false
 		}
 		b.changeProperty(requestor, property, b.atoms.utf8String, 8, []byte(privateHintValue))
 		return true
-	case b.atoms.utf8String, b.atoms.text, b.atoms.plainUTF8, b.atoms.plain:
-		kind := target
-		if target == b.atoms.text {
-			kind = b.atoms.utf8String
+	}
+	for _, offered := range held.offers {
+		if offered.target == target {
+			return b.give(requestor, property, offered.kind, offered.data)
 		}
-		return b.give(requestor, property, kind, text)
 	}
 	return false
 }
@@ -621,16 +799,16 @@ func (b *Clipboard) give(requestor, property, kind uint32, data []byte) bool {
 	return true
 }
 
-func (b *Clipboard) startTransfer(requestor, property, kind uint32, text []byte) {
+func (b *Clipboard) startTransfer(requestor, property, kind uint32, data []byte) {
 	b.c.send(newRequest(opChangeWindowAttributes, 0).u32(requestor).u32(attributeEventMask).u32(propertyChangeMask).done())
 	now := time.Now()
 	b.state.Lock()
 	b.transfers = slices.DeleteFunc(b.transfers, func(t *transfer) bool {
 		return now.Sub(t.started) > transferLifetime || (t.requestor == requestor && t.property == property)
 	})
-	b.transfers = append(b.transfers, &transfer{requestor: requestor, property: property, kind: kind, data: text, started: now})
+	b.transfers = append(b.transfers, &transfer{requestor: requestor, property: property, kind: kind, data: data, started: now})
 	b.state.Unlock()
-	b.changeProperty(requestor, property, b.atoms.incr, 32, binary.LittleEndian.AppendUint32(nil, uint32(len(text))))
+	b.changeProperty(requestor, property, b.atoms.incr, 32, binary.LittleEndian.AppendUint32(nil, uint32(len(data))))
 }
 
 func (b *Clipboard) continueTransfer(requestor, property uint32) {
