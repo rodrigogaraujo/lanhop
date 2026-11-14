@@ -54,7 +54,7 @@ A third way, letting the real release reach X before lanhop takes the mouse, doe
 
 ## Consequences
 
-- Every choice the owner had kept the directions from a Mac, to a Mac and to Linux, so tasks 10 and 11 and the Mac half of task 9 were built while the second session was prepared.
+- Every choice the owner had kept the directions from a Mac, to a Mac and to Linux, so tasks 10 and 11 are built in their own pull requests, and the Mac half of task 9 can be, while the second session is prepared.
 - The Linux half of task 9 and task 12 use the edge window and the release of lanhop's own virtual device, on a Linux machine that receives only.
 - On Linux, the edge window must accept only the copy action, so a source never moves or deletes its file, even when the person holds a modifier.
 - On a Mac, posted events that end the source drag need the Accessibility permission lanhop already has for its capture.
