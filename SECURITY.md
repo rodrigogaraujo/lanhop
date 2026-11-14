@@ -29,6 +29,18 @@ From v0.1.2 on:
 
 A way to sign a program that lanhop takes, or to make lanhop take a release that the project did not sign, counts as a vulnerability.
 
+### Checking a release by hand
+
+Download `SHA256SUMS`, `SHA256SUMS.sig` and the archive you want from the [release](https://github.com/rodrigogaraujo/lanhop/releases), and the public release key, [current.pem](https://github.com/rodrigogaraujo/lanhop/blob/main/packaging/release-keys/current.pem), into one folder. In that folder, check the signature, then the archive:
+
+```sh
+openssl pkeyutl -verify -pubin -inkey current.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+shasum -a 256 --ignore-missing -c SHA256SUMS
+```
+
+- The first command needs OpenSSL 3, and prints `Signature Verified Successfully`. The `openssl` of macOS, `/usr/bin/openssl`, is LibreSSL, which cannot read the key: use OpenSSL 3 instead.
+- The second prints the name of the archive and `OK`. On Linux, `sha256sum --ignore-missing -c SHA256SUMS` does the same.
+
 ## What counts
 
 - Reading or injecting input without having been paired
