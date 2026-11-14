@@ -467,7 +467,6 @@ func TestDropsWhoseFilesArrivedNoLongerNeedTheirSource(t *testing.T) {
 
 func TestADragThatCannotCrossLeavesTheDropBeforeIt(t *testing.T) {
 	d := deskTakingDrops(t, "A", "B")
-	d.SaysDrops("C", false)
 	expect(t, "C connects", d.Connected("C"), announce("C", Text|Files))
 	d.Says("C", Text|Files)
 	dragFromAAcross(t, d, OnSide("B"))
@@ -498,8 +497,7 @@ func TestTheEndOfAPasteTransferIsNotTheEndOfADrop(t *testing.T) {
 	expect(t, "focus to A", d.FocusOn("A"), read())
 	expect(t, "the central read a file copy", readGaveFiles(t, d, report), deliver("A", 1))
 	expect(t, "the paste transfer reported as a stopped drop", d.DropStopped(1))
-	expect(t, "focus stays on A", d.FocusOn("A"))
-	expect(t, "the paste transfer still runs and ends", d.FilesArrived(1))
+	expect(t, "focus leaves A, so the paste transfer that still runs stops", d.FocusOnCentral(), stop(1))
 
 	s := sideSharingFiles(t)
 	expect(t, "the central sends files", s.CentralSendsFiles(3), receive(3))
