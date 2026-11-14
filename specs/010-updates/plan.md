@@ -54,7 +54,7 @@ Downloads give up when GitHub does not answer within 10 seconds, or when an arch
 
 ## When lanhop refuses
 
-- The running version is not a release: `dev` from the source code, `dev-<commit>` from a run of the workflow, or anything that does not match `vMAJOR.MINOR.PATCH`.
+- The running version is not a release: `dev` from the source code, `dev-<commit>` from a run of the workflow before v0.1.2, or anything that does not match `vMAJOR.MINOR.PATCH`.
 - The version from `releases/latest` is not above the running one. When it equals it, lanhop says that the machine is up to date and ends with status 0. When it is lower, lanhop says that it was offered an older release and replaces nothing.
 - `--version` names a lower version without `--older`.
 - The program is not inside a lanhop.app on macOS, or its folder cannot be written. lanhop says where it is and prints the installer line.

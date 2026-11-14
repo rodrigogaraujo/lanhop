@@ -36,9 +36,9 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test ./cmd/lanhop
-      - name: Check the installer script
+      - name: Check the installer and the release scripts
         if: runner.os == 'Linux'
-        run: shellcheck install.sh
+        run: shellcheck install.sh $(find scripts/release -maxdepth 1 -type f)
       - name: Test Linux input with uinput
         if: runner.os == 'Linux'
         shell: bash
@@ -52,3 +52,123 @@ jobs:
           fi
           go test -race -c -o lanhop.test ./cmd/lanhop
           sudo ./lanhop.test -test.v
+
+  release-checks:
+    name: Release checks refuse what they must (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      WORK: ${{ github.workspace }}/../release-checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Refuse versions that are not releases
+        if: runner.os == 'Linux'
+        run: |
+          for good in v0.0.1 v1.2.3 v0.255.255 v32767.0.0; do
+            scripts/release/check-version "$good"
+          done
+          for bad in v1.2.300 v1.2 1.2.3 v01.2.3 v1.256.0 v32768.0.0 v1.2.3-rc1 v1.2.3.4 ""; do
+            if scripts/release/check-version "$bad"; then
+              echo "::error::check-version took \"$bad\""
+              exit 1
+            fi
+          done
+      - name: Refuse a program built with a build tag
+        if: runner.os == 'Linux'
+        run: |
+          go build -o "$RUNNER_TEMP/plain" ./cmd/lanhop
+          go build -tags lanhopcheck -o "$RUNNER_TEMP/tagged" ./cmd/lanhop
+          scripts/release/check-build-tags "$RUNNER_TEMP/plain"
+          if scripts/release/check-build-tags "$RUNNER_TEMP/tagged"; then
+            echo "::error::check-build-tags took a program built with a build tag"
+            exit 1
+          fi
+      - name: Make a small release for this system
+        run: |
+          mkdir -p "$WORK/release"
+          if [ "$RUNNER_OS" = macOS ]; then
+            app="$WORK/lanhop-darwin-arm64/lanhop.app"
+            mkdir -p "$app/Contents/MacOS"
+            go build -ldflags "-X main.version=v0.0.1" -o "$app/Contents/MacOS/lanhop" ./cmd/lanhop
+            sed "s/@VERSION@/0.0.1/g" packaging/macos/Info.plist >"$app/Contents/Info.plist"
+            codesign --force --sign - --identifier com.github.rodrigogaraujo.lanhop "$app"
+            tar -czf "$WORK/release/lanhop-darwin-arm64.tar.gz" -C "$WORK" lanhop-darwin-arm64
+          else
+            mkdir -p "$WORK/lanhop-linux-amd64"
+            CGO_ENABLED=0 go build -ldflags "-X main.version=v0.0.1 -X main.updateFrom=$(cat packaging/update-from)" \
+              -o "$WORK/lanhop-linux-amd64/lanhop" ./cmd/lanhop
+            tar -czf "$WORK/release/lanhop-linux-amd64.tar.gz" -C "$WORK" lanhop-linux-amd64
+          fi
+          printf 'version v0.0.1\nfrom %s\n' "$(cat packaging/update-from)" >"$WORK/release/UPDATE"
+          (cd "$WORK/release" && shasum -a 256 lanhop-*.tar.gz UPDATE >SHA256SUMS)
+          mkdir -p "$WORK/served/latest"
+          cp -R "$WORK/release" "$WORK/served/latest/download"
+      - name: Refuse SHA256SUMS or UPDATE changed after signing, and a signature by another key
+        if: runner.os == 'Linux'
+        run: |
+          openssl genpkey -algorithm ed25519 -out "$WORK/key.pem"
+          openssl pkey -in "$WORK/key.pem" -pubout -out "$WORK/key.pub"
+          openssl genpkey -algorithm ed25519 -out "$WORK/other.pem"
+          openssl pkey -in "$WORK/other.pem" -pubout -out "$WORK/other.pub"
+          scripts/release/sign-checksums "$WORK/key.pem" "$WORK/release"
+          go build -o "$WORK/verify-release" ./scripts/release/verify-release
+          from=$(cat packaging/update-from)
+          check() {
+            "$WORK/verify-release" -release "$1" -version v0.0.1 -from "$from" -key "$2"
+          }
+          refused() {
+            if check "$1" "$2"; then
+              echo "::error::verify-release took $1 with $2"
+              exit 1
+            fi
+          }
+          check "$WORK/release" "$WORK/key.pub"
+          cp -R "$WORK/release" "$WORK/changed-checksums"
+          printf '\n' >>"$WORK/changed-checksums/SHA256SUMS"
+          refused "$WORK/changed-checksums" "$WORK/key.pub"
+          cp -R "$WORK/release" "$WORK/changed-update"
+          printf 'version v0.0.1\nfrom v0.0.1\n' >"$WORK/changed-update/UPDATE"
+          refused "$WORK/changed-update" "$WORK/key.pub"
+          refused "$WORK/release" "$WORK/other.pub"
+      - name: Refuse an installer that writes another service file or udev rule
+        run: |
+          scripts/release/compare-installers install.sh install.sh "$WORK/served"
+          if [ "$RUNNER_OS" = macOS ]; then
+            changes='s/<string>Interactive</<string>Background</'
+          else
+            changes='s/RestartSec=10/RestartSec=11/ s/MODE="0660"/MODE="0666"/'
+          fi
+          for change in $changes; do
+            sed "$change" install.sh >"$WORK/changed-install.sh"
+            if cmp -s install.sh "$WORK/changed-install.sh"; then
+              echo "::error::$change changed nothing in install.sh"
+              exit 1
+            fi
+            if scripts/release/compare-installers install.sh "$WORK/changed-install.sh" "$WORK/served"; then
+              echo "::error::compare-installers took an install.sh changed with $change"
+              exit 1
+            fi
+          done
+      - name: Refuse an app signed ad hoc or with another certificate
+        if: runner.os == 'macOS'
+        run: |
+          app="$WORK/lanhop-darwin-arm64/lanhop.app"
+          cp -R "$app" "$WORK/ad-hoc.app"
+          scripts/release/make-throwaway-certificate "$WORK/certificate"
+          scripts/release/make-throwaway-certificate "$WORK/other-certificate"
+          scripts/release/sign-apps "$WORK/certificate/certificate.p12" "$WORK/certificate/password" "$app"
+          scripts/release/check-app-requirement "$app" "$(cat "$WORK/certificate/leaf")"
+          if scripts/release/check-app-requirement "$app" "$(cat "$WORK/other-certificate/leaf")"; then
+            echo "::error::check-app-requirement took the hash of another certificate"
+            exit 1
+          fi
+          if scripts/release/check-app-requirement "$WORK/ad-hoc.app" "$(cat "$WORK/certificate/leaf")"; then
+            echo "::error::check-app-requirement took an app signed ad hoc"
+            exit 1
+          fi

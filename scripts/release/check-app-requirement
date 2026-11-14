@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+identifier=com.github.rodrigogaraujo.lanhop
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: check-app-requirement APP CERTIFICATE_LEAF_SHA1" >&2
+  exit 64
+fi
+app=$1
+leaf=$2
+
+refuse() {
+  printf 'check-app-requirement: %s\n' "$*" >&2
+  exit 1
+}
+
+case $leaf in
+  *[!0-9a-f]* | '') refuse "the certificate hash \"$leaf\" is not lowercase hexadecimal" ;;
+esac
+if [ "${#leaf}" -ne 40 ]; then
+  refuse "the certificate hash \"$leaf\" is not 40 digits long, as a SHA-1 is"
+fi
+codesign --verify --strict "$app" || refuse "codesign does not verify $app"
+requirement=$(codesign --display --requirements - "$app" 2>/dev/null | sed -n 's/^designated => //p')
+expected="identifier \"$identifier\" and certificate leaf = H\"$leaf\""
+if [ "$requirement" != "$expected" ]; then
+  refuse "the requirement of $app is \"$requirement\", and it should be \"$expected\""
+fi
+printf '%s meets: %s\n' "$app" "$expected"

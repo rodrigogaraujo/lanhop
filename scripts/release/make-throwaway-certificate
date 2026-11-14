@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: make-throwaway-certificate FOLDER" >&2
+  exit 64
+fi
+folder=$1
+
+umask 077
+mkdir -p "$folder"
+openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -subj "/CN=lanhop" \
+  -keyout "$folder/key.pem" -out "$folder/certificate.pem" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning" \
+  -addext "basicConstraints=critical,CA:false"
+openssl rand -hex 16 >"$folder/password"
+openssl pkcs12 -export -name lanhop -inkey "$folder/key.pem" -in "$folder/certificate.pem" \
+  -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
+  -passout "file:$folder/password" -out "$folder/certificate.p12"
+rm -f "$folder/key.pem"
+openssl x509 -in "$folder/certificate.pem" -noout -fingerprint -sha1 |
+  sed 's/^.*=//; s/://g' | tr 'A-F' 'a-f' >"$folder/leaf"

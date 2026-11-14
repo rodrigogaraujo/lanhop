@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+identifier=com.github.rodrigogaraujo.lanhop
+
+if [ "$#" -lt 3 ]; then
+  echo "usage: sign-apps CERTIFICATE.p12 PASSWORD_FILE APP..." >&2
+  exit 64
+fi
+certificate=$1
+password_file=$2
+shift 2
+
+refuse() {
+  printf 'sign-apps: %s\n' "$*" >&2
+  exit 1
+}
+
+work=$(mktemp -d)
+keychain=$work/signing.keychain-db
+keychain_password=$(openssl rand -hex 16)
+searched=$(security list-keychains -d user | sed 's/^ *"//; s/"$//')
+
+put_back() {
+  printf '%s\n' "$searched" | tr '\n' '\0' | xargs -0 security list-keychains -d user -s
+  security delete-keychain "$keychain" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap put_back EXIT
+
+security create-keychain -p "$keychain_password" "$keychain"
+security set-keychain-settings -lut 3600 "$keychain"
+security unlock-keychain -p "$keychain_password" "$keychain"
+security import "$certificate" -k "$keychain" -P "$(cat "$password_file")" -T /usr/bin/codesign >/dev/null ||
+  refuse "the keychain did not take $certificate"
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+printf '%s\n' "$searched" "$keychain" | tr '\n' '\0' | xargs -0 security list-keychains -d user -s
+
+identity=$(security find-certificate -a -c lanhop -Z "$keychain" | awk '/^SHA-1 hash:/ { print $3 }')
+if [ "$(printf '%s\n' "$identity" | grep -c .)" -ne 1 ]; then
+  refuse "$certificate should hold one certificate named lanhop"
+fi
+for app in "$@"; do
+  codesign --force --sign "$identity" --keychain "$keychain" --identifier "$identifier" "$app"
+done
