@@ -37,11 +37,28 @@ type FileClipboard interface {
 	WriteFiles(paths []string) (mark int64, err error)
 }
 
+type DroppedFile struct {
+	Name   string
+	Folder bool
+}
+
+type Drops interface {
+	StartDrop(ctx context.Context, files []DroppedFile) (DropSession, error)
+}
+
+type DropSession interface {
+	Arrived(paths []string)
+	Cancel()
+	Taken() <-chan struct{}
+	EndedWithoutDrop() <-chan struct{}
+}
+
 type AwaitData func(ctx context.Context, side identity.Fingerprint, announce func(transfer int32) error) (*transport.DataConn, error)
 
 type DialData func(ctx context.Context, transfer int32) (*transport.DataConn, error)
 
 type Config struct {
+	Name             string
 	Open             func() (Clipboard, error)
 	SwitchedOn       func() bool
 	FilesOn          func() bool
@@ -52,7 +69,7 @@ type Config struct {
 	DataSilenceLimit time.Duration
 	Log              io.Writer
 	Features         *features.Set
-	StartsDrags      bool
+	Drops            Drops
 }
 
 func (c Config) withDefaults() Config {
@@ -83,8 +100,12 @@ func (c Config) withDefaults() Config {
 func (c Config) announcing(kinds clipboard.Kinds) *features.Set {
 	c.Features.Turn(features.Clipboard, kinds.Has(clipboard.Text))
 	c.Features.Turn(features.Files, kinds.Has(clipboard.Files))
-	c.Features.Turn(features.Drag, c.StartsDrags && kinds.Has(clipboard.Files))
+	c.Features.Turn(features.Drag, c.takesDrops(kinds))
 	return c.Features
+}
+
+func (c Config) takesDrops(kinds clipboard.Kinds) bool {
+	return kinds.Has(clipboard.Files) && c.Drops != nil
 }
 
 func (c Config) whyNoFiles(clipboardHoldsFiles, opensDataConnections bool) error {

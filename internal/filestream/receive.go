@@ -33,7 +33,20 @@ type IncomingFile interface {
 	Whole() error
 }
 
-func Receive(ctx context.Context, conn Source, into Arrivals) (err error) {
+type DropArrivals interface {
+	Arrivals
+	Dropping(tops []TopEntry) error
+}
+
+func Receive(ctx context.Context, conn Source, into Arrivals) error {
+	return receive(ctx, conn, into, formatVersion, nil)
+}
+
+func ReceiveDrop(ctx context.Context, conn Source, into DropArrivals) error {
+	return receive(ctx, conn, into, dropFormat, into.Dropping)
+}
+
+func receive(ctx context.Context, conn Source, into Arrivals, format byte, dropping func(tops []TopEntry) error) (err error) {
 	stopReading := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
 	defer stopReading()
 	defer func() {
@@ -43,14 +56,25 @@ func Receive(ctx context.Context, conn Source, into Arrivals) (err error) {
 		}
 	}()
 	r := bufio.NewReaderSize(conn, streamBuffer)
-	h, err := readHeader(r)
+	h, err := readHeader(r, format)
 	if err != nil {
 		return err
 	}
 	if err := into.Expect(h.bytes, h.filesAndFolders); err != nil {
 		return err
 	}
-	if err := receiveEntries(r, h, into); err != nil {
+	var expected *topsExpected
+	if dropping != nil {
+		tops, err := readTops(r, h)
+		if err != nil {
+			return err
+		}
+		if err := dropping(tops); err != nil {
+			return err
+		}
+		expected = &topsExpected{tops: tops}
+	}
+	if err := receiveEntries(r, h, expected, into); err != nil {
 		return err
 	}
 	if err := into.Finish(); err != nil {
@@ -62,7 +86,7 @@ func Receive(ctx context.Context, conn Source, into Arrivals) (err error) {
 	return nil
 }
 
-func receiveEntries(r *bufio.Reader, h header, into Arrivals) error {
+func receiveEntries(r *bufio.Reader, h header, expected *topsExpected, into Arrivals) error {
 	var openFolders []string
 	bytesLeft := h.bytes
 	digest := sha256.New()
@@ -76,6 +100,9 @@ func receiveEntries(r *bufio.Reader, h header, into Arrivals) error {
 			return fmt.Errorf("%w: the copy ended after %d of the %d files and folders", ErrMalformed, received, h.filesAndFolders)
 		}
 		if openFolders, err = insideAnOpenFolder(openFolders, e.name); err != nil {
+			return err
+		}
+		if err := expected.arrived(e.name, e.kind == folderEntry); err != nil {
 			return err
 		}
 		if e.kind == folderEntry {
@@ -106,6 +133,9 @@ func receiveEntries(r *bufio.Reader, h header, into Arrivals) error {
 	}
 	if bytesLeft != 0 {
 		return fmt.Errorf("%w: the files held %d bytes fewer than the header said", ErrMalformed, bytesLeft)
+	}
+	if err := expected.allArrived(); err != nil {
+		return err
 	}
 	last, err := r.ReadByte()
 	if err != nil {

@@ -32,7 +32,7 @@ type streamBuilder struct {
 }
 
 func (b *streamBuilder) header(filesAndFolders int, total int64) *streamBuilder {
-	writeHeader(b, header{filesAndFolders: filesAndFolders, bytes: total})
+	writeHeader(b, formatVersion, header{filesAndFolders: filesAndFolders, bytes: total})
 	return b
 }
 
