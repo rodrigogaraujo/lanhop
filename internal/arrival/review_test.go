@@ -173,15 +173,56 @@ func TestARecordWithASizeOverTheLimitMakesALeftover(t *testing.T) {
 	}
 }
 
-func TestARecordThatFinishedInTheFutureCountsAsOld(t *testing.T) {
+func TestARecordFinishedMoreThanADayInTheFutureCountsAsOld(t *testing.T) {
 	f, clock, _ := openFolder(t, 0, 0)
 	now := plantCompleted(t, f, "1-0000000000000001", clock.now(), 5)
-	future := plantCompleted(t, f, "2-0000000000000002", clock.now().Add(time.Hour), 5)
+	farAhead := plantCompleted(t, f, "2-0000000000000002", clock.now().Add(KeptFor+time.Hour), 5)
 	if err := f.RemoveOld(); err != nil {
 		t.Fatalf("RemoveOld: %v", err)
 	}
 	expectKept(t, now)
-	expectGone(t, future)
+	expectGone(t, farAhead)
+}
+
+func TestAnArrivalJustFinishedIsKeptWhenTheClockStepsBack(t *testing.T) {
+	f, clock, _ := openFolder(t, 0, 0)
+	fresh, _ := arrive(t, f, 1, aFile("report.txt", "fresh"))
+	clock.pass(-2 * time.Second)
+	if err := f.RemoveOld(); err != nil {
+		t.Fatalf("RemoveOld: %v", err)
+	}
+	expectKept(t, fresh)
+}
+
+func TestAFolderTakesItsLockAgainAfterTheCacheWasEmptied(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	if err := os.RemoveAll(f.Directory()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.RemoveOld(); err != nil {
+		t.Fatalf("RemoveOld after the cache was emptied: %v", err)
+	}
+	if second, err := Open(Config{Directory: f.Directory()}); !errors.Is(err, ErrFolderInUse) {
+		if err == nil {
+			second.Close()
+		}
+		t.Errorf("a second Open after the cache was emptied = %v, want ErrFolderInUse", err)
+	}
+}
+
+func TestAFolderWhoseLockWasTakenByAnotherAfterTheCacheWasEmptiedStops(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	if err := os.RemoveAll(f.Directory()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(Config{Directory: f.Directory()})
+	if err != nil {
+		t.Fatalf("Open after the cache was emptied: %v", err)
+	}
+	t.Cleanup(func() { second.Close() })
+	if err := f.Expecting(1).Expect(5, 1); !errors.Is(err, ErrFolderInUse) {
+		t.Errorf("Expect on the folder that lost its lock = %v, want ErrFolderInUse", err)
+	}
 }
 
 func TestTheRoomArithmeticNeverOverflows(t *testing.T) {

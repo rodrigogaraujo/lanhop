@@ -187,6 +187,9 @@ func (a *Arrival) makeFolder(name string) error {
 	if err != nil {
 		return fmt.Errorf("arrival: %w", err)
 	}
+	if !identity.IsDir() {
+		return fmt.Errorf("%w: %q was swapped as it was made", ErrUnsafePath, name)
+	}
 	if err := markQuarantined(full, a.folder.config.now()); err != nil {
 		return fmt.Errorf("arrival: the quarantine mark on %q: %w", name, err)
 	}
@@ -348,6 +351,9 @@ func (i *IncomingFile) whole() error {
 	}
 	if err := a.foldersStillThere(i.elements); err != nil {
 		return err
+	}
+	if there, err := os.Lstat(i.temporary); err != nil || !os.SameFile(info, there) {
+		return fmt.Errorf("%w: the temporary file of %q was swapped before it was placed", ErrUnsafePath, i.relative)
 	}
 	if before := a.folder.config.beforePlacing; before != nil {
 		before(i.final)

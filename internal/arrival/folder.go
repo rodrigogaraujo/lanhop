@@ -122,10 +122,27 @@ func (f *Folder) Close() error {
 	return nil
 }
 
-func (f *Folder) isOpen() error {
+func (f *Folder) holdTheLock() error {
 	if f.lock == nil {
 		return fmt.Errorf("arrival: the folder was closed: %w", fs.ErrClosed)
 	}
+	held, err := f.lock.Stat()
+	if err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	path := filepath.Join(f.config.Directory, lockName)
+	if there, err := os.Lstat(path); err == nil && os.SameFile(held, there) {
+		return nil
+	}
+	if err := prepareDirectory(f.config.Directory); err != nil {
+		return err
+	}
+	lock, err := lockFolder(path)
+	if err != nil {
+		return err
+	}
+	f.lock.Close()
+	f.lock = lock
 	return nil
 }
 
@@ -168,7 +185,7 @@ func (f *Folder) start(a *Arrival, bytes int64, entries int) error {
 	}
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	if err := f.isOpen(); err != nil {
+	if err := f.holdTheLock(); err != nil {
 		return err
 	}
 	if err := prepareDirectory(f.config.Directory); err != nil {
@@ -191,6 +208,9 @@ func (f *Folder) start(a *Arrival, bytes int64, entries int) error {
 		os.Remove(path)
 		return fmt.Errorf("arrival: %w", err)
 	}
+	if !root.IsDir() {
+		return fmt.Errorf("%w: the folder of the arrival was swapped as it was made", ErrUnsafePath)
+	}
 	a.name, a.path, a.bytes, a.entries = name, path, bytes, entries
 	a.folders, a.files = map[string]fs.FileInfo{"": root}, make(map[string]bool)
 	f.writing[name] = a
@@ -206,7 +226,7 @@ func (f *Folder) removeFinished(name string) {
 func (f *Folder) RemoveOld() error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	if err := f.isOpen(); err != nil {
+	if err := f.holdTheLock(); err != nil {
 		return err
 	}
 	if err := checkDirectory(f.config.Directory); errors.Is(err, fs.ErrNotExist) {
@@ -217,7 +237,7 @@ func (f *Folder) RemoveOld() error {
 	completed, failed := f.look()
 	now := f.config.now()
 	for _, arrival := range completed {
-		if age := now.Sub(arrival.completed); age >= KeptFor || age < 0 {
+		if age := now.Sub(arrival.completed); age >= KeptFor || age < -KeptFor {
 			failed = errors.Join(failed, f.remove(arrival.name))
 		}
 	}
