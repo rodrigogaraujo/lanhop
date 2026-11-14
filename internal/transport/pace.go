@@ -25,6 +25,8 @@ const (
 	longestStep             = 100 * time.Millisecond
 	growthEvery100ms        = 2.0
 	samplesInTheMinimum     = 4
+	baseWindow              = time.Minute
+	baseBucket              = 6 * time.Second
 )
 
 var paceOfThisMachine = newPaceThatFollowsTheDelay(defaultDataBytesPerSecond)
@@ -49,13 +51,42 @@ type Pace struct {
 }
 
 type delayOfOneConnection struct {
-	base   time.Duration
-	recent []time.Duration
-	heard  time.Time
+	buckets []baseOfOneSecond
+	recent  []time.Duration
+	heard   time.Time
+}
+
+type baseOfOneSecond struct {
+	began    time.Time
+	shortest time.Duration
+}
+
+func (d *delayOfOneConnection) add(now time.Time, roundTrip time.Duration) {
+	if len(d.buckets) == 0 || now.Sub(d.buckets[len(d.buckets)-1].began) >= baseBucket {
+		d.buckets = append(d.buckets, baseOfOneSecond{began: now, shortest: roundTrip})
+	}
+	last := &d.buckets[len(d.buckets)-1]
+	last.shortest = min(last.shortest, roundTrip)
+	for len(d.buckets) > 1 && now.Sub(d.buckets[0].began) > baseWindow {
+		d.buckets = d.buckets[1:]
+	}
+	d.recent = append(d.recent, roundTrip)
+	if len(d.recent) > samplesInTheMinimum {
+		d.recent = d.recent[1:]
+	}
+	d.heard = now
+}
+
+func (d *delayOfOneConnection) base() time.Duration {
+	shortest := d.buckets[0].shortest
+	for _, bucket := range d.buckets[1:] {
+		shortest = min(shortest, bucket.shortest)
+	}
+	return shortest
 }
 
 func (d *delayOfOneConnection) queue() time.Duration {
-	return slices.Min(d.recent) - d.base
+	return slices.Min(d.recent) - d.base()
 }
 
 func NewPace(bytesPerSecond int) *Pace {
@@ -95,16 +126,20 @@ func (p *Pace) observe(connection any, roundTrip time.Duration) {
 	p.heard = now
 	delay, known := p.delays[connection]
 	if !known {
-		delay = &delayOfOneConnection{base: roundTrip}
+		delay = &delayOfOneConnection{}
 		p.delays[connection] = delay
 	}
-	delay.base = min(delay.base, roundTrip)
-	delay.recent = append(delay.recent, roundTrip)
-	if len(delay.recent) > samplesInTheMinimum {
-		delay.recent = delay.recent[1:]
-	}
-	delay.heard = now
+	delay.add(now, roundTrip)
 	p.follow(now, p.worstQueue(now))
+}
+
+func (p *Pace) forget(connection any) {
+	if !p.followsTheDelay {
+		return
+	}
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	delete(p.delays, connection)
 }
 
 func (p *Pace) startAgain(now time.Time) {
@@ -168,6 +203,10 @@ func (p *Pace) reserve(bytes int) time.Duration {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	now := p.clock()
+	if p.followsTheDelay && !p.heard.IsZero() && now.Sub(p.heard) > idleBeforeStartingAgain {
+		p.startAgain(now)
+		p.heard = time.Time{}
+	}
 	if p.refilled.IsZero() {
 		p.allowance = paceBurst
 	} else {

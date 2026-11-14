@@ -579,7 +579,7 @@ func TestEveryDataConnectionWithoutAPaceOfItsOwnSharesThePaceOfThisMachine(t *te
 	}
 }
 
-func TestDataConnectionsWaitTenSecondsAndThisMachineGoesAt80MegabitsUnlessConfigured(t *testing.T) {
+func TestDataConnectionsWaitTenSecondsAndThisMachineFollowsTheDelayUpTo80MegabitsUnlessConfigured(t *testing.T) {
 	defaults := Config{}.withDefaults()
 	if defaults.DataWindow != 10*time.Second {
 		t.Errorf("DataWindow = %s, want 10s", defaults.DataWindow)
@@ -587,11 +587,14 @@ func TestDataConnectionsWaitTenSecondsAndThisMachineGoesAt80MegabitsUnlessConfig
 	if defaults.DataPace != paceOfThisMachine {
 		t.Error("a Config without a pace does not use the pace of this machine")
 	}
-	if paceOfThisMachine.bytesPerSecond != 10_000_000 || paceOfThisMachine.unpaced {
-		t.Errorf("this machine goes at %.0f bytes per second, unpaced %t, want 10000000", paceOfThisMachine.bytesPerSecond, paceOfThisMachine.unpaced)
+	if !paceOfThisMachine.followsTheDelay || paceOfThisMachine.bytesPerSecond != 10_000_000 || paceOfThisMachine.unpaced {
+		t.Errorf("this machine follows the delay %t up to %.0f bytes per second, unpaced %t, want it to follow the delay up to 10000000", paceOfThisMachine.followsTheDelay, paceOfThisMachine.bytesPerSecond, paceOfThisMachine.unpaced)
 	}
-	if zero := NewPace(0); zero.bytesPerSecond != 10_000_000 || zero.unpaced {
-		t.Errorf("a pace of 0 goes at %.0f bytes per second, unpaced %t, want the default of 10000000", zero.bytesPerSecond, zero.unpaced)
+	if zero := NewPace(0); !zero.followsTheDelay || zero.bytesPerSecond != 10_000_000 || zero.unpaced {
+		t.Errorf("a pace of 0 follows the delay %t up to %.0f bytes per second, unpaced %t, want it to follow the delay up to the default of 10000000", zero.followsTheDelay, zero.bytesPerSecond, zero.unpaced)
+	}
+	if fixed := NewPace(2_000_000); fixed.followsTheDelay {
+		t.Error("a pace of 2000000 bytes per second follows the delay, want it fixed")
 	}
 }
 

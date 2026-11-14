@@ -193,8 +193,8 @@ func TestAfterADecreaseThePaceRisesSlowly(t *testing.T) {
 		clock.after(100 * time.Millisecond)
 		pace.observe(connection, 2*time.Millisecond)
 	}
-	if got := megabitsOf(pace); got > low+20.5 {
-		t.Errorf("one second after a decrease the pace rose from %.1f to %.1f Mbit/s, want at most 20 Mbit/s more", low, got)
+	if got := megabitsOf(pace); got > low+20.5 || got < low+19.5 {
+		t.Errorf("one second after a decrease the pace rose from %.1f to %.1f Mbit/s, want 20 Mbit/s more", low, got)
 	}
 }
 
@@ -222,16 +222,57 @@ func TestTheWorstFreshConnectionSetsThePace(t *testing.T) {
 		clock.after(time.Millisecond)
 		pace.observe(crowded, 40*time.Millisecond)
 	}
-	clock.after(time.Millisecond)
+	beforeTheCalmOneSpoke := megabitsOf(pace)
+	clock.after(60 * time.Millisecond)
 	pace.observe(calm, 2*time.Millisecond)
 	lowered := megabitsOf(pace)
-	if lowered >= 40 {
-		t.Fatalf("a crowded connection next to a calm one left the pace at %.1f Mbit/s, want lower", lowered)
+	if lowered >= beforeTheCalmOneSpoke {
+		t.Fatalf("a sample of the calm connection 60 ms after the crowded one spoke took the pace from %.1f to %.1f Mbit/s, want lower", beforeTheCalmOneSpoke, lowered)
 	}
 	clock.after(300 * time.Millisecond)
 	pace.observe(calm, 2*time.Millisecond)
 	if got := megabitsOf(pace); got <= lowered {
 		t.Errorf("300 ms after the crowded connection last spoke, the pace stayed at %.1f Mbit/s, want it to rise again", got)
+	}
+}
+
+func TestAConnectionThatEndedNoLongerHoldsThePaceDown(t *testing.T) {
+	clock := &steppingClock{at: time.Unix(1000, 0)}
+	pace := paceThatFollowsTheDelayOn(clock)
+	calm, ended := new(int), new(int)
+	pace.observe(calm, 2*time.Millisecond)
+	pace.observe(ended, 2*time.Millisecond)
+	for range 4 {
+		clock.after(time.Millisecond)
+		pace.observe(ended, 40*time.Millisecond)
+	}
+	lowered := megabitsOf(pace)
+	pace.forget(ended)
+	clock.after(60 * time.Millisecond)
+	pace.observe(calm, 2*time.Millisecond)
+	if got := megabitsOf(pace); got <= lowered {
+		t.Errorf("60 ms after the crowded connection ended, a sample of the calm one left the pace at %.1f Mbit/s, want above %.1f", got, lowered)
+	}
+}
+
+func TestALongerRouteStopsReadingAsAQueueOnceTheShortestDelayIsAMinuteOld(t *testing.T) {
+	clock := &steppingClock{at: time.Unix(1000, 0)}
+	pace := paceThatFollowsTheDelayOn(clock)
+	connection := new(int)
+	pace.observe(connection, 2*time.Millisecond)
+	for range 600 {
+		clock.after(100 * time.Millisecond)
+		pace.observe(connection, 30*time.Millisecond)
+	}
+	if got := megabitsOf(pace); got != 1 {
+		t.Fatalf("while the shortest delay is at most a minute old, a route 28 ms longer left the pace at %.1f Mbit/s, want the floor of 1", got)
+	}
+	for range 10 {
+		clock.after(100 * time.Millisecond)
+		pace.observe(connection, 30*time.Millisecond)
+	}
+	if got := megabitsOf(pace); got < 20.5 || got > 21.5 {
+		t.Errorf("one second after the shortest delay grew older than a minute the pace is %.1f Mbit/s, want about 21", got)
 	}
 }
 
@@ -248,6 +289,42 @@ func TestThePaceStartsAgainAfterASecondWithoutTransfers(t *testing.T) {
 	pace.observe(new(int), 2*time.Millisecond)
 	if got := megabitsOf(pace); got != 40 {
 		t.Errorf("after two quiet seconds the pace is %.1f Mbit/s, want the start of 40", got)
+	}
+}
+
+func TestTheFirstWriteAfterAQuietSecondGoesAtTheStartingPace(t *testing.T) {
+	clock := &steppingClock{at: time.Unix(1000, 0)}
+	pace := paceThatFollowsTheDelayOn(clock)
+	connection := new(int)
+	pace.observe(connection, 2*time.Millisecond)
+	for range 4 {
+		clock.after(time.Millisecond)
+		pace.observe(connection, 40*time.Millisecond)
+	}
+	clock.after(2 * time.Second)
+	pace.reserve(pacedSlice)
+	if got := megabitsOf(pace); got != 40 {
+		t.Errorf("the first write after two quiet seconds goes at %.1f Mbit/s, want the start of 40", got)
+	}
+}
+
+func TestWhileTheQueueStaysEmptyThePaceMovesTheFirst10MiBInAbout1Point1Seconds(t *testing.T) {
+	clock := &steppingClock{at: time.Unix(1000, 0)}
+	pace := paceThatFollowsTheDelayOn(clock)
+	connection := new(int)
+	started := clock.at
+	sinceTheLastAck := 0
+	for sent := 0; sent < sc001TransferBytes; sent += pacedSlice {
+		clock.after(pace.reserve(pacedSlice))
+		sinceTheLastAck += pacedSlice
+		if sinceTheLastAck == ackedBlock {
+			pace.observe(connection, 2*time.Millisecond)
+			sinceTheLastAck = 0
+		}
+	}
+	took := clock.at.Sub(started)
+	if took < time.Second || took > 1100*time.Millisecond {
+		t.Errorf("with the queue empty the pace moves 10 MiB in %s, want between 1 s and 1.1 s", took)
 	}
 }
 

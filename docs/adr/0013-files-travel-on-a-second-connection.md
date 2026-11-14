@@ -42,19 +42,19 @@ Side machines open their connection to the central, and the central does not ope
 
 **Pace.** TCP sets the pace of the data connection, and each machine keeps what it writes on all its data connections together to 80 Mbit/s of TLS content, about 84 Mbit/s on the wire, in bursts of at most 128 KiB. Keys never wait behind file bytes in the same stream. They can still wait behind them in a queue shared by both streams, such as a Wi-Fi link or a router. Measured on Linux over TLS for task 2, with both connections behind one first-in first-out queue of 1000 packets drained at 100 Mbit/s: without the limit, 100 MiB kept the queue full and keys arrived 123 ms late; with it, keys arrived at most 8 ms late, and the 100 MiB took 10.5 s instead of 8.9 s. The limit helps only on a link faster than itself: behind the same queue drained at 50 Mbit/s, keys arrived 245 ms late. Task 2b of the plan makes the pace follow the delay.
 
-**Pace that follows the delay** (task 2b). The writing side measures the round trip of each Data ack, from the moment it wrote the 32 KiB boundary to the moment the ack for it arrives. For each data connection it keeps the shortest round trip seen as the base, and takes the queue as the shortest of the last 4 round trips less the base. One pace per machine reacts to the longest queue among the data connections heard from in the last 200 ms:
+**Pace that follows the delay** (task 2b). The writing side measures the round trip of each Data ack, from the moment it starts the write that ends at a 32 KiB boundary to the moment the ack for it arrives. For each data connection it keeps the shortest round trip of the last minute as the base, so a route that grew longer stops reading as a queue within a minute while the queue the pace itself keeps does not creep into the base, and takes the queue as the shortest of the last 4 round trips less the base. One pace per machine reacts to the longest queue among the data connections heard from in the last 200 ms; a data connection that ends stops counting at once:
 
 - It starts at 40 Mbit/s and doubles every 100 ms while the queue stays under 5 ms, until the first decrease.
 - Below the target of 15 ms of queue, it rises by at most 20 Mbit/s per second, less as the queue nears the target.
 - Above the target, it falls to 90% of its rate, down to 50% when the queue is twice the target, at most once every 50 ms.
-- It stays between 1 Mbit/s and the ceiling of 80 Mbit/s, and starts again from 40 Mbit/s after a second without acknowledgements.
+- It stays between 1 Mbit/s and the ceiling of 80 Mbit/s, and starts again from 40 Mbit/s at the first write or acknowledgement after a second without acknowledgements.
 
 Measured on Linux over TLS, without the race detector, with both connections behind one first-in first-out queue of 1000 packets:
 
 | Link | 100 MiB | Keys, worst later than usual | First 10 MiB |
 |---|---|---|---|
-| 100 Mbit/s | 10.5 s, 79.9 Mbit/s | 3.3 ms | 1.07 s |
-| 50 Mbit/s, which carries 47.5 Mbit/s of content | 18.6 s, 45.1 Mbit/s | 20.8 ms | |
+| 100 Mbit/s | 10.5 s, 79.9 Mbit/s | 3.5 ms | 1.07 s |
+| 50 Mbit/s, which carries 47.5 Mbit/s of content | 18.6 s, 45.0 Mbit/s | 22.7 ms | |
 | No queue, loopback | | | 1.07 s |
 
 So SC-002 holds behind both queues, where the fixed pace left keys 245 ms late at 50 Mbit/s, and the first 10 MiB of SC-001 arrive in about 1.1 s, which leaves time within the 2 s to list, check and rename. The 50 Mbit/s test takes about 19 s of the Linux CI. A Wi-Fi link, with its own jitter, is measured at the desk in task 7.

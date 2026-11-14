@@ -144,11 +144,13 @@ func (d *DataConn) readAcks() {
 		if err != nil {
 			d.endedBy = err
 			d.secured.Close()
+			d.pace.forget(d)
 			close(d.ended)
 			return
 		}
 		blocks, all := event.SplitDataAck(frame.Value)
 		if all {
+			d.pace.forget(d)
 			close(d.arrived)
 			return
 		}
@@ -159,6 +161,19 @@ func (d *DataConn) readAcks() {
 	}
 }
 
+func (d *DataConn) untilTheNextBlock() int {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	return ackedBlock - int(d.written)
+}
+
+func (d *DataConn) noteTheBlockGoingOut() {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	next := (d.blocksSent + 1) & event.TransferNumberMax
+	d.sentAt = append(d.sentAt, sentBlock{block: next, at: time.Now()})
+}
+
 func (d *DataConn) noteWritten(bytes int) {
 	d.sending.Lock()
 	defer d.sending.Unlock()
@@ -166,7 +181,6 @@ func (d *DataConn) noteWritten(bytes int) {
 	for d.written >= ackedBlock {
 		d.written -= ackedBlock
 		d.blocksSent = (d.blocksSent + 1) & event.TransferNumberMax
-		d.sentAt = append(d.sentAt, sentBlock{block: d.blocksSent, at: time.Now()})
 	}
 }
 
@@ -218,8 +232,13 @@ func (d *DataConn) Write(data []byte) (int, error) {
 	defer d.writing.Unlock()
 	written := 0
 	for written < len(data) {
-		slice := data[written:min(len(data), written+pacedSlice)]
-		d.pace.wait(len(slice))
+		toBoundary := d.untilTheNextBlock()
+		size := min(len(data)-written, pacedSlice, toBoundary)
+		slice := data[written : written+size]
+		d.pace.wait(size)
+		if size == toBoundary {
+			d.noteTheBlockGoingOut()
+		}
 		n, err := d.secured.Write(slice)
 		d.noteWritten(n)
 		written += n
