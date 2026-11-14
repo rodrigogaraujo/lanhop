@@ -131,7 +131,7 @@ type Sharer struct {
 	docks              map[string]edge.Side
 	drag               *dragInProgress
 	toldBlocked        map[BlockedDrag]bool
-	onDragCrossing     func(DragCrossing)
+	onDragCrossing     func(DragCrossing) error
 	onDragEntered      func(DragCrossing)
 	onDragEnded        func(Drag)
 	onBlockedDrag      func(BlockedDrag)

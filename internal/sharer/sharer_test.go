@@ -242,6 +242,7 @@ type sharing struct {
 	endsShown   bool
 	whenEnded   func(drag Drag)
 	leftButtons func(pressed bool)
+	refuses     bool
 	sharer      *Sharer
 	onReceivers func(names []string)
 	clipboard   Clipboard
@@ -287,7 +288,13 @@ func (s *sharing) start(capture Capture) {
 	s.sharer.trustCheckInterval = testTrustCheck
 	s.sharer.now = s.clock.now
 	if !s.noDragHooks {
-		s.sharer.OnDragCrossing(func(crossing DragCrossing) { s.journal.note(dragCrosses(crossing)) })
+		s.sharer.OnDragCrossing(func(crossing DragCrossing) error {
+			s.journal.note(dragCrosses(crossing))
+			if s.refuses {
+				return errCrossingRefused
+			}
+			return nil
+		})
 		s.sharer.OnDragEntered(func(crossing DragCrossing) { s.journal.note(dragEnters(crossing)) })
 		s.sharer.OnBlockedDrag(func(blocked BlockedDrag) { s.journal.note(dragIsBlocked(blocked)) })
 		s.sharer.OnDragUnblocked(func(unblocked BlockedDrag) { s.journal.note(dragIsUnblocked(unblocked)) })
