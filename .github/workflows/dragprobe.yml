@@ -6,6 +6,13 @@ on:
       - "research/dragprobe/**"
       - "internal/x11/**"
       - ".github/workflows/dragprobe.yml"
+  push:
+    branches:
+      - research/drag-probes
+    paths:
+      - "research/dragprobe/**"
+      - "internal/x11/**"
+      - ".github/workflows/dragprobe.yml"
 
 permissions:
   contents: read
@@ -19,6 +26,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Test the command line of the Mac probe
+        env:
+          CGO_ENABLED: "1"
+        run: go test -count=1 ./research/dragprobe/mac ./research/dragprobe/cli
       - name: Build for arm64 and amd64 and join them
         env:
           CGO_ENABLED: "1"
