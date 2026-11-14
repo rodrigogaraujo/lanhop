@@ -223,21 +223,65 @@ func TestADropAndANewDragBetweenTwoPollsEndTheFirstDragAndStartTheSecond(t *test
 	expectDragEvents(t, append(first, pollTimes(tracker, board.source(), 3)...), startedWith("/tmp/first.pdf"), dragEnd, startedWith("/tmp/second.pdf"))
 }
 
-func TestAChangeDuringADragThatHoldsNoFilesYetEndsItAndTheNextFilesStartANewOne(t *testing.T) {
+func TestAChangeDuringADragToNoFilesEndsItAtTheSecondReadAndLaterFilesStartANewOne(t *testing.T) {
 	board := newDragBoard()
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/first.pdf")
 	pollTimes(tracker, board.source(), 2)
 	board.holdNoFiles(clipboard.ErrNotFiles)
+	first := pollTimes(tracker, board.source(), 1)
 	ending := pollTimes(tracker, board.source(), 1)
 
 	board.finishWriting("/tmp/second.pdf")
 
+	expectDragEvents(t, first)
 	expectDragEvents(t, append(ending, pollTimes(tracker, board.source(), 2)...), dragEnd, startedWith("/tmp/second.pdf"))
 }
 
-func TestAChangeDuringADragToAPrivateCopyEndsItAndIsReadOnce(t *testing.T) {
+func TestAHalfWrittenReadDuringADragDoesNotEndIt(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/a.txt", "/tmp/b.txt")
+	started := pollTimes(tracker, board.source(), 2)
+	board.holdFiles("/tmp/a.txt")
+	started = append(started, pollTimes(tracker, board.source(), 1)...)
+
+	board.finishWriting("/tmp/a.txt", "/tmp/b.txt")
+
+	expectDragEvents(t, append(started, pollTimes(tracker, board.source(), 4)...), startedWith("/tmp/a.txt", "/tmp/b.txt"))
+}
+
+func TestAReadFromBeforeAChangeDoesNotConfirmAReadAfterIt(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/a.txt")
+	seen := pollTimes(tracker, board.source(), 1)
+	board.holdFiles("/tmp/a.txt")
+	seen = append(seen, pollTimes(tracker, board.source(), 1)...)
+
+	board.finishWriting("/tmp/a.txt", "/tmp/c.txt")
+
+	expectDragEvents(t, append(seen, pollTimes(tracker, board.source(), 3)...), startedWith("/tmp/a.txt", "/tmp/c.txt"))
+}
+
+func TestAReadWithoutFilesBetweenTwoEqualReadsStartsNothing(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/a.txt")
+	seen := pollTimes(tracker, board.source(), 1)
+	board.finishWritingNoFiles(clipboard.ErrNotFiles)
+	seen = append(seen, pollTimes(tracker, board.source(), 1)...)
+
+	board.finishWriting("/tmp/a.txt")
+
+	expectDragEvents(t, append(seen, pollTimes(tracker, board.source(), 1)...))
+}
+
+func TestAChangeDuringADragToAPrivateCopyEndsItAtTheSecondReadAndReadsNoMore(t *testing.T) {
 	board := newDragBoard()
 	tracker := board.tracker()
 	board.press()
@@ -246,9 +290,9 @@ func TestAChangeDuringADragToAPrivateCopyEndsItAndIsReadOnce(t *testing.T) {
 
 	board.holdNoFiles(clipboard.ErrPrivate)
 
-	expectDragEvents(t, pollTimes(tracker, board.source(), 6), dragEnd)
-	if got := board.readCount(); got != 3 {
-		t.Errorf("the drag pasteboard was read %d times, want 3", got)
+	expectDragEvents(t, pollTimes(tracker, board.source(), 8), dragEnd)
+	if got := board.readCount(); got != 4 {
+		t.Errorf("the drag pasteboard was read %d times, want 4", got)
 	}
 }
 
@@ -302,16 +346,40 @@ func TestFilesWrittenAfterTheChangeWasSeenStillStartTheDrag(t *testing.T) {
 	expectDragEvents(t, pollTimes(tracker, board.source(), 2), startedWith("/tmp/report.pdf"))
 }
 
-func TestADragOfSomethingOtherThanFilesIsReadFiveTimes(t *testing.T) {
+func TestADragOfSomethingOtherThanFilesIsReadSixTimes(t *testing.T) {
 	board := newDragBoard()
 	tracker := board.tracker()
 	board.press()
 	board.holdNoFiles(clipboard.ErrNotFiles)
 
-	expectDragEvents(t, pollTimes(tracker, board.source(), 15))
-	if got := board.readCount(); got != 5 {
-		t.Errorf("the drag pasteboard was read %d times, want 5", got)
+	expectDragEvents(t, pollTimes(tracker, board.source(), 18))
+	if got := board.readCount(); got != 6 {
+		t.Errorf("the drag pasteboard was read %d times, want 6", got)
 	}
+}
+
+func TestFilesWrittenAfterFourEmptyReadsStillStartTheDrag(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdNoFiles(clipboard.ErrNotFiles)
+	empty := pollTimes(tracker, board.source(), 4)
+
+	board.finishWriting("/tmp/report.pdf")
+
+	expectDragEvents(t, append(empty, pollTimes(tracker, board.source(), 2)...), startedWith("/tmp/report.pdf"))
+}
+
+func TestFilesWrittenAfterFiveEmptyReadsStartNothing(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdNoFiles(clipboard.ErrNotFiles)
+	empty := pollTimes(tracker, board.source(), 5)
+
+	board.finishWriting("/tmp/report.pdf")
+
+	expectDragEvents(t, append(empty, pollTimes(tracker, board.source(), 6)...))
 }
 
 func TestADragOfPrivateFilesOrOfTooManyIsReadOnce(t *testing.T) {
@@ -532,6 +600,9 @@ func watchThatNobodyReads(t *testing.T) (*flickeringDrag, *DragWatch) {
 		time.Sleep(shortestDragPoll)
 	}
 	time.Sleep(quietWindow)
+	if polls := flicker.polls.Load(); polls != marksWhenTheQueueIsFull {
+		t.Fatalf("the watch polled %d times with a full queue, want it to stop at %d", polls, marksWhenTheQueueIsFull)
+	}
 	return flicker, watch
 }
 
@@ -666,8 +737,8 @@ func (s *endingScreen) PostKey(key KeyPress) {
 	s.did = append(s.did, key)
 }
 
-func (s *endingScreen) PostMouse(mouse MouseEvent) {
-	s.did = append(s.did, mouse)
+func (s *endingScreen) PostMouseAtSessionTap(mouse MouseEvent) {
+	s.did = append(s.did, atSessionTap(mouse))
 }
 
 func (s *endingScreen) pause(gap time.Duration) {
@@ -679,16 +750,18 @@ func postingAllowed() bool {
 	return true
 }
 
+type atSessionTap MouseEvent
+
 func endingAt(at Point) []any {
 	return []any{
 		KeyPress{Code: 0x35, Down: true},
 		KeyPress{Code: 0x35},
 		20 * time.Millisecond,
-		MouseEvent{Action: MouseUp, At: at, Button: 0, Clicks: 1},
+		atSessionTap(MouseEvent{Action: MouseUp, At: at, Button: 0, Clicks: 1}),
 	}
 }
 
-func TestEndingASourceDragPostsEscapeThenALeftMouseUpWhereTheCursorIsAfterTheGap(t *testing.T) {
+func TestEndingASourceDragPostsEscapeThenALeftMouseUpAtTheSessionTapWhereTheCursorIsAfterTheGap(t *testing.T) {
 	screen := &endingScreen{held: true, cursor: Point{X: 501, Y: 165}, cursorLater: Point{X: 503, Y: 166}}
 
 	err := endSourceDrag(screen, postingAllowed, screen.pause)
@@ -743,10 +816,10 @@ func (s *sharedEndingScreen) PostKey(key KeyPress) {
 	s.did = append(s.did, key)
 }
 
-func (s *sharedEndingScreen) PostMouse(mouse MouseEvent) {
+func (s *sharedEndingScreen) PostMouseAtSessionTap(mouse MouseEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.did = append(s.did, mouse)
+	s.did = append(s.did, atSessionTap(mouse))
 }
 
 func (s *sharedEndingScreen) pause(gap time.Duration) {
