@@ -184,10 +184,11 @@ func (w *DragWatch) run(interval time.Duration) {
 	defer tick.Stop()
 	var pending []DragEvent
 	told := false
+	reset := func() { pending = w.forget(told) }
 	for {
 		select {
 		case <-w.resets:
-			pending = w.forget(told)
+			reset()
 		default:
 		}
 		var send chan<- DragEvent
@@ -199,7 +200,7 @@ func (w *DragWatch) run(interval time.Duration) {
 		case <-w.stop:
 			return
 		case <-w.resets:
-			pending = w.forget(told)
+			reset()
 		case send <- next:
 			pending, told = pending[1:], next.Kind == DragStarted
 		case <-tick.C:
