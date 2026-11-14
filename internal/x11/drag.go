@@ -24,6 +24,7 @@ const (
 	xdndOldestVersion = 3
 	dragButton        = 1
 	dropTargetDepth   = 32
+	buttonPollEvery   = 50 * time.Millisecond
 )
 
 var (
@@ -37,24 +38,28 @@ var (
 	ErrNotFinished         = errors.New("x11: the window took the drop and did not say in time that it finished")
 	ErrDropFailed          = errors.New("x11: the window finished the drop without taking the files")
 	ErrFilesLate           = errors.New("x11: the files did not arrive in time for the drop")
+	ErrDropTargetChanged   = errors.New("x11: the window the files were dropped on changed before they arrived")
+	ErrButtonHeldHere      = errors.New("x11: a mouse button stayed down on this machine, so the drop did not take XdndSelection from what it was doing")
 	ErrFilesAlreadyArrived = errors.New("x11: the files of this drag have already arrived")
 	ErrDragEnded           = errors.New("x11: the drag has ended")
 )
 
 type dragLimits struct {
-	grab   time.Duration
-	hold   time.Duration
-	status time.Duration
-	finish time.Duration
-	files  time.Duration
+	grab      time.Duration
+	hold      time.Duration
+	status    time.Duration
+	finish    time.Duration
+	files     time.Duration
+	buttonsUp time.Duration
 }
 
 var defaultDragLimits = dragLimits{
-	grab:   time.Second,
-	hold:   2 * time.Minute,
-	status: 2 * time.Second,
-	finish: 10 * time.Second,
-	files:  15 * time.Minute,
+	grab:      time.Second,
+	hold:      2 * time.Minute,
+	status:    2 * time.Second,
+	finish:    10 * time.Second,
+	files:     2 * time.Minute,
+	buttonsUp: 30 * time.Second,
 }
 
 type dragAtoms struct {
@@ -282,6 +287,7 @@ type dragRun struct {
 	next     pointerEvent
 	accepts  bool
 	action   uint32
+	heldOver windowArea
 	accepted bool
 	dropped  bool
 }
@@ -296,13 +302,7 @@ func (r *dragRun) carry() error {
 		return err
 	}
 	if r.list == nil {
-		if err := r.waitForFiles(); err != nil {
-			return err
-		}
-		if err := r.enter(on); err != nil {
-			return err
-		}
-		if err := r.position(released); err != nil {
+		if err := r.dropWhenTheFilesArrive(released, on); err != nil {
 			return err
 		}
 	}
@@ -365,25 +365,84 @@ func (r *dragRun) release(at pointerEvent) (pointerEvent, dragTarget, error) {
 	if on.window == atomNone {
 		return at, on, ErrNoDropTarget
 	}
-	if r.list == nil {
-		r.accept()
-		return at, on, nil
+	select {
+	case list := <-r.drag.arrived:
+		if err := r.offer(list); err != nil {
+			return at, on, err
+		}
+	default:
 	}
-	return at, on, r.moveOver(at, on)
+	if r.list != nil {
+		return at, on, r.moveOver(at, on)
+	}
+	area, err := r.d.areaOf(on.window)
+	var gone RequestError
+	if errors.As(err, &gone) {
+		return at, on, ErrNoDropTarget
+	}
+	if err != nil {
+		return at, on, err
+	}
+	r.heldOver = area
+	r.accept()
+	return at, on, nil
 }
 
-func (r *dragRun) waitForFiles() error {
+func (r *dragRun) dropWhenTheFilesArrive(released pointerEvent, on dragTarget) error {
+	list, err := r.waitForFiles()
+	if err != nil {
+		return err
+	}
+	if err := r.waitForButtonsUp(); err != nil {
+		return err
+	}
+	if err := r.d.stillUnder(released, on, r.heldOver); err != nil {
+		return err
+	}
+	if err := r.offer(list); err != nil {
+		return err
+	}
+	if err := r.enter(on); err != nil {
+		return err
+	}
+	return r.position(released)
+}
+
+func (r *dragRun) waitForFiles() ([]byte, error) {
 	late := time.NewTimer(r.d.limits.files)
 	defer late.Stop()
 	select {
 	case list := <-r.drag.arrived:
-		return r.offer(list)
+		return list, nil
 	case <-late.C:
-		return ErrFilesLate
+		return nil, ErrFilesLate
 	case <-r.drag.cancel:
-		return ErrDragCancelled
+		return nil, ErrDragCancelled
 	case <-r.d.c.closed:
-		return r.d.c.err()
+		return nil, r.d.c.err()
+	}
+}
+
+func (r *dragRun) waitForButtonsUp() error {
+	deadline := time.Now().Add(r.d.limits.buttonsUp)
+	for {
+		pointer, err := r.d.queryPointer()
+		if err != nil {
+			return err
+		}
+		if !pointer.buttonHeld() {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return ErrButtonHeldHere
+		}
+		select {
+		case <-time.After(buttonPollEvery):
+		case <-r.drag.cancel:
+			return ErrDragCancelled
+		case <-r.d.c.closed:
+			return r.d.c.err()
+		}
 	}
 }
 
@@ -606,6 +665,28 @@ func (d *Drags) dropTargetAt(x, y int) (dragTarget, error) {
 		window = child
 	}
 	return dragTarget{}, nil
+}
+
+func (d *Drags) stillUnder(at pointerEvent, on dragTarget, area windowArea) error {
+	now, err := d.areaOf(on.window)
+	var gone RequestError
+	if errors.As(err, &gone) {
+		return fmt.Errorf("%w: it was closed", ErrDropTargetChanged)
+	}
+	if err != nil {
+		return err
+	}
+	if now != area {
+		return fmt.Errorf("%w: it moved or changed size", ErrDropTargetChanged)
+	}
+	found, err := d.dropTargetAt(at.x, at.y)
+	if err != nil {
+		return err
+	}
+	if found != on {
+		return fmt.Errorf("%w: it is no longer the window under the release point", ErrDropTargetChanged)
+	}
+	return nil
 }
 
 func (d *Drags) awareTarget(window uint32) (dragTarget, bool) {

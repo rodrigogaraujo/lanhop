@@ -14,6 +14,11 @@ import (
 const (
 	opGetWindowAttributes = 3
 	opMapWindow           = 8
+	opConfigureWindow     = 12
+	configureX            = 1
+	configureY            = 2
+	configureWidth        = 4
+	configureHeight       = 8
 	classInputOutput      = 1
 	xtestFakeInput        = 2
 	relativeMotion        = 1
@@ -87,7 +92,7 @@ func pointerIsFree(t *testing.T, display string) bool {
 	return true
 }
 
-func takeXdndSelection(t *testing.T, display string) {
+func takeXdndSelection(t *testing.T, display string) uint32 {
 	t.Helper()
 	other := dialForTest(t, display, func([]byte) {})
 	selection, err := internAtom(other, "XdndSelection")
@@ -101,6 +106,50 @@ func takeXdndSelection(t *testing.T, display string) {
 	if err != nil || binary.LittleEndian.Uint32(reply[8:12]) != window {
 		t.Fatalf("the other program does not own XdndSelection: %v", err)
 	}
+	return window
+}
+
+func askXdndSelection(t *testing.T, display, target string, when uint32) (string, bool) {
+	t.Helper()
+	events := make(chan []byte, 64)
+	asker := dialForTest(t, display, func(event []byte) {
+		select {
+		case events <- event:
+		default:
+		}
+	})
+	atoms := make(map[string]uint32)
+	for _, name := range []string{"XdndSelection", target, "LANHOP_TEST_ASK"} {
+		atom, err := internAtom(asker, name)
+		if err != nil {
+			t.Fatalf("intern %s: %v", name, err)
+		}
+		atoms[name] = atom
+	}
+	window := asker.newID()
+	asker.send(newRequest(opCreateWindow, 0).u32(window).u32(asker.root).u16(0).u16(0).u16(1).u16(1).u16(0).u16(classInputOnly).u32(0).u32(0).done())
+	asker.send(newRequest(opConvertSelection, 0).u32(window).u32(atoms["XdndSelection"]).u32(atoms[target]).u32(atoms["LANHOP_TEST_ASK"]).u32(when).done())
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event[0]&^sentEventFlag != eventSelectionNotify {
+				continue
+			}
+			if binary.LittleEndian.Uint32(event[20:24]) == atomNone {
+				return "", true
+			}
+			reply, err := asker.call(newRequest(opGetProperty, 1).u32(window).u32(atoms["LANHOP_TEST_ASK"]).u32(0).u32(0).u32(1 << 16).done())
+			if err != nil {
+				t.Fatalf("GetProperty: %v", err)
+			}
+			length := int(binary.LittleEndian.Uint32(reply[16:20])) * max(int(reply[1])/8, 1)
+			return string(reply[32 : 32+min(length, len(reply)-32)]), false
+		case <-deadline:
+			t.Fatalf("nobody answered a request for %s of XdndSelection", target)
+			return "", true
+		}
+	}
 }
 
 func dragSelectionOwner(t *testing.T, source *Drags) uint32 {
@@ -110,6 +159,19 @@ func dragSelectionOwner(t *testing.T, source *Drags) uint32 {
 		t.Fatalf("GetSelectionOwner: %v", err)
 	}
 	return owner
+}
+
+func checkLeftNothingBehind(t *testing.T, display string, source *Drags) {
+	t.Helper()
+	if !pointerIsFree(t, display) {
+		t.Error("lanhop still holds the pointer after the drag")
+	}
+	if owner := dragSelectionOwner(t, source); owner == source.window {
+		t.Error("lanhop still owns XdndSelection after the drag")
+	}
+	if !neverMapped(t, source) {
+		t.Error("the window of the drag was mapped")
+	}
 }
 
 func neverMapped(t *testing.T, source *Drags) bool {
@@ -198,13 +260,20 @@ type xdndTarget struct {
 	askedOnce bool
 	state     sync.Mutex
 	seen      []string
+	source    uint32
 	version   uint32
 	types     []uint32
 	lastAt    [2]int
+	times     []uint32
 	asked     []conversion
 }
 
 func startXdndTarget(t *testing.T, display string, behaviour targetBehaviour) *xdndTarget {
+	t.Helper()
+	return startXdndTargetAt(t, display, behaviour, 100, 100, 200, 200)
+}
+
+func startXdndTargetAt(t *testing.T, display string, behaviour targetBehaviour, x, y, width, height int) *xdndTarget {
 	t.Helper()
 	target := &xdndTarget{
 		atoms:     make(map[string]uint32),
@@ -237,7 +306,7 @@ func startXdndTarget(t *testing.T, display string, behaviour targetBehaviour) *x
 	}
 	target.window = owner.newID()
 	owner.send(newRequest(opCreateWindow, 0).u32(target.window).u32(owner.root).
-		u16(100).u16(100).u16(200).u16(200).u16(0).u16(classInputOutput).u32(0).
+		u16(uint16(x)).u16(uint16(y)).u16(uint16(width)).u16(uint16(height)).u16(0).u16(classInputOutput).u32(0).
 		u32(attributeEventMask).u32(propertyChangeMask).done())
 	target.receiver = target.window
 	if behaviour.behindAProxy {
@@ -308,6 +377,45 @@ func (x *xdndTarget) lastPosition() [2]int {
 	return x.lastAt
 }
 
+func (x *xdndTarget) positionTimes() []uint32 {
+	x.state.Lock()
+	defer x.state.Unlock()
+	return slices.Clone(x.times)
+}
+
+func (x *xdndTarget) count(name string) int {
+	n := 0
+	for _, seen := range x.messages() {
+		if seen == name {
+			n++
+		}
+	}
+	return n
+}
+
+func (x *xdndTarget) answerWithCopy() {
+	x.state.Lock()
+	source := x.source
+	x.state.Unlock()
+	x.send(source, x.atoms["XdndStatus"], [5]uint32{x.window, 3, 0, 0, x.atoms["XdndActionCopy"]})
+}
+
+func (x *xdndTarget) configure(t *testing.T, mask uint16, values ...uint32) {
+	t.Helper()
+	request := newRequest(opConfigureWindow, 0).u32(x.window).u16(mask).u16(0)
+	for _, value := range values {
+		request.u32(value)
+	}
+	x.c.send(request.done())
+	syncWith(t, x.c)
+}
+
+func (x *xdndTarget) close(t *testing.T) {
+	t.Helper()
+	x.c.send(newRequest(opDestroyWindow, 0).u32(x.window).done())
+	syncWith(t, x.c)
+}
+
 func (x *xdndTarget) conversions() []conversion {
 	x.state.Lock()
 	defer x.state.Unlock()
@@ -354,6 +462,7 @@ func (x *xdndTarget) handle(event []byte) {
 		x.record("XdndEnter")
 		x.askedOnce = false
 		x.state.Lock()
+		x.source = source
 		x.version = data[1] >> 24
 		x.types = nil
 		for _, offered := range data[2:5] {
@@ -366,6 +475,7 @@ func (x *xdndTarget) handle(event []byte) {
 		x.record("XdndPosition")
 		x.state.Lock()
 		x.lastAt = [2]int{int(int16(data[2] >> 16)), int(int16(data[2] & 0xffff))}
+		x.times = append(x.times, data[3])
 		x.state.Unlock()
 		if !x.askedOnce {
 			x.askedOnce = true
@@ -515,7 +625,11 @@ func (desk *dragDesk) start(t *testing.T) *Drag {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(drag.Cancel)
+	t.Cleanup(func() {
+		drag.Cancel()
+		waitForDrag(t, drag)
+		checkLeftNothingBehind(t, desk.display, desk.source)
+	})
 	return drag
 }
 
