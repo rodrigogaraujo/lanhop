@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -113,6 +114,10 @@ type deskStatus struct {
 	departed  map[string]time.Time
 	seats     []status.Seat
 	stopped   bool
+
+	dragCannotReach []string
+	dragFilesOff    []string
+	dragCannotLeave bool
 }
 
 func newDeskStatus(record statusFile, now func() time.Time, trusted peerList) *deskStatus {
@@ -165,6 +170,38 @@ func (d *deskStatus) seatsChanged(seats []follow.Seat) {
 	d.write()
 }
 
+func (d *deskStatus) blockedDrag(blocked sharer.BlockedDrag) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	switch blocked.Block {
+	case sharer.DragCannotReach:
+		if slices.Contains(d.dragCannotReach, blocked.Machine) {
+			return
+		}
+		d.dragCannotReach = append(d.dragCannotReach, blocked.Machine)
+	case sharer.FilesOffThere:
+		if slices.Contains(d.dragFilesOff, blocked.Machine) {
+			return
+		}
+		d.dragFilesOff = append(d.dragFilesOff, blocked.Machine)
+	case sharer.DragCannotLeave:
+		if d.dragCannotLeave {
+			return
+		}
+		d.dragCannotLeave = true
+	default:
+		return
+	}
+	d.write()
+}
+
+func tellBlockedDrags(log io.Writer, report *deskStatus) func(sharer.BlockedDrag) {
+	return func(blocked sharer.BlockedDrag) {
+		fmt.Fprintln(log, aboutABlockedDrag(blocked))
+		report.blockedDrag(blocked)
+	}
+}
+
 func (d *deskStatus) write() {
 	if d.stopped {
 		return
@@ -174,7 +211,15 @@ func (d *deskStatus) write() {
 		left = append(left, status.Departure{Name: name, At: at})
 	}
 	slices.SortFunc(left, func(a, b status.Departure) int { return strings.Compare(a.Name, b.Name) })
-	report := status.Report{State: status.Sharing, Machines: d.connected, Left: left, Seats: slices.Clone(d.seats)}
+	report := status.Report{
+		State:           status.Sharing,
+		Machines:        d.connected,
+		Left:            left,
+		Seats:           slices.Clone(d.seats),
+		DragCannotReach: slices.Clone(d.dragCannotReach),
+		DragFilesOff:    slices.Clone(d.dragFilesOff),
+		DragCannotLeave: d.dragCannotLeave,
+	}
 	if len(d.connected) == 0 {
 		report.State = status.Waiting
 		report.Machines = nil
@@ -214,17 +259,21 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		known:     knownOnThisDesk(own, trusted),
 		stdout:    stdout,
 	}
+	announced := new(features.Set)
 	machine := sharer.New(capture, trusted, detector, sharer.EdgeSwitching{
-		Name:   own,
-		Layout: desk.Layout,
-		Speed:  sharer.DefaultSpeed(),
-		Watch:  edge.DefaultSettings(),
+		Name:          own,
+		Layout:        desk.Layout,
+		Speed:         sharer.DefaultSpeed(),
+		Watch:         edge.DefaultSettings(),
+		Features:      announced,
+		DragsStayHere: runtime.GOOS == "linux",
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
 	report := newDeskStatus(openStatus(), time.Now, trusted)
 	defer report.stop()
 	machine.OnReceivers(report.receivers)
-	defer shareTheClipboard(done, machine, directory, listener.AwaitData, new(features.Set), followerOfTheCentral(report.seatsChanged), stdout)()
+	machine.OnBlockedDrag(tellBlockedDrags(stdout, report))
+	defer shareTheClipboard(done, machine, directory, listener.AwaitData, announced, followerOfTheCentral(report.seatsChanged), stdout)()
 	go func() {
 		for {
 			receiver, err := listener.Accept()

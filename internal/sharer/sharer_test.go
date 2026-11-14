@@ -13,6 +13,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/layout"
@@ -233,6 +234,8 @@ type sharing struct {
 	clock       *fakeClock
 	desk        atomic.Pointer[layout.Layout]
 	speed       Speed
+	features    *features.Set
+	dragsStay   bool
 	sharer      *Sharer
 	onReceivers func(names []string)
 	clipboard   Clipboard
@@ -268,13 +271,17 @@ func (s *sharing) start(capture Capture) {
 		s.t.Fatalf("hotkey.New: %v", err)
 	}
 	s.sharer = New(capture, s.trusted, detector, EdgeSwitching{
-		Name:   thisMachine,
-		Layout: s.desk.Load,
-		Speed:  s.speed,
-		Watch:  edge.DefaultSettings(),
+		Name:          thisMachine,
+		Layout:        s.desk.Load,
+		Speed:         s.speed,
+		Watch:         edge.DefaultSettings(),
+		Features:      s.features,
+		DragsStayHere: s.dragsStay,
 	})
 	s.sharer.trustCheckInterval = testTrustCheck
 	s.sharer.now = s.clock.now
+	s.sharer.OnDragCrossing(func(crossing DragCrossing) { s.journal.note(dragCrosses(crossing)) })
+	s.sharer.OnBlockedDrag(func(blocked BlockedDrag) { s.journal.note(dragIsBlocked(blocked)) })
 	if s.onReceivers != nil {
 		s.sharer.OnReceivers(s.onReceivers)
 	}

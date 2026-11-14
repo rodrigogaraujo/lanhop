@@ -14,6 +14,7 @@ import (
 
 const (
 	noVersion      = "-"
+	yes            = "yes"
 	FileName       = "status"
 	lockFileName   = "status.lock"
 	lockAttempts   = 5
@@ -34,12 +35,15 @@ const (
 )
 
 type Report struct {
-	State    State
-	Machines []string
-	Address  string
-	Error    string
-	Left     []Departure
-	Seats    []Seat
+	State           State
+	Machines        []string
+	Address         string
+	Error           string
+	Left            []Departure
+	Seats           []Seat
+	DragCannotReach []string
+	DragFilesOff    []string
+	DragCannotLeave bool
 }
 
 type Seat struct {
@@ -131,6 +135,15 @@ func write(path string, report Report) error {
 	for _, seat := range report.Seats {
 		fmt.Fprintf(&text, "seat=%s %s %s\n", oneWord(seat.Name), oneWord(seat.Version), oneLine(seat.Mark))
 	}
+	for _, machine := range report.DragCannotReach {
+		fmt.Fprintf(&text, "drag-cannot-reach=%s\n", oneLine(machine))
+	}
+	for _, machine := range report.DragFilesOff {
+		fmt.Fprintf(&text, "drag-files-off=%s\n", oneLine(machine))
+	}
+	if report.DragCannotLeave {
+		fmt.Fprintf(&text, "drag-cannot-leave=%s\n", yes)
+	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("status: %w", err)
@@ -178,6 +191,16 @@ func Read(directory string) (Report, error) {
 			if seat, ok := seatFrom(value); ok {
 				report.Seats = append(report.Seats, seat)
 			}
+		case "drag-cannot-reach":
+			if value != "" {
+				report.DragCannotReach = append(report.DragCannotReach, value)
+			}
+		case "drag-files-off":
+			if value != "" {
+				report.DragFilesOff = append(report.DragFilesOff, value)
+			}
+		case "drag-cannot-leave":
+			report.DragCannotLeave = value == yes
 		}
 	}
 	return report, lines.Err()
