@@ -22,6 +22,7 @@ stopped_patience=25
 accessibility_restart=15
 start_wait=10
 service_started=no
+signature_becomes_stable=no
 showing=no
 someone_answers=no
 
@@ -307,6 +308,9 @@ install_app() {
       */lanhop.app/Contents/MacOS/lanhop) ;;
       *) earlier_program=$command_link ;;
     esac
+  fi
+  if signed_with_a_certificate "$unpacked" && replaces_a_lanhop_without_the_certificate; then
+    signature_becomes_stable=yes
   fi
   mkdir -p "$app_directory" "$install_directory"
   rm -rf "$app".new.* "$app".old.* 2>/dev/null || true
@@ -618,6 +622,38 @@ If lanhop is already in the list from an earlier install, select it, remove it w
 - button and add it again: macOS ties the permission to the exact program it approved.
 $guides_url/setup-macos.md says more.
 
+EOF
+}
+
+signed_with_a_certificate() {
+  codesign -d -r- "$1" 2>/dev/null | grep -q 'certificate leaf'
+}
+
+replaces_a_lanhop_without_the_certificate() {
+  replaced=
+  if [ -e "$app" ]; then
+    replaced=$app
+  else
+    linked=$(readlink "$command_link" 2>/dev/null || true)
+    case $linked in
+      */lanhop.app/Contents/MacOS/lanhop) replaced=${linked%/Contents/MacOS/lanhop} ;;
+    esac
+  fi
+  if [ -z "$replaced" ]; then
+    [ -n "$earlier_program" ]
+  elif [ ! -e "$replaced" ] || signed_with_a_certificate "$replaced"; then
+    return 1
+  fi
+}
+
+explain_the_last_question() {
+  if [ "$signature_becomes_stable" != yes ]; then
+    return 0
+  fi
+  cat <<EOF
+
+From this release on, lanhop.app is signed with a certificate of the project. macOS asks
+for Accessibility this one last time: lanhop update keeps the permission from now on.
 EOF
 }
 
@@ -994,6 +1030,7 @@ install_lanhop() {
   install_binary
   advise_about_path
   explain_earlier_program
+  explain_the_last_question
   choose_role
   if [ -z "$role" ]; then
     explain_what_is_left

@@ -215,6 +215,30 @@ const infoOfTheApp = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
+const infoOfTheSignedApp = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.github.rodrigogaraujo.lanhop</string>
+  <key>TestSignature</key>
+  <string>certificate</string>
+</dict>
+</plist>
+`
+
+const fakeCodesign = `#!/bin/sh
+app=$3
+if grep -q '<string>certificate</string>' "$app/Contents/Info.plist" 2>/dev/null; then
+  echo 'designated => identifier "com.github.rodrigogaraujo.lanhop" and certificate leaf = H"fed77ab0a2fc94bf5a08dd743fe8dfa45ff74d98"'
+elif [ -d "$app" ]; then
+  echo '# designated => cdhash H"7787834cbcdc16c4b3831d06c59f9174915cdac1"'
+else
+  exit 1
+fi
+`
+
+const lastAccessibilityQuestion = "macOS asks\nfor Accessibility this one last time"
+
 var builds = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"}
 
 type releases struct {
@@ -225,6 +249,7 @@ type releases struct {
 	statuses      string
 	usage         string
 	withoutTheApp bool
+	signed        bool
 }
 
 func newReleases(t *testing.T) *releases {
@@ -252,8 +277,12 @@ func (r *releases) publish(directory, version string) {
 		program := fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage, r.statuses)
 		files := []archived{{name + "/lanhop", program, 0o700}}
 		if strings.HasPrefix(build, "darwin-") && !r.withoutTheApp {
+			info := infoOfTheApp
+			if r.signed {
+				info = infoOfTheSignedApp
+			}
 			files = []archived{
-				{name + "/lanhop.app/Contents/Info.plist", infoOfTheApp, 0o644},
+				{name + "/lanhop.app/Contents/Info.plist", info, 0o644},
 				{name + "/lanhop.app/Contents/MacOS/lanhop", program, 0o700},
 			}
 		}
@@ -1628,6 +1657,113 @@ func TestAProgramOfAnEarlierInstallBecomesALinkToTheAppAndItsOldPermissionsAreNa
 		if strings.Contains(again, "now runs the lanhop app") {
 			t.Errorf("the second run talks about an earlier program again:\n%s", again)
 		}
+	})
+}
+
+func macWithCodesign(t *testing.T, shell string, published *releases) *machine {
+	t.Helper()
+	m := newMachine(t, shell, "Darwin", "arm64", published)
+	writeFile(t, filepath.Join(m.aside, "bin", "codesign"), []byte(fakeCodesign), 0o755)
+	m.settings["LANHOP_YES"] = "1"
+	return m
+}
+
+func expectNoLastQuestion(t *testing.T, step, output string) {
+	t.Helper()
+	expectMention(t, output, "Installed lanhop")
+	if strings.Contains(output, lastAccessibilityQuestion) {
+		t.Errorf("%s speaks of a last Accessibility question:\n%s", step, output)
+	}
+}
+
+func TestTheMoveToTheSignedAppSaysItIsTheLastAccessibilityQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		m := macWithCodesign(t, shell, published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		expectNoLastQuestion(t, "installing the app signed ad hoc", m.mustRun())
+
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		expectMention(t, m.mustRun(), lastAccessibilityQuestion)
+
+		expectNoLastQuestion(t, "installing the signed app over the signed app", m.mustRun())
+	})
+}
+
+func TestTheMoveToTheSignedAppSaysItEvenWhenNoRoleIsChosen(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		m := macWithCodesign(t, shell, published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.mustRun()
+
+		delete(m.settings, "LANHOP_ROLE")
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		expectMention(t, m.mustRun(), lastAccessibilityQuestion)
+	})
+}
+
+func TestAProgramOfAnEarlierInstallMovingToTheSignedAppHearsItIsTheLastQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		m := macWithCodesign(t, shell, published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		writeFile(t, m.path(binaryFile), []byte("#!/bin/sh\necho 'lanhop v0.1.0'\n"), 0o755)
+		expectMention(t, m.mustRun(), lastAccessibilityQuestion)
+	})
+}
+
+func TestAFirstInstallOfTheSignedAppSpeaksOfNoLastQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		m := macWithCodesign(t, shell, published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		expectNoLastQuestion(t, "a first install", m.mustRun())
+	})
+}
+
+func TestAnEarlierProgramBesideASignedAppSpeaksOfNoLastQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		m := macWithCodesign(t, shell, published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_INSTALL_DIR"] = m.path("elsewhere/bin")
+		m.mustRun()
+
+		delete(m.settings, "LANHOP_INSTALL_DIR")
+		writeFile(t, m.path(binaryFile), []byte("#!/bin/sh\necho 'lanhop v0.1.0'\n"), 0o755)
+		output := m.mustRun()
+		expectMention(t, output, "now runs the lanhop app")
+		expectNoLastQuestion(t, "a signed app with an earlier program beside it", output)
+	})
+}
+
+func TestTheAppThatTheCommandRunsCountsWhenTheNewAppGoesElsewhere(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a directory without write permission")
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t).withTheStatus()
+		m := macWithCodesign(t, shell, published)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.mustRun()
+		if err := os.Chmod(m.inRoot("Applications"), 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(m.inRoot("Applications"), 0o755) })
+
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		output := m.mustRun()
+		expectMention(t, output, "Installed lanhop 1.1.0 darwin-arm64 in "+m.path(appDirectory), lastAccessibilityQuestion)
 	})
 }
 
