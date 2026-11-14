@@ -3,6 +3,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -49,6 +51,11 @@ func TestWrongCommandLinesAreRefused(t *testing.T) {
 		{"promise", "/a", "/b"},
 		{"promise", "/a", "-to", "800"},
 		{"promise", "/a", "-steps", "0"},
+		{"promise", "/a", "-steps", "201"},
+		{"promise", "/a", "-hold", "3001ms"},
+		{"promise", "/a", "-hold", "-1s"},
+		{"cancel", "-gap", "2s"},
+		{"cancel", "-wait", "11s"},
 		{"watch", "/a"},
 		{"watch", "-every", "0s"},
 	} {
@@ -94,6 +101,35 @@ func TestDragOperationsAreNamed(t *testing.T) {
 	} {
 		if got := operationName(operation); got != want {
 			t.Errorf("operationName(%d) = %q, want %q", operation, got, want)
+		}
+	}
+}
+
+func TestTheLongestPromiseAllowedIsAccepted(t *testing.T) {
+	c, err := parseCommand([]string{"promise", "/a", "-steps", "200", "-hold", "3s"}, "/Users/someone")
+
+	if err != nil || c.steps != 200 || c.hold != 3*time.Second {
+		t.Errorf("parsed %+v, %v", c, err)
+	}
+}
+
+func TestOnlyARegularFileCanBePromised(t *testing.T) {
+	folder := t.TempDir()
+	file := filepath.Join(folder, "throwaway.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	link := filepath.Join(folder, "link.txt")
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if err := regularFile(file); err != nil {
+		t.Errorf("a regular file was refused: %v", err)
+	}
+	for _, path := range []string{folder, link, filepath.Join(folder, "missing.txt")} {
+		if err := regularFile(path); err == nil {
+			t.Errorf("%s was accepted", path)
 		}
 	}
 }

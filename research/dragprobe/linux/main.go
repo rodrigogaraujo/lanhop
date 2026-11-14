@@ -28,8 +28,10 @@ const (
 const usage = `usage: lanhop-dragprobe <watch|drop|cancel|grab> [flags]
 
   watch            print every change of the XdndSelection owner and what it offers
-  drop <file>      act as an XDND source and drop <file> where the button is released
-  cancel           when a drag starts, send Escape and a left button release through uinput
+  drop <file>      act as an XDND source and drop <file> where button 1 is released,
+                   only on a target that accepts XdndActionCopy
+  cancel           when a drag starts, send Escape and a left button release through uinput,
+                   only if X still reports button 1 held at that moment
   grab             grab the pointer and move it through uinput, printing the cursor before and after
 
 Every subcommand takes -display (default: $DISPLAY).`
@@ -203,7 +205,7 @@ func drop(ctx context.Context, c command, drags *x11.Drags, p *cli.Printer) erro
 	if c.now {
 		p.Say("-now: grabbing the pointer at once")
 	} else {
-		p.Say("the pointer is grabbed until the drop ends: press a button anywhere, move over a Nautilus folder, release (Ctrl+C to stop)")
+		p.Say("the pointer is grabbed until the drop ends: press the left button anywhere, move over the scratch folder in Nautilus, release (Ctrl+C to stop)")
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -262,9 +264,9 @@ func endDrag(ctx context.Context, c command, drags *x11.Drags, p *cli.Printer) e
 	defer device.Close()
 	describeOwner(drags, p)
 	p.Say("start dragging a file in Nautilus and keep the button held over a folder; the probe acts %v after the drag starts", c.wait)
-	ctx, stop := context.WithTimeout(ctx, c.timeout)
+	waiting, stop := context.WithTimeout(ctx, c.timeout)
 	defer stop()
-	_, err = drags.EndDragAfter(ctx, c.wait, func(change x11.OwnerChange) {
+	_, err = drags.EndDragAfter(waiting, c.wait, func(change x11.OwnerChange) {
 		p.Say("drag seen: XdndSelection owned by 0x%x since server time %d", change.Owner, change.SelectionTime)
 		p.Say("%s", pointerLine(drags))
 	}, func() error {
@@ -288,13 +290,17 @@ func endDrag(ctx context.Context, c command, drags *x11.Drags, p *cli.Printer) e
 		}
 		return nil
 	})
+	if errors.Is(err, x11.ErrFirstButtonNotHeld) {
+		p.Say("%v when the probe was about to act, so it sent nothing", err)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	return observe(drags, c.after, p)
+	return observe(ctx, drags, c.after, p)
 }
 
-func observe(drags *x11.Drags, period time.Duration, p *cli.Printer) error {
+func observe(ctx context.Context, drags *x11.Drags, period time.Duration, p *cli.Printer) error {
 	p.Say("watching the owner and the buttons for %v; release the real button when you like and check that nothing was dropped", period)
 	last := ""
 	deadline := time.After(period)
@@ -311,6 +317,9 @@ func observe(drags *x11.Drags, period time.Duration, p *cli.Printer) error {
 			}
 		case <-deadline:
 			describeOwner(drags, p)
+			return nil
+		case <-ctx.Done():
+			p.Say("stopped")
 			return nil
 		}
 	}

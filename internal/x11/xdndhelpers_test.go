@@ -92,6 +92,7 @@ func (f *fakeInput) release(button byte) error {
 type targetBehaviour struct {
 	accept bool
 	finish bool
+	action string
 }
 
 type xdndTarget struct {
@@ -121,7 +122,7 @@ func startXdndTarget(t *testing.T, display string, x, y, width, height int, beha
 		default:
 		}
 	})
-	for _, name := range []string{"XdndAware", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished", "XdndSelection", "XdndActionCopy", "text/uri-list", "LANHOP_TEST_DROP"} {
+	for _, name := range []string{"XdndAware", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished", "XdndSelection", "XdndActionCopy", "XdndActionMove", "text/uri-list", "LANHOP_TEST_DROP"} {
 		atom, err := internDragAtom(target.c, name)
 		if err != nil {
 			t.Fatalf("intern %s: %v", name, err)
@@ -163,6 +164,17 @@ func (x *xdndTarget) messages() []string {
 	x.state.Lock()
 	defer x.state.Unlock()
 	return slices.Clone(x.seen)
+}
+
+func (x *xdndTarget) messagesOnceItSaw(name string) []string {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		seen := x.messages()
+		if slices.Contains(seen, name) || time.Now().After(deadline) {
+			return seen
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (x *xdndTarget) entered() (int, []uint32) {
@@ -213,6 +225,9 @@ func (x *xdndTarget) handle(event []byte) {
 		flags, action := uint32(2), uint32(atomNone)
 		if accept {
 			flags, action = 3, x.atoms["XdndActionCopy"]
+			if x.behaviour.action != "" {
+				action = x.atoms[x.behaviour.action]
+			}
 		}
 		x.send(source, x.atoms["XdndStatus"], [5]uint32{x.window, flags, 0, 0, action})
 	case x.atoms["XdndLeave"]:

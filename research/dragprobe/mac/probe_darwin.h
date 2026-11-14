@@ -20,5 +20,6 @@ bool lanhopProbeIsTrusted(void);
 void lanhopProbeAskToPost(void);
 void lanhopProbePostEscape(void);
 void lanhopProbePostLeftMouse(int phase, double x, double y);
+bool lanhopProbeReleasePendingDown(void);
 int lanhopProbeDisplays(double *rects, int capacity);
 int lanhopProbePromise(const char *path, double toX, double toY, bool manual, int steps, double holdSeconds, double timeoutSeconds);

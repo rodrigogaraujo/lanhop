@@ -91,7 +91,7 @@ func (d *Drags) Drop(ctx context.Context, o DropOptions) (report DropReport, err
 		o.Grabbed()
 	}
 
-	start, button, err := d.dragStart(ctx, o)
+	start, err := d.dragStart(ctx, o)
 	if err != nil {
 		report.Outcome = "no drag started"
 		return report, err
@@ -125,7 +125,7 @@ func (d *Drags) Drop(ctx context.Context, o DropOptions) (report DropReport, err
 				if err := s.moveTo(event); err != nil {
 					return report, err
 				}
-			case event.Kind == ButtonReleased && (button == 0 || event.Button == button):
+			case event.Kind == ButtonReleased && event.Button == dragButton:
 				o.say("button %d released at %d,%d", event.Button, event.X, event.Y)
 				return report, s.release(ctx, event)
 			}
@@ -137,35 +137,40 @@ func (d *Drags) Drop(ctx context.Context, o DropOptions) (report DropReport, err
 	}
 }
 
-func (d *Drags) dragStart(ctx context.Context, o DropOptions) (PointerEvent, int, error) {
+func (d *Drags) dragStart(ctx context.Context, o DropOptions) (PointerEvent, error) {
 	if o.StartNow {
 		state, err := d.Pointer()
 		if err != nil {
-			return PointerEvent{}, 0, err
+			return PointerEvent{}, err
 		}
 		when, err := d.serverTime()
 		if err != nil {
-			return PointerEvent{}, 0, err
+			return PointerEvent{}, err
 		}
 		if held := state.Held(); len(held) > 0 {
 			o.say("starting at once at %d,%d with buttons %v held", state.X, state.Y, held)
 		} else {
-			o.say("starting at once at %d,%d; no button is held, so the drop happens at the next release", state.X, state.Y)
+			o.say("starting at once at %d,%d; no button is held, so the drop happens at the next release of button 1", state.X, state.Y)
 		}
-		return PointerEvent{Kind: PointerMoved, X: state.X, Y: state.Y, Time: when}, 0, nil
+		return PointerEvent{Kind: PointerMoved, X: state.X, Y: state.Y, Time: when}, nil
 	}
-	o.say("waiting for a button press")
+	o.say("waiting for a press of button 1")
 	for {
 		select {
 		case event := <-d.pointer:
-			if event.Kind == ButtonPressed {
-				o.say("button %d pressed at %d,%d", event.Button, event.X, event.Y)
-				return event, event.Button, nil
+			if event.Kind != ButtonPressed {
+				continue
 			}
+			if event.Button != dragButton {
+				o.say("button %d pressed at %d,%d; only button 1 starts the drag", event.Button, event.X, event.Y)
+				continue
+			}
+			o.say("button 1 pressed at %d,%d", event.X, event.Y)
+			return event, nil
 		case <-ctx.Done():
-			return PointerEvent{}, 0, ctx.Err()
+			return PointerEvent{}, ctx.Err()
 		case <-d.c.closed:
-			return PointerEvent{}, 0, d.c.err()
+			return PointerEvent{}, d.c.err()
 		}
 	}
 }
@@ -277,6 +282,13 @@ func (s *xdndSource) release(ctx context.Context, at PointerEvent) error {
 	if !s.accepted {
 		s.leave()
 		s.report.Outcome = "the target refused the drop"
+		return nil
+	}
+	if s.action != s.d.atoms.actionCopy {
+		chosen := s.d.AtomName(s.action)
+		s.o.say("the target accepts with action %s, not XdndActionCopy, so no drop", chosen)
+		s.leave()
+		s.report.Outcome = fmt.Sprintf("the target chose %s instead of XdndActionCopy, so nothing was dropped", chosen)
 		return nil
 	}
 	s.d.sendMessage(s.target.destination, s.target.window, s.d.atoms.drop, [5]uint32{s.d.window, 0, at.Time})

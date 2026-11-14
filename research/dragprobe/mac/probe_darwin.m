@@ -4,6 +4,8 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <dispatch/dispatch.h>
+#include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -12,12 +14,15 @@
 
 static const CGKeyCode escapeKeyCode = 53;
 static const CGFloat squareSide = 120;
+static const double cursorTolerance = 2;
 
 static NSInteger endOperation = LANHOP_PROBE_NO_SESSION;
 static BOOL sessionEnded = NO;
 static BOOL writeAsked = NO;
 static BOOL writeDone = NO;
 static CGPoint lastPosted;
+static atomic_bool downPending;
+static atomic_bool driverShouldStop;
 
 static void say(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
@@ -150,7 +155,24 @@ void lanhopProbePostLeftMouse(int phase, double x, double y) {
 		CGEventSetIntegerValueField(event, kCGMouseEventDeltaY, (int64_t)(at.y - lastPosted.y));
 	}
 	lastPosted = at;
+	if (phase == LANHOP_PROBE_DOWN) {
+		atomic_store(&downPending, true);
+	}
 	postAndRelease(event);
+	if (phase == LANHOP_PROBE_UP) {
+		atomic_store(&downPending, false);
+	}
+}
+
+bool lanhopProbeReleasePendingDown(void) {
+	if (!atomic_load(&downPending)) {
+		return false;
+	}
+	double x = 0;
+	double y = 0;
+	lanhopProbeCursor(&x, &y);
+	lanhopProbePostLeftMouse(LANHOP_PROBE_UP, x, y);
+	return true;
 }
 
 int lanhopProbeDisplays(double *rects, int capacity) {
@@ -226,21 +248,24 @@ static void stopWhenTheWriteSettles(int tenths) {
 @interface LanhopProbeSquare : NSView <NSDraggingSource, NSFilePromiseProviderDelegate> {
 	NSString *sourcePath;
 	NSOperationQueue *writeQueue;
+	dispatch_semaphore_t downSeen;
 	dispatch_semaphore_t began;
 	BOOL started;
 	NSUInteger moves;
 }
-- (instancetype)initWithFrame:(NSRect)frame path:(NSString *)path began:(dispatch_semaphore_t)semaphore;
+- (instancetype)initWithFrame:(NSRect)frame path:(NSString *)path downSeen:(dispatch_semaphore_t)down began:(dispatch_semaphore_t)beginning;
 @end
 
 @implementation LanhopProbeSquare
 
-- (instancetype)initWithFrame:(NSRect)frame path:(NSString *)path began:(dispatch_semaphore_t)semaphore {
+- (instancetype)initWithFrame:(NSRect)frame path:(NSString *)path downSeen:(dispatch_semaphore_t)down began:(dispatch_semaphore_t)beginning {
 	self = [super initWithFrame:frame];
 	if (self != nil) {
 		sourcePath = [path copy];
 		writeQueue = [[NSOperationQueue alloc] init];
-		began = semaphore;
+		downSeen = down;
+		dispatch_retain(downSeen);
+		began = beginning;
 		dispatch_retain(began);
 	}
 	return self;
@@ -250,6 +275,7 @@ static void stopWhenTheWriteSettles(int tenths) {
 	[writeQueue waitUntilAllOperationsAreFinished];
 	[writeQueue release];
 	[sourcePath release];
+	dispatch_release(downSeen);
 	dispatch_release(began);
 	[super dealloc];
 }
@@ -266,6 +292,7 @@ static void stopWhenTheWriteSettles(int tenths) {
 - (void)mouseDown:(NSEvent *)event {
 	NSPoint at = [NSEvent mouseLocation];
 	say(@"the square got a mouse down at %.0f,%.0f (screen points, origin at the bottom left)", at.x, at.y);
+	dispatch_semaphore_signal(downSeen);
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -349,47 +376,105 @@ static void stopWhenTheWriteSettles(int tenths) {
 
 @end
 
-static void drive(dispatch_group_t group, dispatch_semaphore_t began, CGPoint start, CGPoint target, int steps, double holdSeconds) {
+static void stopSoon(void) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if (!sessionEnded) {
+			stopApplication();
+		}
+	});
+}
+
+static void releaseAtCursor(NSString *why) {
+	double x = 0;
+	double y = 0;
+	lanhopProbeCursor(&x, &y);
+	lanhopProbePostLeftMouse(LANHOP_PROBE_UP, x, y);
+	say(@"%@: posted a left mouse up at %.0f,%.0f and moved nothing", why, x, y);
+}
+
+static bool pauseUnlessStopping(useconds_t microseconds) {
+	const useconds_t slice = 20000;
+	for (useconds_t slept = 0; slept < microseconds; slept += slice) {
+		if (atomic_load(&driverShouldStop)) {
+			return false;
+		}
+		usleep(microseconds - slept < slice ? microseconds - slept : slice);
+	}
+	return !atomic_load(&driverShouldStop);
+}
+
+static void drive(dispatch_group_t group, dispatch_semaphore_t downSeen, dispatch_semaphore_t began, CGPoint start, CGPoint target, int steps, double holdSeconds) {
 	dispatch_group_async(group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-		usleep(700000);
+		if (!pauseUnlessStopping(700000)) {
+			return;
+		}
+		double x = 0;
+		double y = 0;
+		lanhopProbeCursor(&x, &y);
+		if (fabs(x - start.x) > cursorTolerance || fabs(y - start.y) > cursorTolerance) {
+			say(@"the cursor moved from %.0f,%.0f to %.0f,%.0f before the posted mouse down, so nothing was posted", start.x, start.y, x, y);
+			stopSoon();
+			return;
+		}
 		say(@"posting a left mouse down at %.0f,%.0f (display points, origin at the top left)", start.x, start.y);
 		lanhopProbePostLeftMouse(LANHOP_PROBE_DOWN, start.x, start.y);
-		usleep(100000);
+		if (dispatch_semaphore_wait(downSeen, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) != 0) {
+			releaseAtCursor(@"the square did not get the posted mouse down within 1 s");
+			stopSoon();
+			return;
+		}
 		CGPoint at = start;
 		for (int i = 1; i <= 6; i++) {
+			if (!pauseUnlessStopping(i == 1 ? 100000 : 20000)) {
+				releaseAtCursor(@"the probe is stopping");
+				return;
+			}
 			at = CGPointMake(start.x + 3 * i, start.y);
 			lanhopProbePostLeftMouse(LANHOP_PROBE_DRAGGED, at.x, at.y);
-			usleep(20000);
 		}
-		say(@"posted 6 mouse dragged events of 3 points");
-		if (dispatch_semaphore_wait(began, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) == 0) {
-			say(@"moving to %.0f,%.0f in %d posted mouse dragged events", target.x, target.y, steps);
-		} else {
-			say(@"no drag session began within 2 s of the posted events; moving to %.0f,%.0f anyway", target.x, target.y);
+		say(@"posted 6 mouse dragged events of 3 points inside the square");
+		if (dispatch_semaphore_wait(began, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) {
+			releaseAtCursor(@"no drag session began within 2 s of the posted events");
+			stopSoon();
+			return;
 		}
+		say(@"moving to %.0f,%.0f in %d posted mouse dragged events", target.x, target.y, steps);
 		CGPoint from = at;
 		for (int i = 1; i <= steps; i++) {
+			if (!pauseUnlessStopping(20000)) {
+				releaseAtCursor(@"the probe is stopping");
+				return;
+			}
 			double share = (double)i / steps;
 			lanhopProbePostLeftMouse(LANHOP_PROBE_DRAGGED, from.x + (target.x - from.x) * share, from.y + (target.y - from.y) * share);
-			usleep(20000);
 		}
-		usleep((useconds_t)(holdSeconds * 1000000));
+		if (!pauseUnlessStopping((useconds_t)(holdSeconds * 1000000))) {
+			releaseAtCursor(@"the probe is stopping");
+			return;
+		}
 		say(@"posting a left mouse up at %.0f,%.0f", target.x, target.y);
 		lanhopProbePostLeftMouse(LANHOP_PROBE_UP, target.x, target.y);
 	});
 }
 
+static bool isRegularFile(NSString *path) {
+	NSDictionary<NSFileAttributeKey, id> *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+	return attributes != nil && [[attributes fileType] isEqualToString:NSFileTypeRegular];
+}
+
 int lanhopProbePromise(const char *path, double toX, double toY, bool manual, int steps, double holdSeconds, double timeoutSeconds) {
 	@autoreleasepool {
 		NSString *file = [NSString stringWithUTF8String:path];
-		if (file == nil || ![[NSFileManager defaultManager] isReadableFileAtPath:file]) {
-			say(@"cannot read %s", path);
+		if (file == nil || !isRegularFile(file) || ![[NSFileManager defaultManager] isReadableFileAtPath:file]) {
+			say(@"%s is not a regular file that can be read", path);
 			return LANHOP_PROBE_NO_FILE;
 		}
 		endOperation = LANHOP_PROBE_NO_SESSION;
 		sessionEnded = NO;
 		writeAsked = NO;
 		writeDone = NO;
+		atomic_store(&driverShouldStop, false);
+		dispatch_semaphore_t downSeen = dispatch_semaphore_create(0);
 		dispatch_semaphore_t began = dispatch_semaphore_create(0);
 		dispatch_group_t driving = dispatch_group_create();
 
@@ -401,7 +486,7 @@ int lanhopProbePromise(const char *path, double toX, double toY, bool manual, in
 		NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
 		[window setReleasedWhenClosed:NO];
 		[window setLevel:NSStatusWindowLevel];
-		LanhopProbeSquare *square = [[LanhopProbeSquare alloc] initWithFrame:NSMakeRect(0, 0, squareSide, squareSide) path:file began:began];
+		LanhopProbeSquare *square = [[LanhopProbeSquare alloc] initWithFrame:NSMakeRect(0, 0, squareSide, squareSide) path:file downSeen:downSeen began:began];
 		[window setContentView:square];
 		[window orderFrontRegardless];
 		if (@available(macOS 14.0, *)) {
@@ -417,25 +502,31 @@ int lanhopProbePromise(const char *path, double toX, double toY, bool manual, in
 			double x = 0;
 			double y = 0;
 			lanhopProbeCursor(&x, &y);
-			drive(driving, began, CGPointMake(x, y), CGPointMake(toX, toY), steps, holdSeconds);
+			drive(driving, downSeen, began, CGPointMake(x, y), CGPointMake(toX, toY), steps, holdSeconds);
 		}
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			if (!sessionEnded) {
 				say(@"no drag session ended within %.0f s; stopping", timeoutSeconds);
+				atomic_store(&driverShouldStop, true);
 				stopApplication();
 			}
 		});
 
 		[NSApp run];
 
-		if (dispatch_group_wait(driving, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)) != 0) {
-			say(@"the posted events were still running 15 s after the end");
+		atomic_store(&driverShouldStop, true);
+		if (dispatch_group_wait(driving, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+			say(@"the posted events were still running 5 s after the end");
+		}
+		if (lanhopProbeReleasePendingDown()) {
+			say(@"posted the pending left mouse up at the cursor");
 		}
 		[window orderOut:nil];
 		[window close];
 		[window release];
 		[square release];
 		dispatch_release(driving);
+		dispatch_release(downSeen);
 		dispatch_release(began);
 		return (int)endOperation;
 	}

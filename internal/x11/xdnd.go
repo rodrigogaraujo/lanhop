@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ const (
 	eventClientMessage = 33
 
 	xdndVersion       = 5
+	dragButton        = 1
 	xdndOldestVersion = 3
 	dragListLimit     = 64 << 10
 	targetSearchDepth = 32
@@ -35,6 +37,8 @@ var (
 	ErrDragInParts  = errors.New("x11: the owner of the drag sent that format in parts (INCR)")
 	ErrDragNotOwned = errors.New("x11: the X server did not let lanhop own XdndSelection")
 	ErrNoServerTime = errors.New("x11: the X server did not tell its time")
+
+	ErrFirstButtonNotHeld = errors.New("x11: the X server does not report button 1 held")
 )
 
 type dragAtoms struct {
@@ -288,6 +292,13 @@ func (d *Drags) EndDragAfter(ctx context.Context, wait time.Duration, seen func(
 	case <-timer.C:
 	case <-ctx.Done():
 		return change, ctx.Err()
+	}
+	state, err := d.Pointer()
+	if err != nil {
+		return change, err
+	}
+	if !slices.Contains(state.Held(), dragButton) {
+		return change, fmt.Errorf("%w (buttons held: %v)", ErrFirstButtonNotHeld, state.Held())
 	}
 	return change, end()
 }

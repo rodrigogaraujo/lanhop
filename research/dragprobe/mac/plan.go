@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +23,13 @@ const usage = `usage: open -n -W lanhop-dragprobe.app --args <watch|cancel|promi
   promise <file>   start a drag of a file promise from a small window, with posted events
 
 Every subcommand takes -log (default: ~/Library/Logs/lanhop-dragprobe.log).`
+
+const (
+	mostSteps   = 200
+	longestHold = 3 * time.Second
+	longestGap  = time.Second
+	longestWait = 10 * time.Second
+)
 
 const (
 	operationNone    = 0
@@ -136,6 +144,9 @@ func parseCommand(args []string, home string) (command, error) {
 		if c.every <= 0 {
 			return c, errors.New("-every must be above zero")
 		}
+		if c.gap < 0 || c.gap > longestGap || c.wait < 0 || c.wait > longestWait {
+			return c, fmt.Errorf("-gap must be between 0 and %v, and -wait between 0 and %v", longestGap, longestWait)
+		}
 		return c, nil
 	}
 	if len(positional) != 1 {
@@ -144,8 +155,11 @@ func parseCommand(args []string, home string) (command, error) {
 	if c.file, err = expandPath(positional[0], home); err != nil {
 		return c, err
 	}
-	if c.steps < 1 {
-		return c, errors.New("-steps must be at least 1")
+	if c.steps < 1 || c.steps > mostSteps {
+		return c, fmt.Errorf("-steps must be between 1 and %d", mostSteps)
+	}
+	if c.hold < 0 || c.hold > longestHold {
+		return c, fmt.Errorf("-hold must be between 0 and %v", longestHold)
 	}
 	if to != "" {
 		if c.to, err = parsePoint(to); err != nil {
@@ -159,6 +173,17 @@ func parseCommand(args []string, home string) (command, error) {
 		}
 	}
 	return c, nil
+}
+
+func regularFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (%s); promise drags one throwaway file, never a folder or a link", path, info.Mode().Type())
+	}
+	return nil
 }
 
 func dropTarget(start point, dx, dy float64, to *point, screens []rect) (point, bool) {

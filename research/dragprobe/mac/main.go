@@ -45,7 +45,7 @@ func main() {
 	}
 	c, err := parseCommand(os.Args[1:], home)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		reportCommandLine(c.logPath, home, err)
 		os.Exit(2)
 	}
 	logFile, err := openLog(c.logPath)
@@ -59,9 +59,23 @@ func main() {
 	printer.Say("%s", takeText(C.lanhopProbeIdentity()))
 	go stopOnSignal()
 	code := run(c)
+	releasePendingDown()
 	printer.Say("lanhop-dragprobe %s ended with exit code %d", c.name, code)
 	logFile.Close()
 	os.Exit(code)
+}
+
+func reportCommandLine(logPath, home string, problem error) {
+	fmt.Fprintln(os.Stderr, problem)
+	if !filepath.IsAbs(logPath) {
+		logPath = filepath.Join(home, "Library", "Logs", "lanhop-dragprobe.log")
+	}
+	logFile, err := openLog(logPath)
+	if err != nil {
+		return
+	}
+	defer logFile.Close()
+	cli.NewPrinter(logFile).Say("lanhop-dragprobe refused the arguments %q:\n%v", os.Args[1:], problem)
 }
 
 func openLog(path string) (*os.File, error) {
@@ -73,10 +87,17 @@ func openLog(path string) (*os.File, error) {
 
 func stopOnSignal() {
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	got := <-signals
+	releasePendingDown()
 	printer.Say("stopped by %v", got)
 	os.Exit(1)
+}
+
+func releasePendingDown() {
+	if bool(C.lanhopProbeReleasePendingDown()) {
+		printer.Say("posted the pending left mouse up at the cursor")
+	}
 }
 
 func run(c command) int {
@@ -221,6 +242,10 @@ func observeAfterCancel(c command, count int64) {
 }
 
 func promise(c command) int {
+	if err := regularFile(c.file); err != nil {
+		printer.Say("%v", err)
+		return 1
+	}
 	if !c.manual && !mayPost() {
 		return 1
 	}

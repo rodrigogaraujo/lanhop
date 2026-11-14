@@ -4,6 +4,7 @@ package x11
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -178,7 +179,7 @@ func TestATargetThatRefusesGetsXdndLeaveAndNoDrop(t *testing.T) {
 	if report.Dropped || report.Accepted || report.Outcome != "the target refused the drop" {
 		t.Errorf("report = %+v, want a refusal without a drop", report)
 	}
-	seen := target.messages()
+	seen := target.messagesOnceItSaw("XdndLeave")
 	if slices.Contains(seen, "XdndDrop") || len(seen) == 0 || seen[len(seen)-1] != "XdndLeave" {
 		t.Errorf("the target saw %v, want XdndLeave last and no XdndDrop", seen)
 	}
@@ -364,5 +365,95 @@ func TestAFilePathBecomesAnEscapedFileAddress(t *testing.T) {
 	}
 	if got := string(URIList([]string{"file:///a", "file:///b"})); got != "file:///a\r\nfile:///b\r\n" {
 		t.Errorf("URIList = %q", got)
+	}
+}
+
+func TestATargetThatChoosesMoveGetsXdndLeaveAndNoDrop(t *testing.T) {
+	display := startXvfb(t)
+	target := startXdndTarget(t, display, 100, 100, 200, 200, targetBehaviour{accept: true, finish: true, action: "XdndActionMove"})
+	source := openDragsOn(t, display)
+	input := startFakeInput(t, display)
+	input.moveTo(20, 20)
+
+	outcome := startDrop(t, source, DropOptions{URIs: []string{scratchFileURI(t)}})
+	input.press(1)
+	dragAlong(t, input, intoTheTarget()...)
+	input.release(1)
+	report := waitForDrop(t, outcome)
+
+	if report.Dropped || !report.Accepted || report.Action != "XdndActionMove" || !strings.Contains(report.Outcome, "XdndActionMove") {
+		t.Errorf("report = %+v, want no drop and the outcome naming XdndActionMove", report)
+	}
+	seen := target.messagesOnceItSaw("XdndLeave")
+	if slices.Contains(seen, "XdndDrop") || len(seen) == 0 || seen[len(seen)-1] != "XdndLeave" {
+		t.Errorf("the target saw %v, want XdndLeave last and no XdndDrop", seen)
+	}
+}
+
+func TestAWheelNotchDoesNotStartADrop(t *testing.T) {
+	display := startXvfb(t)
+	target := startXdndTarget(t, display, 100, 100, 200, 200, targetBehaviour{accept: true, finish: true})
+	source := openDragsOn(t, display)
+	input := startFakeInput(t, display)
+	input.moveTo(150, 150)
+
+	outcome := startDrop(t, source, DropOptions{URIs: []string{scratchFileURI(t)}})
+	input.press(4)
+	input.release(4)
+	input.press(5)
+	input.release(5)
+
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case got := <-outcome:
+		t.Fatalf("the wheel ended the drop: %+v, %v", got.report, got.err)
+	default:
+	}
+	if owner, err := source.Owner(); err != nil || owner != atomNone {
+		t.Errorf("after the wheel XdndSelection is owned by 0x%x, %v; want nobody", owner, err)
+	}
+	if seen := target.messages(); len(seen) != 0 {
+		t.Errorf("after the wheel the target saw %v, want nothing", seen)
+	}
+	input.moveTo(20, 20)
+	input.press(1)
+	input.release(1)
+	report := waitForDrop(t, outcome)
+	if report.Dropped || report.Outcome != "released over no window that takes XDND drops" {
+		t.Errorf("report = %+v, want the drag of button 1 to end over nothing", report)
+	}
+}
+
+func TestEndingADragSendsNothingWhenButtonOneIsNotHeld(t *testing.T) {
+	display := startXvfb(t)
+	source := openDragsOn(t, display)
+	canceller := openDragsOn(t, display)
+	if err := canceller.Watch(); err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	when, err := source.serverTime()
+	if err != nil {
+		t.Fatalf("serverTime: %v", err)
+	}
+	if err := source.offerDrag(URIList([]string{scratchFileURI(t)}), when); err != nil {
+		t.Fatalf("offerDrag: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ended := false
+	change, err := canceller.EndDragAfter(ctx, 50*time.Millisecond, nil, func() error {
+		ended = true
+		return nil
+	})
+
+	if !errors.Is(err, ErrFirstButtonNotHeld) {
+		t.Errorf("EndDragAfter: error = %v, want %v", err, ErrFirstButtonNotHeld)
+	}
+	if ended {
+		t.Error("the keys and the release were sent while no button was held")
+	}
+	if change.Owner != source.Window() {
+		t.Errorf("the drag seen was owned by 0x%x, want 0x%x", change.Owner, source.Window())
 	}
 }
