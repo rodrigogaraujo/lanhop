@@ -51,14 +51,14 @@ func (c *Central) dragOn(l *link, files clipboard.FileCopy, dock edge.Side) {
 	if machine == nil || !c.takesDraggedFilesOf(machine) {
 		return
 	}
-	machine.dragging, machine.drag = true, files
+	machine.dragging, machine.drag, machine.dragLeft = true, files, false
 	if c.sideDragStarted != nil {
 		c.sideDragStarted(SideDrag{Origin: l.name, Files: files.FilesAndFolders, Dock: dock})
 	}
 }
 
 func (c *Central) dragGoneOn(l *link) {
-	if machine := c.sides[l]; machine != nil {
+	if machine := c.sides[l]; machine != nil && !machine.dragLeft {
 		c.forgetDragOn(l, machine)
 	}
 }
@@ -67,7 +67,7 @@ func (c *Central) forgetDragOn(l *link, machine *sideMachine) {
 	if !machine.dragging {
 		return
 	}
-	machine.dragging, machine.drag = false, clipboard.FileCopy{}
+	machine.dragging, machine.drag, machine.dragLeft = false, clipboard.FileCopy{}, false
 	if c.sideDragEnded != nil {
 		c.sideDragEnded(l.name)
 	}

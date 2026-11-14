@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 )
@@ -26,6 +27,7 @@ type sideMachine struct {
 	answers  []*answerDue
 	dragging bool
 	drag     clipboard.FileCopy
+	dragLeft bool
 }
 
 type answerDue struct {
@@ -67,6 +69,7 @@ type Central struct {
 
 	sideDragStarted func(SideDrag)
 	sideDragEnded   func(origin string)
+	sideDock        func(machine string, dock edge.Side)
 }
 
 func NewCentral(config Config) *Central {
@@ -254,7 +257,11 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 		c.tell(func() { c.dataStopFrom(l, wire) })
 	case event.ControlDragFiles:
 		if l.dragDescribed(frame.Value) {
-			c.tell(func() { c.dragGoneOn(l) })
+			_, dock := event.SplitDragFiles(frame.Value)
+			c.tell(func() {
+				c.dragGoneOn(l)
+				c.dockOn(l, dockEdgeIn(dock))
+			})
 		}
 	case event.ControlDragFilesSize:
 		if files, dock, described := l.dragSized(frame.Value); described {
