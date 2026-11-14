@@ -5,6 +5,9 @@ package macos
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -184,4 +187,338 @@ func TestTheGeneralPasteboardGivesAMarkWithoutReadingIt(t *testing.T) {
 	if mark := GeneralPasteboard().Mark(); mark < 0 {
 		t.Errorf("Mark of the general pasteboard = %d", mark)
 	}
+}
+
+func TestFilesWrittenToThePasteboardReadBackAsTheSamePathsInOrder(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "a folder")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{
+		filepath.Join(dir, "a name with spaces.txt"),
+		filepath.Join(dir, "olá, ação.pdf"),
+		filepath.Join(dir, "decomposed ação.pdf"),
+		filepath.Join(dir, "🙂👍🏽 日本語.png"),
+		filepath.Join(dir, "50% off.txt"),
+		filepath.Join(dir, "not%20a space.txt"),
+		filepath.Join(dir, "#1 report.txt"),
+		folder,
+	}
+	p := pasteboardOfThisTest(t)
+	if _, err := p.WriteFiles(paths); err != nil {
+		t.Fatalf("WriteFiles: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil {
+		t.Fatalf("ReadFiles: %v", err)
+	}
+	if !slices.Equal(got, paths) {
+		t.Errorf("ReadFiles = %+q, want %+q", got, paths)
+	}
+}
+
+func TestAFileReferenceURLReadsBackAsThePathOfTheFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a referenced file.txt")
+	if err := os.WriteFile(file, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reference, ok := fileReferenceURL(file)
+	if !ok || !strings.HasPrefix(reference, "file:///.file/id=") {
+		t.Fatalf("file reference URL of %s = %q, want one that starts with file:///.file/id=", file, reference)
+	}
+	p := pasteboardOfThisTest(t)
+	if err := p.writeTyped("public.file-url", reference, nil); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil {
+		t.Fatalf("ReadFiles: %v", err)
+	}
+	if len(got) != 1 || strings.HasPrefix(got[0], "/.file/") || !sameFile(got[0], file) {
+		t.Errorf("ReadFiles = %q, want the path of %s", got, file)
+	}
+}
+
+func TestAFileReferenceURLToAFileThatIsGoneIsNotFiles(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a removed file.txt")
+	if err := os.WriteFile(file, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reference, ok := fileReferenceURL(file)
+	if !ok {
+		t.Fatalf("no file reference URL for %s", file)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	p := pasteboardOfThisTest(t)
+	if err := p.writeTyped("public.file-url", reference, nil); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if !errors.Is(err, clipboard.ErrNotFiles) || got != nil {
+		t.Errorf("ReadFiles = %q, %v, want nothing and %v", got, err, clipboard.ErrNotFiles)
+	}
+}
+
+func TestACopyThatIsNotAListOfLocalFilesIsNotFiles(t *testing.T) {
+	copies := map[string]func(Pasteboard) error{
+		"a text copy that names a file": func(p Pasteboard) error {
+			_, err := p.Write("file:///tmp/report.pdf")
+			return err
+		},
+		"a web address copied as a URL": func(p Pasteboard) error {
+			address := "https://example.com/report.pdf"
+			return p.writeTyped("public.url", address, &address)
+		},
+		"an empty pasteboard": func(Pasteboard) error {
+			return nil
+		},
+		"a file and a web address copied as URLs": func(p Pasteboard) error {
+			return p.writeURLs("file:///tmp/report.pdf", "https://example.com/notes.txt")
+		},
+		"a file on another host": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file://server/share/report.pdf", nil)
+		},
+		"a user name before the host": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file://someone@localhost/tmp/report.pdf", nil)
+		},
+		"a query after the path": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/report.pdf?x=1", nil)
+		},
+		"a fragment after the path": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/report.pdf#part", nil)
+		},
+		"a NUL byte in the path": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/nul%00byte.pdf", nil)
+		},
+		"an encoded slash inside a name": func(p Pasteboard) error {
+			return p.writeTyped("public.file-url", "file:///tmp/a%2fb.pdf", nil)
+		},
+	}
+	for name, copyOnto := range copies {
+		t.Run(name, func(t *testing.T) {
+			p := pasteboardOfThisTest(t)
+			if err := copyOnto(p); err != nil {
+				t.Fatalf("copy: %v", err)
+			}
+
+			got, err := p.ReadFiles()
+
+			if !errors.Is(err, clipboard.ErrNotFiles) || got != nil {
+				t.Errorf("ReadFiles = %q, %v, want nothing and %v", got, err, clipboard.ErrNotFiles)
+			}
+		})
+	}
+}
+
+func TestFileAddressesCopiedAsURLsReadAsTheirPaths(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if err := p.writeURLs("file:///tmp/report.pdf", "file:///tmp/notes.txt"); err != nil {
+		t.Fatalf("writeURLs: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil || !slices.Equal(got, []string{"/tmp/report.pdf", "/tmp/notes.txt"}) {
+		t.Errorf("ReadFiles = %q, %v, want both files and no error", got, err)
+	}
+}
+
+func TestAFileURLOnLocalhostReadsAsTheLocalPath(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if err := p.writeTyped("public.file-url", "file://localhost/tmp/report.pdf", nil); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil || !slices.Equal(got, []string{"/tmp/report.pdf"}) {
+		t.Errorf("ReadFiles = %q, %v, want the local path and no error", got, err)
+	}
+}
+
+func TestACopyOfFilesWithTheirNamesAsTextReadsAsTheFiles(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	name := "report.pdf"
+	if err := p.writeTyped("public.file-url", "file:///tmp/report.pdf", &name); err != nil {
+		t.Fatalf("writeTyped: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if err != nil || !slices.Equal(got, []string{"/tmp/report.pdf"}) {
+		t.Errorf("ReadFiles = %q, %v, want the file and no error", got, err)
+	}
+}
+
+func TestFilesThatAPasswordManagerMarkedPrivateAreNotRead(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if _, err := p.writeFiles([]string{"/tmp/secret.txt"}, true); err != nil {
+		t.Fatalf("writeFiles: %v", err)
+	}
+
+	got, err := p.ReadFiles()
+
+	if !errors.Is(err, clipboard.ErrPrivate) || got != nil {
+		t.Errorf("ReadFiles = %q, %v, want nothing and %v", got, err, clipboard.ErrPrivate)
+	}
+}
+
+func TestTenThousandFilesAndFoldersAreReadAndOneMoreIsTooMany(t *testing.T) {
+	paths := make([]string, clipboard.FilesAndFoldersLimit+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("/tmp/lanhop limit/file %05d.txt", i)
+	}
+	atTheLimit := paths[:clipboard.FilesAndFoldersLimit]
+
+	t.Run("10 000", func(t *testing.T) {
+		p := pasteboardOfThisTest(t)
+		start := time.Now()
+		if _, err := p.WriteFiles(atTheLimit); err != nil {
+			t.Fatalf("WriteFiles: %v", err)
+		}
+		wrote := time.Since(start)
+
+		got, err := p.ReadFiles()
+
+		t.Logf("10 000 files: write %v, read %v", wrote, time.Since(start)-wrote)
+		if err != nil {
+			t.Fatalf("ReadFiles: %v", err)
+		}
+		if !slices.Equal(got, atTheLimit) {
+			t.Errorf("ReadFiles gave %d paths, want the %d written, in order", len(got), len(atTheLimit))
+		}
+	})
+
+	t.Run("10 001", func(t *testing.T) {
+		p := pasteboardOfThisTest(t)
+		start := time.Now()
+		if _, err := p.WriteFiles(paths); err != nil {
+			t.Fatalf("WriteFiles: %v", err)
+		}
+		wrote := time.Since(start)
+
+		got, err := p.ReadFiles()
+
+		t.Logf("10 001 files: write %v, read %v", wrote, time.Since(start)-wrote)
+		if !errors.Is(err, clipboard.ErrTooManyFiles) || got != nil {
+			t.Errorf("ReadFiles gave %d paths and %v, want nothing and %v", len(got), err, clipboard.ErrTooManyFiles)
+		}
+	})
+}
+
+func TestAFileCopyWrittenByLanhopHoldsFileURLsAndIsNotText(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	if _, err := p.WriteFiles([]string{"/tmp/report.pdf", "/tmp/photos"}); err != nil {
+		t.Fatalf("WriteFiles: %v", err)
+	}
+
+	types := p.types()
+	text, err := p.Read()
+
+	t.Logf("types after WriteFiles: %q", types)
+	if !slices.Contains(types, "public.file-url") {
+		t.Errorf("types = %q, want public.file-url among them", types)
+	}
+	for _, plain := range []string{"public.utf8-plain-text", "public.plain-text", "NSStringPboardType"} {
+		if slices.Contains(types, plain) {
+			t.Errorf("types = %q, want no %s among them", types, plain)
+		}
+	}
+	if !errors.Is(err, clipboard.ErrNotText) || text != "" {
+		t.Errorf("Read = %q, %v, want nothing and %v", text, err, clipboard.ErrNotText)
+	}
+}
+
+func TestAFolderIsWrittenAsAFolderURLAndAFileIsNot(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "a folder")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "a file.txt")
+	if err := os.WriteFile(file, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notThereYet := filepath.Join(dir, "not there yet.txt")
+	p := pasteboardOfThisTest(t)
+	if _, err := p.WriteFiles([]string{folder, file, notThereYet}); err != nil {
+		t.Fatalf("WriteFiles: %v", err)
+	}
+
+	urls := p.fileURLs()
+
+	if len(urls) != 3 {
+		t.Fatalf("file URLs = %q, want one for each of the 3 paths", urls)
+	}
+	for i, isFolder := range []bool{true, false, false} {
+		if !strings.HasPrefix(urls[i], "file:///") || strings.HasSuffix(urls[i], "/") != isFolder {
+			t.Errorf("file URL %d = %q, want a file URL that ends in a slash only for the folder", i, urls[i])
+		}
+	}
+}
+
+func TestWritingFilesMovesTheMark(t *testing.T) {
+	p := pasteboardOfThisTest(t)
+	before := p.Mark()
+
+	mark, err := p.WriteFiles([]string{"/tmp/report.pdf"})
+
+	if err != nil {
+		t.Fatalf("WriteFiles: %v", err)
+	}
+	if mark == before {
+		t.Errorf("the mark stayed at %d after writing files", before)
+	}
+	if got := p.Mark(); got != mark {
+		t.Errorf("Mark = %d, want the %d that WriteFiles returned", got, mark)
+	}
+}
+
+func TestNoPathsOrABadPathIsRefusedAndLeavesThePasteboardAlone(t *testing.T) {
+	cases := map[string]struct {
+		paths []string
+		want  error
+	}{
+		"no list":                {nil, clipboard.ErrEmpty},
+		"an empty list":          {[]string{}, clipboard.ErrEmpty},
+		"a relative path":        {[]string{"/tmp/report.pdf", "photos/beach.jpg"}, ErrNotAbsolute},
+		"an empty path":          {[]string{""}, ErrNotAbsolute},
+		"a path with a NUL byte": {[]string{"/tmp/report.pdf", "/tmp/nul\x00byte.pdf"}, ErrNULInPath},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := pasteboardOfThisTest(t)
+			if _, err := p.Write("kept"); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			before := p.Mark()
+
+			_, err := p.WriteFiles(c.paths)
+
+			if !errors.Is(err, c.want) {
+				t.Errorf("WriteFiles(%q): error = %v, want %v", c.paths, err, c.want)
+			}
+			if got := p.Mark(); got != before {
+				t.Errorf("the mark moved from %d to %d", before, got)
+			}
+			if text, err := p.Read(); err != nil || text != "kept" {
+				t.Errorf("Read = %q, %v, want the text that was there", text, err)
+			}
+		})
+	}
+}
+
+func sameFile(a, b string) bool {
+	infoA, errA := os.Stat(a)
+	infoB, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
 }
