@@ -313,7 +313,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	if closeDrops != nil {
 		defer closeDrops()
 	}
-	drags := newDragsOfTheCentral(own, drops, readDock, endTheDragHere(done, capture, stdout), stdout)
+	drags := newDragsOfTheCentral(own, drops, endTheDragHere(done, capture, stdout), stdout)
 	defer shareTheClipboard(done, machine, directory, listener.AwaitData, announced, followerOfTheCentral(report.seatsChanged), drags, stdout)()
 	defer drags.watch(done)()
 	go func() {

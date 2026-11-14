@@ -67,6 +67,10 @@ func (f *fakeCentralDrops) DragCancelled() {
 	f.calls.note("central: drag cancelled")
 }
 
+func (f *fakeCentralDrops) DragOver() {
+	f.calls.note("central: drag over")
+}
+
 func (f *fakeCentralDrops) DragLeaves(origin string) error {
 	f.calls.note("central: %s is told its drag leaves", origin)
 	return f.leaves
@@ -98,13 +102,11 @@ type dragsHarness struct {
 	central *fakeCentralDrops
 	output  *screen
 	endFail atomic.Pointer[error]
-	dockAt  atomic.Int32
 }
 
 func newDragsHarness() *dragsHarness {
 	calls := &dragCalls{}
 	h := &dragsHarness{calls: calls, central: &fakeCentralDrops{calls: calls}, output: &screen{}}
-	h.dockAt.Store(int32(edge.Bottom))
 	endHere := func() error {
 		calls.note(sourceDragEndedHere)
 		if failure := h.endFail.Load(); failure != nil {
@@ -112,8 +114,7 @@ func newDragsHarness() *dragsHarness {
 		}
 		return nil
 	}
-	dock := func() edge.Side { return edge.Side(h.dockAt.Load()) }
-	h.dragsOfTheCentral = newDragsOfTheCentral(theCentral, nil, dock, endHere, h.output)
+	h.dragsOfTheCentral = newDragsOfTheCentral(theCentral, nil, endHere, h.output)
 	h.dragsOfTheCentral.central = h.central
 	h.dragsOfTheCentral.machine = fakeSharerDrags{calls: calls}
 	h.dragsOfTheCentral.reset = func() { calls.note(localDragsReset) }
@@ -189,7 +190,7 @@ func TestADragThatCannotBeEndedOnTheCentralCrossesNoFurther(t *testing.T) {
 	leaving := crossingOf(theCentral, theCentral, "desk")
 
 	h.entered(leaving)
-	h.localDrag(localDrag{})
+	h.DragGone()
 
 	h.expectCalls(t, "a drag that could not be ended here",
 		sourceDragEndedHere,
@@ -280,8 +281,8 @@ func TestEveryPressAndReleaseOfTheLeftButtonResetsTheWatchOfDrags(t *testing.T) 
 func TestADragOnTheCentralIsToldToTheClipboardAndTheSharer(t *testing.T) {
 	h := newDragsHarness()
 
-	h.localDrag(localDrag{Started: true, Paths: []string{"/a", "/b"}})
-	h.localDrag(localDrag{})
+	h.DragSeen([]string{"/a", "/b"}, edge.Bottom)
+	h.DragGone()
 	h.expectCalls(t, "a drag that started and ended on the central",
 		`central: drag seen ["/a" "/b"]`,
 		"sharer: drag started {Origin:studio Files:2 Dock:bottom}",
@@ -289,24 +290,18 @@ func TestADragOnTheCentralIsToldToTheClipboardAndTheSharer(t *testing.T) {
 		"central: drag gone",
 	)
 
-	h.localDrag(localDrag{Started: true, Paths: []string{"/a"}})
+	h.DragSeen([]string{"/a"}, 0)
 	h.entered(crossingOf(theCentral, theCentral, "desk"))
-	h.localDrag(localDrag{})
-	h.expectCalls(t, "a drag that left the central",
+	h.DragGone()
+	h.dragEnded(sharer.Drag{Origin: theCentral, Files: 1})
+	h.expectCalls(t, "a drag that left the central and was dropped",
 		`central: drag seen ["/a"]`,
-		"sharer: drag started {Origin:studio Files:1 Dock:bottom}",
+		"sharer: drag started {Origin:studio Files:1 Dock:unknown}",
 		sourceDragEndedHere,
 		"central: drag crossed from studio to desk",
 		"sharer: the source drag ended on studio",
-	)
-
-	h.localDrag(localDrag{Started: true, Paths: []string{"/c"}})
-	h.localDrag(localDrag{})
-	h.expectCalls(t, "the next drag, which stayed on the central",
-		`central: drag seen ["/c"]`,
-		"sharer: drag started {Origin:studio Files:1 Dock:bottom}",
-		"sharer: the source drag ended on studio",
 		"central: drag gone",
+		"central: drag over",
 	)
 }
 
@@ -328,67 +323,44 @@ func TestTheDragsOfSideMachinesAndTheirDocksReachTheSharer(t *testing.T) {
 	)
 }
 
-func TestTheDockOfTheCentralIsToldAtOnceAndKeptFresh(t *testing.T) {
+func TestTheDockOfTheCentralIsToldOnlyWhenItIsKnown(t *testing.T) {
 	h := newDragsHarness()
-	done, stop := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		h.keepTheDockFresh(done, time.Millisecond)
-	}()
-	defer func() {
-		stop()
-		<-stopped
-	}()
 
-	waitForCall(t, h.calls, "sharer: the dock of studio is at bottom")
-	h.dockAt.Store(0)
-	time.Sleep(20 * time.Millisecond)
-	h.calls.take()
-	time.Sleep(20 * time.Millisecond)
-	if got := h.calls.take(); len(got) > 0 {
-		t.Errorf("a dock that cannot be read was told: %q", got)
-	}
-	h.dockAt.Store(int32(edge.Left))
-	waitForCall(t, h.calls, "sharer: the dock of studio is at left")
-}
+	h.DockIs(edge.Bottom)
+	h.DockIs(0)
+	h.DockIs(edge.Top)
 
-func TestTheDragsOfTheCentralAreFollowedUntilTheirWatchEnds(t *testing.T) {
-	h := newDragsHarness()
-	drags := make(chan localDrag)
-	followed := make(chan struct{})
-	go func() {
-		defer close(followed)
-		h.follow(context.Background(), drags)
-	}()
-
-	drags <- localDrag{Started: true, Paths: []string{"/a"}}
-	drags <- localDrag{}
-	close(drags)
-	await(t, followed)
-
-	h.expectCalls(t, "a drag seen by the watch",
-		`central: drag seen ["/a"]`,
-		"sharer: drag started {Origin:studio Files:1 Dock:bottom}",
-		"sharer: the source drag ended on studio",
-		"central: drag gone",
+	h.expectCalls(t, "the docks read on the central",
+		"sharer: the dock of studio is at bottom",
+		"sharer: the dock of studio is at top",
 	)
 }
 
-func TestNoDragOfTheCentralIsWatchedWithoutAClipboardToCarryIt(t *testing.T) {
-	drags := newDragsOfTheCentral(theCentral, nil, func() edge.Side { return 0 }, func() error { return nil }, &screen{})
+func TestTheWatchOfDragsOnTheCentralFollowsWhetherDragsAreAllowed(t *testing.T) {
+	var allowed atomic.Bool
+	told := make(chan bool, 64)
+	done, stop := context.WithCancel(context.Background())
+	followed := make(chan struct{})
+	go func() {
+		defer close(followed)
+		followTheDragSwitch(done, allowed.Load, func(on bool) { told <- on }, time.Millisecond)
+	}()
 
-	drags.watch(context.Background())()
-}
-
-func waitForCall(t *testing.T, calls *dragCalls, wanted string) {
-	t.Helper()
-	var seen []string
-	for deadline := time.Now().Add(testPatience); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		seen = append(seen, calls.take()...)
-		if slices.Contains(seen, wanted) {
-			return
+	if on := await(t, told); on {
+		t.Error("the watch was wanted while drags were not allowed")
+	}
+	allowed.Store(true)
+	for deadline := time.Now().Add(testPatience); !await(t, told); {
+		if time.Now().After(deadline) {
+			t.Fatal("the watch was never wanted once drags were allowed")
 		}
 	}
-	t.Fatalf("never saw %q, saw %q", wanted, seen)
+	stop()
+	await(t, followed)
+}
+
+func TestNoDragOfTheCentralIsWatchedWithoutAClipboardToCarryIt(t *testing.T) {
+	drags := newDragsOfTheCentral(theCentral, nil, func() error { return nil }, &screen{})
+
+	drags.watch(context.Background())()
 }
