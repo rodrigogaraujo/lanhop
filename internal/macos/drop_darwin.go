@@ -34,10 +34,9 @@ var (
 )
 
 var (
-	ErrDropRunning    = errors.New("macos: a drag session of lanhop is still running")
-	ErrCannotPost     = errors.New("macos: this program is not allowed to post the mouse events that start a drag")
-	ErrNoDropWindow   = errors.New("macos: AppKit gave lanhop no window to start the drag from")
-	ErrMainThreadLate = errors.New("macos: the main thread did not answer in time")
+	ErrDropRunning  = errors.New("macos: a drag session of lanhop is still running")
+	ErrCannotPost   = errors.New("macos: this program is not allowed to post the mouse events that start a drag")
+	ErrNoDropWindow = errors.New("macos: AppKit gave lanhop no window to start the drag from")
 )
 
 type Drop struct {
@@ -231,54 +230,16 @@ func (d *Drop) Close() {
 }
 
 func (d *Drop) endTheSession() {
-	select {
-	case <-d.ended.done:
-		if d.buttonDownAtEnd() {
-			d.button.releaseHere()
-		}
-		return
-	default:
-	}
-	if !d.button.pending() {
-		return
-	}
-	if d.window == nil {
-		d.button.releaseHere()
-		log.Printf("macos: the drag had no window of lanhop, so its button was released where the cursor is")
-	} else {
-		d.releaseOverTheWindow()
-	}
-	timer := time.NewTimer(dropEndLimit)
-	defer timer.Stop()
-	select {
-	case <-d.ended.done:
-	case <-timer.C:
-	}
-}
-
-func (d *Drop) releaseOverTheWindow() {
-	if err := d.window.refuseDrops(); err != nil {
-		log.Printf("macos: refusing drops before the release: %v", err)
-	}
-	deadline := time.Now().Add(d.releaseLimit)
-	for {
-		at := d.button.screen.Cursor()
-		taken, err := d.window.takeTheMouseAt(at)
-		if taken {
-			d.button.releaseAt(at)
-			return
-		}
-		if !time.Now().Before(deadline) {
-			reason := "another window takes the mouse there"
-			if err != nil {
-				reason = err.Error()
-			}
-			log.Printf("macos: the window of lanhop did not take the mouse under the cursor (%s), so the button of the drag was released there with drops refused", reason)
-			d.button.releaseAt(at)
-			return
-		}
-		time.Sleep(dropReleasePoll)
-	}
+	sessionEnd{
+		button:       d.button,
+		window:       d.window,
+		ended:        d.ended.done,
+		downAtEnd:    d.buttonDownAtEnd,
+		releaseLimit: d.releaseLimit,
+		releasePoll:  dropReleasePoll,
+		endLimit:     dropEndLimit,
+		logf:         log.Printf,
+	}.run()
 }
 
 func (d *Drop) buttonDownAtEnd() bool {

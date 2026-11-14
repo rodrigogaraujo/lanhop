@@ -28,6 +28,7 @@ static const NSInteger concurrentWrites = 4;
 static const CGFloat nearlyClear = 0.01;
 static const NSTimeInterval abandonAfterSeconds = 10;
 static const NSTimeInterval quitBackstopSeconds = 15;
+static const int hungShutdownExitCode = 1;
 static const double mainThreadLimitSeconds = 2;
 
 static atomic_bool exitAsked;
@@ -75,7 +76,7 @@ static void performOnMainThread(void (^work)(void)) {
 }
 
 - (void)answerTheQuit {
-	[NSApp replyToApplicationShouldTerminate:YES];
+	lanhopExitNow(hungShutdownExitCode);
 }
 
 @end
@@ -202,19 +203,23 @@ static void giveBackActivation(NSRunningApplication *previous) {
 	[previous activateWithOptions:0];
 }
 
-static BOOL onScreen(CGWindowID own) {
+static int placement(CGWindowID own, CGPoint at) {
 	CFArrayRef listed = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, own);
 	if (listed == NULL) {
-		return NO;
+		return LANHOP_DROP_WINDOW_NOT_SHOWN;
 	}
-	BOOL shown = NO;
+	int state = LANHOP_DROP_WINDOW_NOT_SHOWN;
 	for (NSDictionary *info in (NSArray *)listed) {
-		if ([[info objectForKey:(id)kCGWindowNumber] unsignedIntValue] == own) {
-			shown = [[info objectForKey:(id)kCGWindowIsOnscreen] boolValue];
+		if ([[info objectForKey:(id)kCGWindowNumber] unsignedIntValue] != own || ![[info objectForKey:(id)kCGWindowIsOnscreen] boolValue]) {
+			continue;
 		}
+		CGRect bounds;
+		CFDictionaryRef bounding = (CFDictionaryRef)[info objectForKey:(id)kCGWindowBounds];
+		BOOL around = bounding != NULL && CGRectMakeWithDictionaryRepresentation(bounding, &bounds) && CGRectContainsPoint(bounds, at);
+		state = around ? LANHOP_DROP_WINDOW_READY : LANHOP_DROP_WINDOW_MISSES_THE_CURSOR;
 	}
 	CFRelease(listed);
-	return shown;
+	return state;
 }
 
 static NSPoint onTheScreens(CGPoint at) {
@@ -493,8 +498,12 @@ static int stateOf(LanhopDropSource *source) {
 		[source->window displayIfNeeded];
 		source->flushed = YES;
 	}
-	if (source->windowNumber == 0 || !onScreen(source->windowNumber)) {
+	if (source->windowNumber == 0) {
 		return LANHOP_DROP_WINDOW_NOT_SHOWN;
+	}
+	int placed = placement(source->windowNumber, source->home);
+	if (placed != LANHOP_DROP_WINDOW_READY) {
+		return placed;
 	}
 	NSInteger taking = windowTakingTheMouseAt(source->home);
 	if (taking == [source->window windowNumber]) {
@@ -511,7 +520,9 @@ static int moveUnder(LanhopDropSource *source, CGPoint at) {
 	NSRect frame = [source->window frame];
 	[source->window setFrameOrigin:NSMakePoint(cursor.x - NSWidth(frame) / 2, cursor.y - NSHeight(frame) / 2)];
 	[source->window displayIfNeeded];
-	return windowTakingTheMouseAt(at) == [source->window windowNumber] ? LANHOP_DROP_TAKES_THE_MOUSE : LANHOP_DROP_MISSES_THE_MOUSE;
+	BOOL placed = placement(source->windowNumber, at) == LANHOP_DROP_WINDOW_READY;
+	BOOL taken = windowTakingTheMouseAt(at) == [source->window windowNumber];
+	return placed && taken ? LANHOP_DROP_TAKES_THE_MOUSE : LANHOP_DROP_MISSES_THE_MOUSE;
 }
 
 int lanhopDropWindowState(void *drop) {

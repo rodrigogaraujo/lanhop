@@ -49,7 +49,9 @@ func openTheDropWindowThenQuit() int {
 		fmt.Println("no display")
 		return 1
 	}
-	home := Point{X: math.Round(displays[0].X + displays[0].Width/2), Y: math.Round(displays[0].Y + displays[0].Height/2)}
+	main := displays[0]
+	home := Point{X: math.Round(main.X + main.Width/3), Y: math.Round(main.Y + main.Height/4)}
+	elsewhere := Point{X: math.Round(main.X + main.Width*2/3), Y: math.Round(main.Y + main.Height*3/5)}
 	window, err := openDropWindow(0, []PromisedFile{{Name: "report.pdf"}}, home)
 	if err != nil {
 		fmt.Println(err)
@@ -59,9 +61,11 @@ func openTheDropWindowThenQuit() int {
 	for deadline := time.Now().Add(5 * time.Second); state != windowReady && time.Now().Before(deadline); state = window.state() {
 		time.Sleep(20 * time.Millisecond)
 	}
-	taken, _ := window.takeTheMouseAt(home)
-	err = window.close()
-	fmt.Printf("window at %+v: state %d, takes the mouse there %v, close %v\n", home, state, taken, err)
+	taken, err := window.takeTheMouseAt(elsewhere)
+	if err == nil {
+		err = window.close()
+	}
+	fmt.Printf("window opened at %+v: state %d; moved to %+v: takes the mouse there %v; close %v\n", home, state, elsewhere, taken, err)
 	if state != windowReady || !taken || err != nil {
 		return 1
 	}

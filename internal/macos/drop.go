@@ -141,21 +141,24 @@ func planDrag(cursor Point, displays []Rect) dragPlan {
 	return dragPlan{start: cursor, steps: steps}
 }
 
-type mousePoster interface {
+const macOSEscape uint16 = 0x35
+
+type dragScreen interface {
 	PostMouse(MouseEvent)
+	PostKey(KeyPress)
 	Cursor() Point
 }
 
 type heldDown struct {
 	mu     sync.Mutex
-	screen mousePoster
+	screen dragScreen
 	home   Point
 	at     Point
 	down   bool
 	moved  bool
 }
 
-func newHeldDown(screen mousePoster, home Point) *heldDown {
+func newHeldDown(screen dragScreen, home Point) *heldDown {
 	return &heldDown{screen: screen, home: home, at: home}
 }
 
@@ -216,6 +219,31 @@ func (h *heldDown) releaseAt(at Point) bool {
 	return true
 }
 
+func (h *heldDown) releaseOverTheWindowAt(at Point) bool {
+	return h.releaseWithADragAt(at, false)
+}
+
+func (h *heldDown) escapeThenReleaseAt(at Point) bool {
+	return h.releaseWithADragAt(at, true)
+}
+
+func (h *heldDown) releaseWithADragAt(at Point, escapeFirst bool) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.down {
+		return false
+	}
+	if escapeFirst {
+		h.screen.PostKey(KeyPress{Code: macOSEscape, Down: true})
+		h.screen.PostKey(KeyPress{Code: macOSEscape, Down: false})
+	}
+	h.screen.PostMouse(MouseEvent{Action: MouseDragged, At: at, Clicks: 1})
+	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Clicks: 1})
+	h.at = at
+	h.down = false
+	return true
+}
+
 func (h *heldDown) handOver() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -243,6 +271,8 @@ type dropWindow interface {
 	takeTheMouseAt(at Point) (bool, error)
 	close() error
 }
+
+var ErrMainThreadLate = errors.New("macos: the main thread did not answer in time")
 
 var (
 	ErrDropWindowNotShown = errors.New("macos: the window of lanhop did not appear under the cursor, so nothing was posted")
@@ -447,4 +477,84 @@ func (p *promises) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
+}
+
+type sessionEnd struct {
+	button       *heldDown
+	window       dropWindow
+	ended        <-chan struct{}
+	downAtEnd    func() bool
+	releaseLimit time.Duration
+	releasePoll  time.Duration
+	endLimit     time.Duration
+	logf         func(format string, args ...any)
+}
+
+func (e sessionEnd) run() {
+	if e.over() || !e.button.pending() {
+		return
+	}
+	e.release()
+	timer := time.NewTimer(e.endLimit)
+	defer timer.Stop()
+	select {
+	case <-e.ended:
+	case <-timer.C:
+	}
+}
+
+func (e sessionEnd) over() bool {
+	select {
+	case <-e.ended:
+		if e.downAtEnd() {
+			e.button.releaseHere()
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (e sessionEnd) release() {
+	if e.window == nil {
+		e.button.escapeThenReleaseAt(e.button.screen.Cursor())
+		e.logf("macos: the drag had no window of lanhop, so Escape was posted and the button was released where the cursor is")
+		return
+	}
+	refusal := e.window.refuseDrops()
+	if refusal != nil {
+		e.logf("macos: AppKit was not told to refuse drops before the release: %v", refusal)
+	}
+	deadline := time.Now().Add(e.releaseLimit)
+	for {
+		if e.over() {
+			return
+		}
+		at := e.button.screen.Cursor()
+		taken, err := e.window.takeTheMouseAt(at)
+		if taken && err == nil {
+			e.button.releaseOverTheWindowAt(at)
+			return
+		}
+		if !time.Now().Before(deadline) {
+			e.button.escapeThenReleaseAt(at)
+			e.logf("macos: the window of lanhop did not take the mouse under the cursor (%s), so Escape was posted and the button was released there %s", whyMissed(err), whatWasRefused(refusal))
+			return
+		}
+		time.Sleep(e.releasePoll)
+	}
+}
+
+func whyMissed(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return "another window takes the mouse there"
+}
+
+func whatWasRefused(refusal error) string {
+	if refusal != nil {
+		return "without drops refused"
+	}
+	return "with drops refused"
 }
