@@ -68,6 +68,7 @@ var (
 	ErrRefused     = errors.New("x11: the X server did not let lanhop own the clipboard")
 	ErrNoXFixes    = errors.New("x11: the X server has no XFIXES extension")
 	ErrNotAbsolute = errors.New("x11: a file to put on the clipboard is not given by an absolute path")
+	ErrNULInPath   = errors.New("x11: a path to put on the clipboard holds a NUL byte")
 )
 
 type atoms struct {
@@ -320,7 +321,10 @@ func (b *Clipboard) filesCopy(paths []string, offered hint) (heldCopy, error) {
 	addresses := make([]string, len(paths))
 	for i, path := range paths {
 		if !filepath.IsAbs(path) {
-			return heldCopy{}, ErrNotAbsolute
+			return heldCopy{}, fmt.Errorf("%w: %q", ErrNotAbsolute, path)
+		}
+		if strings.ContainsRune(path, 0) {
+			return heldCopy{}, fmt.Errorf("%w: %q", ErrNULInPath, path)
 		}
 		addresses[i] = fileAddress(path)
 	}
@@ -437,40 +441,39 @@ func (b *Clipboard) fileListTarget(offered []uint32) (uint32, bool) {
 }
 
 func pathsInList(list string, startsWithCopyOrCut bool) ([]string, error) {
-	lines := strings.Split(list, "\n")
+	rest := list
 	if startsWithCopyOrCut {
-		if action := strings.Trim(lines[0], " \t\r"); action != "copy" && action != "cut" {
+		var action string
+		action, rest, _ = strings.Cut(rest, "\n")
+		if action = strings.Trim(action, " \t\r"); action != "copy" && action != "cut" {
 			return nil, clipboard.ErrNotFiles
 		}
-		lines = lines[1:]
 	}
-	var addresses []string
-	for _, line := range lines {
+	var paths []string
+	for rest != "" {
+		var line string
+		line, rest, _ = strings.Cut(rest, "\n")
 		line = strings.Trim(line, " \t\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		addresses = append(addresses, line)
-	}
-	switch {
-	case len(addresses) == 0:
-		return nil, clipboard.ErrNotFiles
-	case len(addresses) > clipboard.FilesAndFoldersLimit:
-		return nil, fmt.Errorf("%w: %d", clipboard.ErrTooManyFiles, len(addresses))
-	}
-	paths := make([]string, len(addresses))
-	for i, address := range addresses {
-		path, onThisMachine := localPath(address)
+		if len(paths) == clipboard.FilesAndFoldersLimit {
+			return nil, clipboard.ErrTooManyFiles
+		}
+		path, onThisMachine := localPath(line)
 		if !onThisMachine {
 			return nil, clipboard.ErrNotFiles
 		}
-		paths[i] = path
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil, clipboard.ErrNotFiles
 	}
 	return paths, nil
 }
 
 func localPath(address string) (string, bool) {
-	if strings.ContainsAny(address, "?#") {
+	if strings.ContainsAny(address, "?#") || strings.Contains(address, "%2f") || strings.Contains(address, "%2F") {
 		return "", false
 	}
 	parsed, err := url.Parse(address)

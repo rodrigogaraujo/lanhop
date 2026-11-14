@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -177,10 +178,19 @@ func TestATextIsStillOfferedInTheSameFormats(t *testing.T) {
 	}
 }
 
-func TestTheGNOMEListIsPreferredWhenBothListsAreOffered(t *testing.T) {
+func TestTheGNOMEListIsPreferredEvenWhenTheAddressListIsOfferedFirst(t *testing.T) {
 	writer, reader := twoPrograms(t)
-	offering(writer, func(b *Clipboard) uint32 { return b.atoms.gnomeFiles }, "copy\nfile:///from/the/gnome/list")
-	writer.WriteFiles([]string{"/from/the/address/list"})
+	addressListFirst := heldCopy{offers: []offer{
+		{target: writer.atoms.uriList, kind: writer.atoms.uriList, data: []byte("file:///from/the/address/list\r\n")},
+		{target: writer.atoms.gnomeFiles, kind: writer.atoms.gnomeFiles, data: []byte("copy\nfile:///from/the/gnome/list")},
+	}}
+	if _, err := writer.own(addressListFirst); err != nil {
+		t.Fatalf("own: %v", err)
+	}
+	offered, err := reader.targetsOffered()
+	if err != nil || slices.Index(offered, reader.atoms.uriList) > slices.Index(offered, reader.atoms.gnomeFiles) {
+		t.Fatalf("targets = %v, %v, want the address list before the GNOME list", offered, err)
+	}
 
 	if got, err := reader.ReadFiles(); err != nil || !slices.Equal(got, []string{"/from/the/gnome/list"}) {
 		t.Errorf("ReadFiles = %q, %v, want the path of the GNOME list", got, err)
@@ -236,7 +246,7 @@ func TestWritingFilesMovesTheMark(t *testing.T) {
 	}
 }
 
-func TestWritingNoFilesOrARelativePathIsRefusedAndLeavesTheClipboardAsItWas(t *testing.T) {
+func TestWritingNoFilesARelativePathOrANULByteIsRefusedAndLeavesTheClipboardAsItWas(t *testing.T) {
 	writer, reader := twoPrograms(t)
 	writer.Write("kept")
 	before := reader.Mark()
@@ -246,6 +256,9 @@ func TestWritingNoFilesOrARelativePathIsRefusedAndLeavesTheClipboardAsItWas(t *t
 	}
 	if _, err := writer.WriteFiles([]string{"/home/someone/a.txt", "relative/b.txt"}); !errors.Is(err, ErrNotAbsolute) {
 		t.Errorf("WriteFiles with a relative path: error = %v, want %v", err, ErrNotAbsolute)
+	}
+	if _, err := writer.WriteFiles([]string{"/home/someone/a.txt", "/home/someone/nul\x00byte.txt"}); !errors.Is(err, ErrNULInPath) {
+		t.Errorf("WriteFiles with a NUL byte in a path: error = %v, want %v", err, ErrNULInPath)
 	}
 
 	if reader.Mark() != before {
@@ -272,6 +285,8 @@ func TestACopyThatIsNotAListOfLocalFilesHoldsNoFiles(t *testing.T) {
 		"a fragment after the path":           {uriList, "file:///home/someone/a.txt#part\r\n"},
 		"a query after the path":              {uriList, "file:///home/someone/a.txt?x=1\r\n"},
 		"a user name before the host":         {uriList, "file://someone@localhost/home/someone/a.txt\r\n"},
+		"a slash escaped as %2F":              {uriList, "file:///home/someone/a%2Fb.txt\r\n"},
+		"a slash escaped as %2f":              {uriList, "file:///home/someone/a%2fb.txt\r\n"},
 		"only a comment":                      {uriList, "# nothing here\r\n"},
 		"a GNOME list with no file":           {gnomeFiles, "copy\n"},
 		"a GNOME list with an unknown action": {gnomeFiles, "move\nfile:///home/someone/a.txt"},
@@ -371,6 +386,37 @@ func TestAFileListLongerThanItsLimitCountsAsTooManyFiles(t *testing.T) {
 
 	if got, err := reader.ReadFiles(); !errors.Is(err, clipboard.ErrTooManyFiles) || got != nil {
 		t.Errorf("ReadFiles gave %d paths, %v, want nothing and %v", len(got), err, clipboard.ErrTooManyFiles)
+	}
+}
+
+func TestAListOfMillionsOfLinesIsReadWithoutKeepingEachLine(t *testing.T) {
+	lists := []struct {
+		name string
+		line string
+		want error
+	}{
+		{"a word on each line", "a\n", clipboard.ErrNotFiles},
+		{"a comment on each line", "#\n", clipboard.ErrNotFiles},
+		{"a file address on each line", "file:///a\n", clipboard.ErrTooManyFiles},
+	}
+	for _, list := range lists {
+		t.Run(list.name, func(t *testing.T) {
+			whole := strings.Repeat(list.line, fileListLimit/len(list.line))
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+
+			_, err := pathsInList(whole, false)
+
+			runtime.ReadMemStats(&after)
+			allocated := after.TotalAlloc - before.TotalAlloc
+			t.Logf("a list of %d bytes allocated %d bytes", len(whole), allocated)
+			if !errors.Is(err, list.want) {
+				t.Errorf("pathsInList: error = %v, want %v", err, list.want)
+			}
+			if allocated > 8<<20 {
+				t.Errorf("a list of %d bytes allocated %d bytes, want at most 8 MiB", len(whole), allocated)
+			}
+		})
 	}
 }
 
@@ -502,13 +548,18 @@ func TestFileListsWrittenByAnotherX11ProgramAreRead(t *testing.T) {
 			[]string{"/home/someone/moved.txt"},
 		},
 		{
-			"an address list with a comment and CRLF", "text/uri-list",
-			"# copied by a test\r\nfile:///home/someone/a%23b.txt\r\nfile://localhost/home/someone/notes.txt\r\nFILE:///home/someone/upper.txt\r\n",
-			[]string{"/home/someone/a#b.txt", "/home/someone/notes.txt", "/home/someone/upper.txt"},
+			"a GNOME copy with CRLF", "x-special/gnome-copied-files",
+			"copy\r\nfile:///home/someone/one.txt\r\nfile:///home/someone/two.txt\r\n",
+			[]string{"/home/someone/one.txt", "/home/someone/two.txt"},
 		},
 		{
-			"an address list with LF only", "text/uri-list",
-			"file:///tmp/one\nfile:/tmp/two\n",
+			"an address list with a comment and CRLF", "text/uri-list",
+			"# copied by a test\r\nfile:///home/someone/a%23b.txt\r\nfile://localhost/home/someone/notes.txt\r\nFILE:///home/someone/upper.txt\r\nfile://LOCALHOST/home/someone/loud.txt\r\n",
+			[]string{"/home/someone/a#b.txt", "/home/someone/notes.txt", "/home/someone/upper.txt", "/home/someone/loud.txt"},
+		},
+		{
+			"an address list with LF only and a blank line", "text/uri-list",
+			"file:///tmp/one\n\nfile:/tmp/two\n",
 			[]string{"/tmp/one", "/tmp/two"},
 		},
 	}
