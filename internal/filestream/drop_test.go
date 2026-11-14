@@ -102,14 +102,43 @@ func TestADropStreamNamesItsTopLevelFilesAndFoldersBeforeAnyOfThemArrives(t *tes
 	}
 }
 
-func TestEachKindOfReceiveRefusesTheStreamOfTheOtherKind(t *testing.T) {
-	plain := new(streamBuilder).header(1, 3).file("a.txt", "abc").end()
-	if _, source, err := receiveDropFromMemory(t, plain); !errors.Is(err, ErrMalformed) || source.told {
-		t.Errorf("ReceiveDrop of a stream of a file copy = %v, told %t, want ErrMalformed and nothing told", err, source.told)
+func TestReceiveDropRefusesAWellFormedDropStreamThatSaysFormat1(t *testing.T) {
+	stream := new(streamBuilder).header(1, 3).tops(topFile("a.txt")).file("a.txt", "abc").end()
+
+	arrivals, source, err := receiveDropFromMemory(t, stream)
+
+	if !errors.Is(err, ErrMalformed) || source.told {
+		t.Errorf("ReceiveDrop of a drop stream marked as format 1 = %v, told %t, want ErrMalformed and nothing told", err, source.told)
 	}
-	drop := new(streamBuilder).dropHeader(1, 3).tops(topFile("a.txt")).file("a.txt", "abc").end()
-	if _, source, err := receiveFromMemory(t, drop); !errors.Is(err, ErrMalformed) || source.told {
-		t.Errorf("Receive of a drop stream = %v, told %t, want ErrMalformed and nothing told", err, source.told)
+	if _, calls, _ := arrivals.announced(); calls != 0 {
+		t.Errorf("Dropping was called %d times for a stream of another format", calls)
+	}
+}
+
+func TestReceiveRefusesAWellFormedFileCopyStreamThatSaysFormat2(t *testing.T) {
+	stream := new(streamBuilder).dropHeader(1, 3).file("a.txt", "abc").end()
+
+	_, source, err := receiveFromMemory(t, stream)
+
+	if !errors.Is(err, ErrMalformed) || source.told {
+		t.Errorf("Receive of a file copy stream marked as format 2 = %v, told %t, want ErrMalformed and nothing told", err, source.told)
+	}
+}
+
+func TestATopLevelNameThatIsNotAPlainNameNeverReachesTheDrop(t *testing.T) {
+	for _, name := range []string{"..", ".", "/etc/passwd", "report/a.txt", "a/", "", "a\x00b"} {
+		t.Run(name, func(t *testing.T) {
+			stream := new(streamBuilder).dropHeader(1, 3).tops(topFile(name)).file("a.txt", "abc").end()
+
+			arrivals, source, err := receiveDropFromMemory(t, stream)
+
+			if err == nil || source.told {
+				t.Errorf("ReceiveDrop with the top-level name %q = %v, told %t, want a refusal", name, err, source.told)
+			}
+			if _, calls, _ := arrivals.announced(); calls != 0 {
+				t.Errorf("Dropping was called %d times with the top-level name %q", calls, name)
+			}
+		})
 	}
 }
 

@@ -38,6 +38,7 @@ type centralTransfer struct {
 	conns         []io.Closer
 	cancelAsked   bool
 	cancelPending *link
+	takenThere    bool
 }
 
 func (c *Central) start(t *centralTransfer) {
@@ -123,7 +124,7 @@ func (c *Central) watch(conn *transport.DataConn) *watchedData {
 func (c *Central) transferDone(t *centralTransfer, err error) {
 	if c.transfers[t.id] != t {
 		if err == nil {
-			t.leaveNothing()
+			c.remover.giveUp(t.arrival)
 		}
 		return
 	}
@@ -141,7 +142,7 @@ func (c *Central) transferDone(t *centralTransfer, err error) {
 	c.do(c.desk.FilesArrived(t.id))
 	delete(c.transfers, t.id)
 	if !t.written {
-		t.leaveNothing()
+		c.remover.giveUp(t.arrival)
 	}
 }
 
@@ -226,7 +227,7 @@ func (t *centralTransfer) cancelOn(side *link) {
 func (t *centralTransfer) takenOnTheSide() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	t.cancelAsked = false
+	t.cancelAsked, t.takenThere = false, true
 }
 
 func (t *centralTransfer) cancelWasAsked() bool {
@@ -235,9 +236,12 @@ func (t *centralTransfer) cancelWasAsked() bool {
 	return t.cancelAsked
 }
 
-func (t *centralTransfer) halfOn(side *link) (dataHalf, bool) {
+func (t *centralTransfer) halfStillCancellable(side *link) (dataHalf, bool) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
+	if t.takenThere {
+		return dataHalf{}, false
+	}
 	for _, half := range t.halves {
 		if half.side == side {
 			return half, true
@@ -287,12 +291,6 @@ func (t *centralTransfer) close(cause error) {
 	defer t.mutex.Unlock()
 	t.ended = true
 	closeInTheBackground(t.conns...)
-}
-
-func (t *centralTransfer) leaveNothing() {
-	if t.arrival != nil {
-		t.arrival.GiveUp()
-	}
 }
 
 func (t *centralTransfer) because(err error) error {
