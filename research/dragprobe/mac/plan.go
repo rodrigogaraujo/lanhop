@@ -16,10 +16,13 @@ import (
 	"github.com/rodrigogaraujo/lanhop/research/dragprobe/cli"
 )
 
-const usage = `usage: open -n -W lanhop-dragprobe.app --args <watch|cancel|promise> [flags]
+const usage = `usage: open -n -W lanhop-dragprobe.app --args <watch|cancel|cancel-observe|promise> [flags]
 
   watch            print every change of the drag pasteboard: types and file URLs
   cancel           when a drag starts, post Escape then a left mouse up at the cursor
+  cancel-observe   the same as cancel, then log every left mouse event and the button
+                   state until the real release; -session posts the mouse up at the
+                   session event tap instead of the HID event tap
   promise <file>   start a drag of a file promise from a small window, with posted events
 
 Every subcommand takes -log (default: ~/Library/Logs/lanhop-dragprobe.log).`
@@ -29,6 +32,9 @@ const (
 	longestHold = 3 * time.Second
 	longestGap  = time.Second
 	longestWait = 10 * time.Second
+
+	shortestObserve = time.Second
+	longestObserve  = time.Minute
 )
 
 const (
@@ -72,6 +78,7 @@ type command struct {
 	steps   int
 	hold    time.Duration
 	manual  bool
+	session bool
 }
 
 func expandPath(path, home string) (string, error) {
@@ -119,6 +126,13 @@ func parseCommand(args []string, home string) (command, error) {
 		set.DurationVar(&c.gap, "gap", 20*time.Millisecond, "")
 		set.DurationVar(&c.after, "after", 3*time.Second, "")
 		set.DurationVar(&c.timeout, "timeout", 2*time.Minute, "")
+	case "cancel-observe":
+		set.DurationVar(&c.every, "every", 20*time.Millisecond, "")
+		set.DurationVar(&c.wait, "wait", 2*time.Second, "")
+		set.DurationVar(&c.gap, "gap", 20*time.Millisecond, "")
+		set.DurationVar(&c.runFor, "for", 15*time.Second, "")
+		set.DurationVar(&c.timeout, "timeout", 2*time.Minute, "")
+		set.BoolVar(&c.session, "session", false, "")
 	case "promise":
 		set.Float64Var(&c.dx, "dx", 300, "")
 		set.Float64Var(&c.dy, "dy", 0, "")
@@ -146,6 +160,9 @@ func parseCommand(args []string, home string) (command, error) {
 		}
 		if c.gap < 0 || c.gap > longestGap || c.wait < 0 || c.wait > longestWait {
 			return c, fmt.Errorf("-gap must be between 0 and %v, and -wait between 0 and %v", longestGap, longestWait)
+		}
+		if c.name == "cancel-observe" && (c.runFor < shortestObserve || c.runFor > longestObserve) {
+			return c, fmt.Errorf("-for must be between %v and %v", shortestObserve, longestObserve)
 		}
 		return c, nil
 	}

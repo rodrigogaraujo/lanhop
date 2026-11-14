@@ -223,6 +223,35 @@ Before the runs:
 
 If X keeps a button held after a run, click once.
 
+## Second Mac session: does the real release still arrive?
+
+After the posted Escape and mouse up, the hardware state of macOS reads the left button as up while the finger still holds it (first session, `cancel`). lanhop forwards the real release to the neighbour from its capture, so these runs measure whether that release still reaches a tap as a left mouse up.
+
+`cancel-observe` does what `cancel` does: it waits for a file drag with the left button held, waits 2 s, checks that the button is still held, posts Escape (key down and key up) and, 20 ms later, a left mouse up at the cursor. It posts no mouse down. Its posted events carry lanhop's marker, `0x6c68` in the user data field. Before it posts, it installs a listen-only tap at the session level, inserted first, as lanhop's capture does. Then, for up to 15 s (`-for`, 1 s to 1 min), it logs:
+
+- every left mouse down, left mouse up, left mouse dragged and mouse moved event the tap sees (move lines at most every 100 ms), with the time since the posted up, whether it carries the marker, its source pid and source state;
+- every 100 ms, the left button state from the HID system state and from the combined session state, and whether Shift is held.
+
+It stops at the first unmarked left mouse up, or when the time runs out. It needs Accessibility, as `cancel`. A listen-only tap on mouse events should need nothing more. If macOS refuses the tap, the probe asks for Input Monitoring, says so in the log, and stops before any drag.
+
+10. **cancel-observe**. Question: after the posted Escape and mouse up, does the real release of the button still reach a tap as an unmarked left mouse up, and when?
+
+    ```sh
+    open -n -W ~/lanhop-dragprobe/lanhop-dragprobe.app --args cancel-observe
+    ```
+
+    Drag `throwaway.txt` over the `target` folder and hold it still with the button held. After the drag image slides back, keep holding about 3 s, press and release Shift, then let go of the button.
+    - Look for the lines that start with `answer:`. The first says whether an unmarked left mouse up reached the tap and how many milliseconds after the posted up. The other two say how many samples read the button held between the posted up and the real release, and whether the hardware state stayed held.
+    - The `tap:` lines show the events themselves, and the `state` lines the button state every 100 ms.
+
+11. **cancel-observe -session**. Question: with the mouse up posted at the session event tap instead of the HID event tap, does the hardware state stay held until the real release, and does the drag still end?
+
+    ```sh
+    open -n -W ~/lanhop-dragprobe/lanhop-dragprobe.app --args cancel-observe -session
+    ```
+
+    The same steps. Watch whether the drag image slides back after the posted events, as in run 10.
+
 ## What to expect
 
 - `cancel -press-first` cannot release the button while the real one is held. Only Escape can end the drag. If Escape fails, your own release drops the throwaway file into the scratch folder.
@@ -236,6 +265,8 @@ If X keeps a button held after a run, click once.
   tccutil reset Accessibility com.github.rodrigogaraujo.lanhop-dragprobe
   tccutil reset PostEvent com.github.rodrigogaraujo.lanhop-dragprobe
   ```
+
+  If `cancel-observe` asked for Input Monitoring, remove that grant too: `tccutil reset ListenEvent com.github.rodrigogaraujo.lanhop-dragprobe`.
 
   Never run `tccutil reset` without the identifier. It would also wipe lanhop's own grant.
 - Delete `~/lanhop-dragprobe` and `~/drag-scratch` on both machines. Keep `~/Library/Logs/lanhop-dragprobe.log` and the Linux terminal output for ADR 15.

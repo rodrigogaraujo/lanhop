@@ -197,6 +197,215 @@ bool lanhopProbeReleasePendingDown(void) {
 	return released;
 }
 
+typedef struct {
+	CFMachPortRef port;
+	CFAbsoluteTime postedUpAt;
+	CFAbsoluteTime realUpAt;
+	CFAbsoluteTime lastMoveLine;
+	unsigned long movesSinceLine;
+	unsigned long samples;
+	unsigned long heldByHardware;
+	unsigned long heldCombined;
+	bool realUpSeen;
+} lanhopProbeObservation;
+
+static NSString *yesOrNo(bool value) {
+	return value ? @"true" : @"false";
+}
+
+static NSString *mouseEventName(CGEventType type) {
+	switch (type) {
+	case kCGEventLeftMouseDown:
+		return @"left mouse down";
+	case kCGEventLeftMouseUp:
+		return @"left mouse up";
+	case kCGEventLeftMouseDragged:
+		return @"left mouse dragged";
+	case kCGEventMouseMoved:
+		return @"mouse moved";
+	default:
+		return [NSString stringWithFormat:@"event type %u", (unsigned)type];
+	}
+}
+
+static NSString *sinceThePostedUp(lanhopProbeObservation *seen, CFAbsoluteTime now) {
+	if (seen->postedUpAt == 0) {
+		return @"before the posted up";
+	}
+	return [NSString stringWithFormat:@"%.1f ms after the posted up", (now - seen->postedUpAt) * 1000];
+}
+
+static NSString *buttonState(void) {
+	return [NSString stringWithFormat:@"left button held: %@ by the hardware (HID system state), %@ counting posted events (combined session state)",
+		yesOrNo(lanhopProbeLeftButtonHeld(false)), yesOrNo(lanhopProbeLeftButtonHeld(true))];
+}
+
+static CGEventRef noteMouseEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *info) {
+	lanhopProbeObservation *seen = info;
+	if (seen == NULL) {
+		return event;
+	}
+	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+		say(@"tap: the system disabled the tap (type %u); enabling it again", (unsigned)type);
+		CGEventTapEnable(seen->port, true);
+		return event;
+	}
+	@autoreleasepool {
+		CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+		bool moving = type == kCGEventLeftMouseDragged || type == kCGEventMouseMoved;
+		if (moving) {
+			seen->movesSinceLine++;
+			if (now - seen->lastMoveLine < 0.1) {
+				return event;
+			}
+		}
+		bool marked = CGEventGetIntegerValueField(event, kCGEventSourceUserData) == LANHOP_PROBE_MARKER;
+		CGPoint at = CGEventGetLocation(event);
+		NSString *moves = moving ? [NSString stringWithFormat:@" (%lu move events since the last move line)", seen->movesSinceLine] : @"";
+		say(@"tap: %@ at %.0f,%.0f, %@, source pid %lld, source state %lld, %@%@; %@", mouseEventName(type), at.x, at.y,
+			marked ? @"MARKED (posted by the probe)" : @"unmarked", CGEventGetIntegerValueField(event, kCGEventSourceUnixProcessID),
+			CGEventGetIntegerValueField(event, kCGEventSourceStateID), sinceThePostedUp(seen, now), moves, buttonState());
+		if (moving) {
+			seen->lastMoveLine = now;
+			seen->movesSinceLine = 0;
+		}
+		if (type == kCGEventLeftMouseUp && !marked && seen->postedUpAt > 0 && !seen->realUpSeen) {
+			seen->realUpSeen = true;
+			seen->realUpAt = now;
+		}
+	}
+	return event;
+}
+
+static CFMachPortRef mouseTap(lanhopProbeObservation *seen) {
+	CGEventMask mask = CGEventMaskBit(kCGEventLeftMouseDown) | CGEventMaskBit(kCGEventLeftMouseUp) | CGEventMaskBit(kCGEventLeftMouseDragged) | CGEventMaskBit(kCGEventMouseMoved);
+	return CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, mask, noteMouseEvent, seen);
+}
+
+bool lanhopProbeCanTapMouse(void) {
+	CFMachPortRef port = mouseTap(NULL);
+	if (port == NULL) {
+		return false;
+	}
+	CGEventTapEnable(port, false);
+	CFMachPortInvalidate(port);
+	CFRelease(port);
+	return true;
+}
+
+bool lanhopProbeCanListen(void) {
+	return CGPreflightListenEventAccess();
+}
+
+void lanhopProbeAskToListen(void) {
+	CGRequestListenEventAccess();
+}
+
+static void postMarked(CGEventRef event, CGEventTapLocation where) {
+	if (event == NULL) {
+		return;
+	}
+	CGEventSetIntegerValueField(event, kCGEventSourceUserData, LANHOP_PROBE_MARKER);
+	CGEventPost(where, event);
+	CFRelease(event);
+}
+
+static void sampleState(lanhopProbeObservation *seen) {
+	@autoreleasepool {
+		CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+		bool hardware = lanhopProbeLeftButtonHeld(false);
+		bool combined = lanhopProbeLeftButtonHeld(true);
+		bool shift = (CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState) & kCGEventFlagMaskShift) != 0;
+		say(@"state %@: left button held: %@ by the hardware (HID system state), %@ counting posted events (combined session state); Shift held: %@",
+			sinceThePostedUp(seen, now), yesOrNo(hardware), yesOrNo(combined), yesOrNo(shift));
+		if (seen->postedUpAt > 0 && !seen->realUpSeen) {
+			seen->samples++;
+			seen->heldByHardware += hardware ? 1 : 0;
+			seen->heldCombined += combined ? 1 : 0;
+		}
+	}
+}
+
+static void serveTheTapFor(double seconds) {
+	CFAbsoluteTime until = CFAbsoluteTimeGetCurrent() + seconds;
+	for (CFAbsoluteTime now = CFAbsoluteTimeGetCurrent(); now < until; now = CFAbsoluteTimeGetCurrent()) {
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, until - now, true);
+	}
+}
+
+static void sayTheAnswer(lanhopProbeObservation *seen, double observeSeconds) {
+	if (seen->realUpSeen) {
+		say(@"answer: an unmarked left mouse up reached the tap %.1f ms after the posted up", (seen->realUpAt - seen->postedUpAt) * 1000);
+	} else {
+		say(@"answer: no unmarked left mouse up reached the tap within %.0f s after the posted up", observeSeconds);
+	}
+	NSString *until = seen->realUpSeen ? @"the real left mouse up" : @"the end of the watch";
+	say(@"answer: between the posted up and %@, the hardware state (HID system state) read the left button held in %lu of %lu samples, and the combined session state in %lu of %lu",
+		until, seen->heldByHardware, seen->samples, seen->heldCombined, seen->samples);
+	bool stayedHeld = seen->samples > 0 && seen->heldByHardware == seen->samples;
+	say(@"answer: the hardware state %@ until %@", stayedHeld ? @"stayed held" : @"did not stay held", until);
+}
+
+int lanhopProbeCancelObserve(double gapSeconds, bool sessionTap, double observeSeconds) {
+	@autoreleasepool {
+		lanhopProbeObservation seen = {0};
+		seen.port = mouseTap(&seen);
+		if (seen.port == NULL) {
+			return LANHOP_PROBE_OBSERVE_NO_TAP;
+		}
+		CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(NULL, seen.port, 0);
+		if (source == NULL) {
+			CGEventTapEnable(seen.port, false);
+			CFMachPortInvalidate(seen.port);
+			CFRelease(seen.port);
+			return LANHOP_PROBE_OBSERVE_NO_TAP;
+		}
+		CFRunLoopRef loop = CFRunLoopGetCurrent();
+		CFRunLoopAddSource(loop, source, kCFRunLoopDefaultMode);
+		CGEventTapEnable(seen.port, true);
+		say(@"a listen-only tap at the session level, inserted first like the capture of lanhop, logs left mouse down, up and dragged, and mouse moved (move lines at most every 100 ms)");
+		int result = LANHOP_PROBE_OBSERVE_NOT_HELD;
+		if (!lanhopProbeLeftButtonHeld(false)) {
+			say(@"the button was released before the probe acted, so nothing was posted");
+		} else {
+			postMarked(CGEventCreateKeyboardEvent(eventSource(), escapeKeyCode, true), kCGHIDEventTap);
+			postMarked(CGEventCreateKeyboardEvent(eventSource(), escapeKeyCode, false), kCGHIDEventTap);
+			say(@"posted Escape (key down and key up) through the HID event tap, marked 0x%x", LANHOP_PROBE_MARKER);
+			serveTheTapFor(gapSeconds);
+			double x = 0;
+			double y = 0;
+			lanhopProbeCursor(&x, &y);
+			CGEventRef up = CGEventCreateMouseEvent(eventSource(), kCGEventLeftMouseUp, CGPointMake(x, y), kCGMouseButtonLeft);
+			if (up != NULL) {
+				CGEventSetIntegerValueField(up, kCGMouseEventClickState, 1);
+			}
+			seen.postedUpAt = CFAbsoluteTimeGetCurrent();
+			postMarked(up, sessionTap ? kCGSessionEventTap : kCGHIDEventTap);
+			say(@"posted a left mouse up at %.0f,%.0f through the %@, marked 0x%x", x, y, sessionTap ? @"session event tap" : @"HID event tap", LANHOP_PROBE_MARKER);
+			sampleState(&seen);
+			CFAbsoluteTime deadline = seen.postedUpAt + observeSeconds;
+			CFAbsoluteTime nextSample = seen.postedUpAt + 0.1;
+			for (CFAbsoluteTime now = CFAbsoluteTimeGetCurrent(); !seen.realUpSeen && now < deadline; now = CFAbsoluteTimeGetCurrent()) {
+				if (now >= nextSample) {
+					sampleState(&seen);
+					nextSample = fmax(nextSample + 0.1, now + 0.05);
+					continue;
+				}
+				CFRunLoopRunInMode(kCFRunLoopDefaultMode, fmin(nextSample, deadline) - now, true);
+			}
+			sampleState(&seen);
+			sayTheAnswer(&seen, observeSeconds);
+			result = seen.realUpSeen ? LANHOP_PROBE_OBSERVE_REAL_UP : LANHOP_PROBE_OBSERVE_NO_REAL_UP;
+		}
+		CGEventTapEnable(seen.port, false);
+		CFRunLoopRemoveSource(loop, source, kCFRunLoopDefaultMode);
+		CFMachPortInvalidate(seen.port);
+		CFRelease(source);
+		CFRelease(seen.port);
+		return result;
+	}
+}
+
 int lanhopProbeDisplays(double *rects, int capacity) {
 	CGDirectDisplayID displays[32];
 	uint32_t count = 0;

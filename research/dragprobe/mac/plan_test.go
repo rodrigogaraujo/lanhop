@@ -42,6 +42,25 @@ func TestCancelWaitsTwoSecondsByDefault(t *testing.T) {
 	}
 }
 
+func TestCancelObserveWatchesFifteenSecondsAfterAnUpThroughTheHIDTapByDefault(t *testing.T) {
+	c, err := parseCommand([]string{"cancel-observe"}, "/Users/someone")
+
+	if err != nil {
+		t.Fatalf("parseCommand: %v", err)
+	}
+	if c.runFor != 15*time.Second || c.wait != 2*time.Second || c.gap != 20*time.Millisecond || c.every != 20*time.Millisecond || c.timeout != 2*time.Minute || c.session {
+		t.Errorf("parsed %+v", c)
+	}
+}
+
+func TestCancelObserveCanPostTheUpAtTheSessionTapAndWatchUpToAMinute(t *testing.T) {
+	c, err := parseCommand([]string{"cancel-observe", "-session", "-for", "1m"}, "/Users/someone")
+
+	if err != nil || !c.session || c.runFor != time.Minute {
+		t.Errorf("parsed %+v, %v", c, err)
+	}
+}
+
 func TestWrongCommandLinesAreRefused(t *testing.T) {
 	for _, args := range [][]string{
 		nil,
@@ -58,6 +77,11 @@ func TestWrongCommandLinesAreRefused(t *testing.T) {
 		{"cancel", "-wait", "11s"},
 		{"watch", "/a"},
 		{"watch", "-every", "0s"},
+		{"cancel-observe", "/a"},
+		{"cancel-observe", "-for", "999ms"},
+		{"cancel-observe", "-for", "61s"},
+		{"cancel-observe", "-gap", "2s"},
+		{"cancel-observe", "-wait", "11s"},
 	} {
 		if _, err := parseCommand(args, "/Users/someone"); err == nil {
 			t.Errorf("parseCommand(%q) was accepted", args)

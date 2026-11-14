@@ -106,6 +106,8 @@ func run(c command) int {
 		return watch(c)
 	case "cancel":
 		return cancel(c)
+	case "cancel-observe":
+		return cancelObserve(c)
 	default:
 		return promise(c)
 	}
@@ -181,18 +183,14 @@ func watch(c command) int {
 	return 0
 }
 
-func cancel(c command) int {
-	if !mayPost() {
-		return 1
-	}
-	printer.Say("start dragging the throwaway file in Finder, hold it still over the scratch target folder, and keep the button held; the probe acts %v after it sees the drag", c.wait)
+func waitForHeldDrag(c command) (int64, time.Time, bool) {
 	last := changeCount()
 	deadline := time.Now().Add(c.timeout)
 	for {
 		time.Sleep(c.every)
 		if time.Now().After(deadline) {
 			printer.Say("no drag seen within %v", c.timeout)
-			return 1
+			return last, time.Time{}, false
 		}
 		now := changeCount()
 		if now == last {
@@ -200,11 +198,21 @@ func cancel(c command) int {
 		}
 		last = now
 		if leftHeld(false) {
-			break
+			return last, time.Now(), true
 		}
 		printer.Say("the drag pasteboard changed to %d while no button was held; still waiting", now)
 	}
-	seen := time.Now()
+}
+
+func cancel(c command) int {
+	if !mayPost() {
+		return 1
+	}
+	printer.Say("start dragging the throwaway file in Finder, hold it still over the scratch target folder, and keep the button held; the probe acts %v after it sees the drag", c.wait)
+	last, seen, found := waitForHeldDrag(c)
+	if !found {
+		return 1
+	}
 	printer.Say("drag seen: count %d\n%s", last, describeDrag())
 	time.Sleep(time.Until(seen.Add(c.wait)))
 	if !leftHeld(false) {
@@ -218,6 +226,47 @@ func cancel(c command) int {
 	C.lanhopProbePostLeftMouse(C.LANHOP_PROBE_UP, C.double(at.x), C.double(at.y))
 	printer.Say("posted a left mouse up at %.0f,%.0f", at.x, at.y)
 	observeAfterCancel(c, last)
+	return 0
+}
+
+func mayTapTheMouse() bool {
+	listening := bool(C.lanhopProbeCanListen())
+	if bool(C.lanhopProbeCanTapMouse()) {
+		printer.Say("this app may tap the mouse events (Input Monitoring granted: %v)", listening)
+		return true
+	}
+	printer.Say("this app may not tap the mouse events yet (Input Monitoring granted: %v)", listening)
+	printer.Say("macOS should now ask. In System Settings > Privacy & Security > Input Monitoring, turn on lanhop-dragprobe, then run the probe again")
+	C.lanhopProbeAskToListen()
+	return false
+}
+
+func cancelObserve(c command) int {
+	if !mayPost() || !mayTapTheMouse() {
+		return 1
+	}
+	through := "the HID event tap, as cancel and lanhop do"
+	if c.session {
+		through = "the session event tap (-session)"
+	}
+	printer.Say("start dragging the throwaway file in Finder, hold it still over the scratch target folder, and keep the button held; %v after the probe sees the drag it posts Escape, then a left mouse up through %s", c.wait, through)
+	printer.Say("after the posted events, keep holding about 3 s, press and release Shift, then let go of the button; the probe logs every left mouse event and the button state every 100 ms, and stops at the first unmarked left mouse up or after %v", c.runFor)
+	last, seen, found := waitForHeldDrag(c)
+	if !found {
+		return 1
+	}
+	printer.Say("drag seen: count %d\n%s", last, describeDrag())
+	time.Sleep(time.Until(seen.Add(c.wait)))
+	switch C.lanhopProbeCancelObserve(C.double(c.gap.Seconds()), C.bool(c.session), C.double(c.runFor.Seconds())) {
+	case C.LANHOP_PROBE_OBSERVE_NO_TAP:
+		printer.Say("the listen-only tap could not be created, so nothing was posted")
+		return 1
+	case C.LANHOP_PROBE_OBSERVE_NOT_HELD:
+		return 1
+	}
+	if changeCount() != last {
+		printer.Say("drag pasteboard now: count %d\n%s", changeCount(), describeDrag())
+	}
 	return 0
 }
 
