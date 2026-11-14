@@ -1,8 +1,10 @@
 # Setting up lanhop on macOS
 
-> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person has shared the keyboard and trackpad of one Mac (macOS 26.5, Apple silicon) with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, on one desk, an x86-64 machine running macOS ran the 0.1.0 build for x86-64 as the machine with the keyboard, and three Macs with macOS 15.5, 26.5 and 26.6 and a Linux machine each connected to it during the night. Those three Macs ran the lanhop 0.1.0 program inside a `lanhop.app` made by hand and started at login. The `lanhop.app` of a release, `lanhop status`, the wait for the Accessibility permission and the installer have been tried only by automated tests.
+> **macOS support is new.** A Mac can be controlled from another machine with `lanhop receive`, and can share its own keyboard and mouse with `lanhop share`. One person has shared the keyboard and trackpad of one Mac (macOS 26.5, Apple silicon) with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, on one desk, an x86-64 machine running macOS ran the 0.1.0 build for x86-64 as the machine with the keyboard, and three Macs with macOS 15.5, 26.5 and 26.6 and a Linux machine each connected to it during the night. Those three Macs ran the lanhop 0.1.0 program inside a `lanhop.app` made by hand and started at login. The `lanhop.app` of a release, `lanhop status`, the wait for the Accessibility permission and the installer have been tried only by automated tests. `lanhop add`, `lanhop update` and the app signed with the certificate of the project have passed automated tests. v0.1.2 is the first test of `lanhop add` on a real desk. `lanhop update`, and whether the signed app keeps its permissions, get their first real test with the update from v0.1.2 to the next release.
 
 ## The quick way: the installer
+
+To add this Mac to a desk that already runs lanhop, run `lanhop add NAME` on the machine with the keyboard, and type here the installer line it prints, the one with `LANHOP_JOIN`. It installs lanhop as a side machine and joins the desk. It asks no question, and waits for Accessibility and Local Network. See [Adding a machine](../README.md#adding-a-machine). The other way is the installer line alone, which offers to pair the Mac with `lanhop pair`.
 
 The [installer](../README.md#install) puts `lanhop.app` in Applications, offers a launch agent that starts it when you log in, and then checks lanhop as it runs: it opens the pane of each permission that is missing, says what to switch on, and ends when the Mac is connected or says what is still missing. [Starting lanhop when you log in](#starting-lanhop-when-you-log-in) describes what it sets up.
 
@@ -35,7 +37,7 @@ You grant each one once per Mac.
 2. Click the **+** button under the list. macOS asks for your password or Touch ID.
 3. Choose the program that starts lanhop (see the table below) and click **Open**.
 4. Make sure the switch next to it is **on**.
-5. If you chose your terminal or your editor, quit it completely and open it again: the permission applies only to programs started after you granted it. The lanhop app that starts at login waits for the permission and carries on by itself within about 20 seconds, from the release after 0.1.1. lanhop 0.1.1 needs a restart: `launchctl kickstart -k gui/$(id -u)/com.github.rodrigogaraujo.lanhop`.
+5. If you chose your terminal or your editor, quit it completely and open it again: the permission applies only to programs started after you granted it. The lanhop app that starts at login waits for the permission and carries on by itself within about 20 seconds, from v0.1.2 on. lanhop 0.1.1 needs a restart: `launchctl kickstart -k gui/$(id -u)/com.github.rodrigogaraujo.lanhop`.
 
 ### Which program to choose
 
@@ -71,12 +73,12 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /Applications/lanhop.
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /Applications/lanhop.app
 ```
 
-If the app is in `~/Applications`, use that path. By hand, open **Firewall → Options** and allow incoming connections for lanhop. If **Block all incoming connections** is on, switch it off, or no machine can connect. This has not been tried on a real Mac yet.
+If the app is in `~/Applications`, use that path. By hand, open **Firewall → Options** and allow incoming connections for lanhop. If **Block all incoming connections** is on, switch it off, or no machine can connect. This has not been tried on a real Mac yet, and whether the firewall still lets lanhop in after an update is not measured yet.
 
 ## If it does not work
 
 - **Start with `lanhop status`.** It reports what the lanhop started at login is doing, not what your terminal is allowed to do. `lanhop devices` answers for the terminal you type it in.
-- **The switch is on, but lanhop still says the permission is missing.** Select the program in the list, remove it with the **−** button and add it again. macOS ties the permission to the program it approved, and after an update or a new build it may take lanhop for another program.
+- **The switch is on, but lanhop still says the permission is missing.** Select the program in the list, remove it with the **−** button and add it again. macOS ties the permission to the program it approved, and after the move from 0.1.1 to v0.1.2, or after a `lanhop.app` built by hand, it takes lanhop for another program: see [The macOS app is not signed by Apple](#the-macos-app-is-not-signed-by-apple).
 - **You granted it and nothing changed.** Quit the terminal completely (Cmd+Q, not only closing the window) and open it again.
 - **The + button is greyed out, or the list cannot be changed.** The Mac is managed by an organisation that blocks this setting. Ask whoever manages it.
 - **macOS also asks for "Input Monitoring".** Allow it for the same program, in **Privacy & Security → Input Monitoring**.
@@ -89,17 +91,18 @@ It writes a launch agent to `~/Library/LaunchAgents/com.github.rodrigogaraujo.la
 
 - The program to allow under Accessibility is then the **lanhop** app: see [Adding the lanhop app](#adding-the-lanhop-app). On a Mac that is controlled from another machine, it also needs [Local Network](#the-local-network-permission).
 - lanhop writes what it prints to `~/Library/Logs/lanhop.log`, and what it is doing to `~/Library/Application Support/lanhop/status`, which `lanhop status` reads.
-- Without Accessibility, lanhop waits. Every 10 seconds it ends, and macOS starts it again within 10 seconds, so that the new process gets a fresh answer: it carries on within about 20 seconds of the moment you allow it, from the release after 0.1.1. When it ends with an error, such as on a Mac that receives, before `lanhop pair`, macOS starts it again after 10 seconds. `pkill lanhop` ends it until the next login.
+- Without Accessibility, lanhop waits. Every 10 seconds it ends, and macOS starts it again within 10 seconds, so that the new process gets a fresh answer: it carries on within about 20 seconds of the moment you allow it, from v0.1.2 on. When it ends with an error, such as on a Mac that receives, before `lanhop pair`, macOS starts it again after 10 seconds. `pkill lanhop` ends it until the next login.
 - `launchctl bootout gui/$(id -u)/com.github.rodrigogaraujo.lanhop` stops it now. It starts again at the next login for as long as the file exists.
-- After an update, macOS may treat the new app as another program. If `lanhop status` says `accessibility` although the switch under Accessibility is on, remove lanhop from that list with the **−** button and add the app again. If it says `blocked` although lanhop is on under Local Network, see [The Local Network permission](#the-local-network-permission). This has not been measured yet: [The macOS app is not signed by Apple](#the-macos-app-is-not-signed-by-apple) says why it may happen.
+- From v0.1.2 on, the launch agent sets `LANHOP_SERVICE=1`. Run `lanhop update` on the machine with the keyboard, and each side machine that its launch agent started follows it to the same version (see [Updating](../README.md#updating)). After an update, a side machine ends with exit status 3, and macOS starts the new version. A launch agent written by the installer of 0.1.1 or older lacks the variable: type the installer line once to reach v0.1.2.
+- An update from v0.1.2 to a later release should keep Accessibility and Local Network, and the first connection right after it can fail once: [The macOS app is not signed by Apple](#the-macos-app-is-not-signed-by-apple) says what was measured. The move from 0.1.1 to v0.1.2 asks for Accessibility once more. If `lanhop status` says `accessibility` although the switch under Accessibility is on, remove lanhop from that list with the **−** button and add the app again. If it says `blocked` although lanhop is on under Local Network, see [The Local Network permission](#the-local-network-permission).
 
 `install.sh --uninstall` stops and removes the launch agent, its log, the app and the link. It keeps `~/Library/Application Support/lanhop`, with the key of the Mac and its trusted machines. Remove lanhop from the Accessibility and Local Network lists yourself.
 
 ## The macOS app is not signed by Apple
 
-Each macOS archive of a release unpacks to a folder, `lanhop-darwin-arm64` or `lanhop-darwin-amd64`, that holds `lanhop.app`, `LICENSE` and `README.md`. The app is signed ad hoc with its own identifier, `com.github.rodrigogaraujo.lanhop`. It is not signed with an Apple developer certificate and is not notarized by Apple. Two things follow:
+Each macOS archive of a release unpacks to a folder, `lanhop-darwin-arm64` or `lanhop-darwin-amd64`, that holds `lanhop.app`, `LICENSE` and `README.md`. From v0.1.2 on, the app is signed with a self-signed certificate of the project, with its own identifier, `com.github.rodrigogaraujo.lanhop` ([ADR 10](adr/0010-a-stable-signature-from-a-certificate-of-the-project.md)). Up to 0.1.1 it was signed ad hoc. It is not signed with an Apple developer certificate and is not notarized by Apple.
 
-- **An app downloaded with a browser does not start.** The browser marks the archive as downloaded from the internet, and macOS refuses to run a program that carries that mark unless Apple has checked it: it says that it could not verify that "lanhop" is free of malware. The installer downloads with `curl`, which sets no mark, so the lanhop it installs starts. If you download the archive with a browser, download `SHA256SUMS` too and check the archive against it. Then unpack it, take the mark away from the app, move the app to Applications and link the `lanhop` command to it. On an Intel Mac, write `amd64` instead of `arm64`:
+- **An app downloaded with a browser does not start.** The certificate of the project does not change this, since it does not come from Apple. The browser marks the archive as downloaded from the internet, and macOS refuses to run a program that carries that mark unless Apple has checked it: it says that it could not verify that "lanhop" is free of malware. The installer downloads with `curl`, which sets no mark, so the lanhop it installs starts. If you download the archive with a browser, download `SHA256SUMS` too and check the archive against it. Then unpack it, take the mark away from the app, move the app to Applications and link the `lanhop` command to it. On an Intel Mac, write `amd64` instead of `arm64`:
 
   ```sh
   shasum -a 256 --ignore-missing -c SHA256SUMS
@@ -114,12 +117,13 @@ Each macOS archive of a release unpacks to a folder, `lanhop-darwin-arm64` or `l
 
   Or try to open it once, then allow it under **System Settings → Privacy & Security → Open Anyway**.
 
-- **macOS may take each new build for another program.** An ad hoc signature changes with every build. On 2026-11-13, three Macs that moved to the 0.1.1 app lost Accessibility: switching the old line on again did not help, and only removing lanhop and adding it again did. Apple says that an app signed with an Apple developer certificate keeps its permissions across updates. If the switch does nothing after an update, remove lanhop from the Accessibility list with the **−** button and add it again.
-- **A certificate of the project is planned.** The project plans to sign lanhop.app with a self-signed certificate of its own, so that an update keeps Accessibility ([ADR 10](adr/0010-a-stable-signature-from-a-certificate-of-the-project.md)). One run with a test app kept Accessibility across two builds signed with the same certificate. A second run is still to do. Whether Local Network is kept is not measured. The first release signed this way will ask for Accessibility once more.
+- **An update should keep the permissions, from v0.1.2 on.** macOS ties the permission to the identifier and the certificate, not to the build. Measured on 2026-11-14 on one Mac with macOS 26.5.2, with a small test app signed the same way and started from a launch agent: an update between two builds signed with the same certificate kept Accessibility and Local Network, with no click and no question. Right after the update, the first connection failed once with "No route to host", and the next one connected. The first update between two releases of lanhop is the one from v0.1.2 to the next.
+- **The move from 0.1.1 asks for Accessibility once more.** An ad hoc signature changes with every build. On 2026-11-13, three Macs that moved to the 0.1.1 app lost Accessibility: switching the old line on again did not help, and only removing lanhop and adding it again did. The move from 0.1.1 to v0.1.2 asks for the permission one last time. If the switch does nothing after that move, remove lanhop from the Accessibility list with the **−** button and add it again.
+- **A `lanhop.app` signed ad hoc is expected to take the permission away again.** In the same test, a build signed ad hoc, with the same identifier, ran at the same path, and after it the build signed with the certificate did not have Accessibility any more. So running the 0.1.1 app, or a `lanhop.app` built by hand, on a Mac that has v0.1.2 costs the permission once more (deduced from that one test): remove lanhop from the Accessibility list and add the app again. `lanhop update` cannot move back to 0.1.1, which carries no signature.
 
 ## Letting another machine control the Mac
 
-Once a release brings it, the simplest way is one line: run `lanhop add NAME` on the machine with the keyboard, and type the line it prints on this Mac. See [Adding a machine](../README.md#adding-a-machine).
+The simplest way is one line: run `lanhop add NAME` on the machine with the keyboard, and type on this Mac the installer line it prints, with `LANHOP_JOIN`. It installs lanhop, joins, and waits for Accessibility and Local Network. See [Adding a machine](../README.md#adding-a-machine).
 
 Or, after granting the permission, pair the Mac with the machine that has the keyboard and mouse, then start receiving:
 
@@ -138,7 +142,7 @@ Not done yet on a Mac that is being controlled:
 
 ## Sharing the keyboard and mouse of the Mac
 
-Once a release brings it, add each other machine with `lanhop add NAME`, which prints a line to type on that machine. See [Adding a machine](../README.md#adding-a-machine).
+Add each other machine with `lanhop add NAME`, which prints a line to type on that machine. See [Adding a machine](../README.md#adding-a-machine).
 
 Or, on the Mac that has the keyboard and mouse, wait for each other machine to pair, then share:
 

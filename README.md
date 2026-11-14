@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: v0.1.1.** On macOS, lanhop is now an app, `lanhop.app`, with an identifier of its own, so that macOS can apply the Local Network permission to it. The installer now checks lanhop as it runs at login: on a Mac it opens the pane of each permission that is missing, Accessibility and Local Network, and it ends when the machine is connected or says what is still missing. The `lanhop.app`, `lanhop status` and the installer of this version have been checked only by automated tests, and no person has run them on a real machine yet. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. On `main`, not in a release yet: [adding a machine with one line](#adding-a-machine) and [`lanhop update`](#updating). They have passed only automated tests. `lanhop update` does not work yet: the release keys of the project do not exist yet. [Copy and paste](#copy-and-paste) of text and files, and [dragging files](#dragging-files) from one screen to the next, come with v0.1.2. They have passed automated tests, and nobody has tried them at a desk yet. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: v0.1.2.** This release brings [adding a machine with one line](#adding-a-machine) and [`lanhop update`](#updating). From this release on, releases are signed, and `lanhop.app` is signed with a certificate of the project, so that an update should keep the permissions of macOS, as it did for a test app on one Mac with macOS 26.5.2. These have passed automated tests. v0.1.2 is the first test of adding a machine on a real desk. `lanhop update`, and whether the signed app keeps its permissions, get their first real test with the update from v0.1.2 to the next release. Machines on 0.1.1 or older need the installer line once to reach v0.1.2. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. [Copy and paste](#copy-and-paste) of text and files, and [dragging files](#dragging-files) from one screen to the next, come with v0.1.2. They have passed automated tests, and nobody has tried them at a desk yet. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -30,11 +30,13 @@ Design decisions are recorded in [docs/adr](docs/adr). Features are specified in
 
 ## Install
 
-On each machine, Linux or macOS, as your own user:
+On the machine with the keyboard and mouse, Linux or macOS, as your own user:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/rodrigogaraujo/lanhop/main/install.sh | sh
 ```
+
+Then add each other machine with [`lanhop add NAME`](#adding-a-machine) on the machine with the keyboard. It prints the line to type on the new machine. Or type the line above on each other machine too: the installer then offers to pair it.
 
 The installer asks before each step:
 
@@ -55,7 +57,7 @@ Without a terminal to ask on, it installs lanhop and changes nothing else. To re
 | `LANHOP_INSTALL_DIR=DIR` | Puts the binary in `DIR` instead of `~/.local/bin`. On macOS, `DIR` gets the `lanhop` command, and the app still goes to Applications |
 | `LANHOP_ROLE=share` or `receive` | Answers the question about the keyboard and mouse |
 | `LANHOP_YES=1` | Agrees to every step and asks nothing, for installs with nobody at the keyboard. Pairing still needs a person, and the check at the end prints what `lanhop status` says without waiting for a permission or a connection |
-| `LANHOP_JOIN="ADDRESS CODE"` | Not in a release yet. Joins the machine with the keyboard as a side machine, with the line that [`lanhop add`](#adding-a-machine) printed there. It agrees to every step, and still waits for the permissions of macOS |
+| `LANHOP_JOIN="ADDRESS CODE"` | Joins the machine with the keyboard as a side machine, with the line that [`lanhop add`](#adding-a-machine) printed there. It agrees to every step, and still waits for the permissions of macOS |
 
 A variable goes before `sh`, not before `curl`:
 
@@ -71,11 +73,13 @@ curl -fsSL https://raw.githubusercontent.com/rodrigogaraujo/lanhop/main/install.
 
 It stops lanhop and removes the service, the binary, the [folder of files that arrived](#copy-and-paste) from other machines, `lanhop.app` on macOS and, after asking, the udev rule that the installer wrote. It keeps the key of the machine and its trusted machines, and says where they are. If you installed with `LANHOP_INSTALL_DIR`, give it again.
 
-Each release also has the archives themselves, one per system and architecture, with `SHA256SUMS`. The macOS archives hold `lanhop.app`, which is not signed with an Apple developer certificate: [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-app-is-not-signed-by-apple) says what that means when you download one with a browser.
+Each release also has the archives themselves, one per system and architecture, with `SHA256SUMS`. From v0.1.2 on, it also has `SHA256SUMS.sig`, a signature of `SHA256SUMS` by the key of the project: [SECURITY.md](SECURITY.md#how-releases-are-signed) says how releases are signed. The macOS archives hold `lanhop.app`, which from v0.1.2 on is signed with a certificate of the project, not with an Apple developer certificate: [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-app-is-not-signed-by-apple) says what that means when you download one with a browser, and after an update.
 
 ## Adding a machine
 
-> Built on `main`, not in a release yet. This has passed only automated tests.
+> New in v0.1.2. It has passed automated tests, and v0.1.2 is its first test on a real desk.
+
+The machine with the keyboard needs v0.1.2 or newer. On 0.1.1 or older, type the installer line there first.
 
 On the machine with the keyboard, name the new machine:
 
@@ -86,7 +90,7 @@ lanhop add office-mac
 It prints two lines and waits for ten minutes. Type one of them on the new machine:
 
 - On a machine without lanhop, type the installer line, with `LANHOP_JOIN`. It installs lanhop as a side machine and joins. It asks no question, apart from the password that `sudo` asks on Linux for the permission steps. It adds lanhop to the PATH file of your shell. On a Mac it waits for Accessibility and Local Network, for up to ten minutes.
-- On a machine that has lanhop, type the short line, `lanhop join ADDRESS CODE`. When lanhop does not start at login there, it joins and prints the installer line that sets that up.
+- On a machine that has lanhop, type the short line, `lanhop join ADDRESS CODE`. When lanhop does not start at login there, it joins and prints the installer line that sets that up. lanhop 0.1.1 and older have no `lanhop join`: type the installer line there.
 
 When the new machine has joined, `lanhop add` prints its hotkey, such as `Ctrl+Alt+3 moves to it`. It then opens the [layout editor](#arranging-the-desk-by-dragging), with the new machine waiting in its tray.
 
@@ -94,16 +98,19 @@ When the new machine has joined, `lanhop add` prints its hotkey, such as `Ctrl+A
 - Whoever reads the line in those ten minutes can join in place of the new machine. So pass it on yourself: type it, or send it through a chat you trust.
 - Three wrong codes end the wait. `lanhop add` prints the address of each connection that did not join.
 - `lanhop status` on the machine with the keyboard lists each side machine with its hotkey. It says whether the machine is connected, or since when it is not.
-- `lanhop pair`, which compares two codes on both screens, still works.
+- The other way is `lanhop pair` on both machines, which compares two codes on both screens. It still works.
 
 ## Updating
 
-> Built on `main`, not working yet. This has passed only automated tests. This build carries no release key of the project, so `lanhop update` stops at once, and side machines do not follow. On macOS, lanhop cannot check the signature of a new app yet. Both come with the release keys.
+> New in v0.1.2. It has passed automated tests. v0.1.2 is the first release that updates, so its first test on a real desk is the update from v0.1.2 to the next release.
+
+Run it on the machine with the keyboard, and the side machines follow:
 
 ```sh
 lanhop update
 ```
 
+- **From 0.1.1 or older.** These releases have no `lanhop update`, and their side machines do not follow. Type the installer line once on each machine to reach v0.1.2. On a Mac, that move asks for Accessibility once more: see [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-app-is-not-signed-by-apple).
 - **On the machine with the keyboard.** It moves lanhop to the latest release and restarts its service. Then it waits up to 90 seconds and prints each side machine that comes back on the new release.
 - **What it reports.** After the wait, it names:
   - the side machines that did not come back;
@@ -114,7 +121,8 @@ lanhop update
 - **Another release.** `lanhop update --version v0.1.3` moves to that release. With `--older`, it moves back, and the machine stops following the machine with the keyboard.
 - **Staying on a version.** `lanhop updates off` keeps a side machine on its version, and `lanhop updates on` lets it follow again.
 - **Versions in the status.** `lanhop status` on the machine with the keyboard shows the version of each side machine, such as `connected, v0.1.3, follows`.
-- **Machines that do not update by themselves.** Machines on a release without the keys of the project, 0.1.1 and older today, need the installer line typed on each once.
+- **Machines that do not update by themselves.** Machines on 0.1.1 or older need the installer line typed on each once, as above. `lanhop status` on the machine with the keyboard marks them `needs the installer`.
+- **On a Mac.** From v0.1.2 on, an update should keep Accessibility and Local Network, as it did for a test app signed the same way on one Mac with macOS 26.5.2. The first connection right after an update can fail once. See [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-app-is-not-signed-by-apple).
 
 ## Copy and paste
 
@@ -190,8 +198,8 @@ Drag a file or a folder on one machine, push it through the edge of the screen t
   - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 is meant to fix
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
   - [ ] Homebrew formula
-- [ ] Adding a machine with one line ([spec 009](specs/009-adding-a-machine/spec.md)): built on `main`, with `lanhop add`, `lanhop join` and the installer line; passed only automated tests
-- [ ] Updates with one command ([spec 010](specs/010-updates/spec.md)): `lanhop update` and side machines that follow the machine with the keyboard are built on `main`. The release keys, the signing of releases and the signature of the macOS app with a certificate of the project are not done yet, so no update can be installed
+- [ ] Adding a machine with one line ([spec 009](specs/009-adding-a-machine/spec.md)): `lanhop add`, `lanhop join` and the installer line come with v0.1.2; they have passed automated tests, and v0.1.2 is their first test on a real desk
+- [ ] Updates with one command ([spec 010](specs/010-updates/spec.md)): `lanhop update`, side machines that follow the machine with the keyboard, signed releases and the signature of the macOS app with a certificate of the project come with v0.1.2. They have passed automated tests. A test app signed with a certificate kept Accessibility and Local Network across an update on one Mac with macOS 26.5.2 ([ADR 10](docs/adr/0010-a-stable-signature-from-a-certificate-of-the-project.md)). The first update between two releases on a real desk is the one from v0.1.2 to the next
 
 ## Layout
 
