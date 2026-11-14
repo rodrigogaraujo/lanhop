@@ -12,7 +12,6 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
-	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 )
 
@@ -163,12 +162,13 @@ func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory s
 	return inTurn(runUntilStopped(done, central.Run), release)
 }
 
-func clipboardOfThisSide(done context.Context, directory string, announced *features.Set, dialData clipshare.DialData, stdout io.Writer) (receiver.Clipboard, func()) {
+func sideOfThisMachine(done context.Context, directory string, announced *features.Set, dialData clipshare.DialData, drops clipshare.Drops, stdout io.Writer) (*clipshare.Side, func()) {
 	config, release, supported := clipboardConfigIn(done, directory, announced, stdout)
 	if !supported {
 		return nil, func() {}
 	}
 	config.DialData = dialData
+	config.Drops = drops
 	side := clipshare.NewSide(config)
 	return side, inTurn(runUntilStopped(done, side.Run), release)
 }

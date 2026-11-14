@@ -77,13 +77,16 @@ func (t together) Lost() {
 	}
 }
 
+const longestDragLeave = 2 * time.Second
+
 type Config struct {
-	Transport transport.Config
-	Sharer    trust.Peer
-	Replay    Replay
-	Clipboard Clipboard
-	OnConnect func()
-	OnFailure func(reason error)
+	Transport  transport.Config
+	Sharer     trust.Peer
+	Replay     Replay
+	Clipboard  Clipboard
+	OnConnect  func()
+	OnFailure  func(reason error)
+	DragLeaves func(ctx context.Context)
 }
 
 func (c Config) withDefaults() Config {
@@ -115,19 +118,25 @@ func Run(ctx context.Context, config Config) error {
 }
 
 func run(ctx context.Context, config Config, delays retryDelays) error {
+	return runWith(ctx, config, delays, longestDragLeave)
+}
+
+func runWith(ctx context.Context, config Config, delays retryDelays, dragLeavesLimit time.Duration) error {
 	config = config.withDefaults()
-	local := &machine{replay: config.Replay, clipboard: config.Clipboard}
+	local := &machine{replay: config.Replay, clipboard: config.Clipboard, dragLeaves: config.DragLeaves, dragLeavesLimit: dragLeavesLimit}
 	err := local.receiveUntilStopped(ctx, config, delays)
 	return errors.Join(err, config.Replay.Close())
 }
 
 type machine struct {
-	replay      Replay
-	clipboard   Clipboard
-	toClipboard func(frame event.Event)
-	held        keystate.Tracker
-	focused     bool
-	reportOpen  bool
+	replay          Replay
+	clipboard       Clipboard
+	toClipboard     func(frame event.Event)
+	dragLeaves      func(ctx context.Context)
+	dragLeavesLimit time.Duration
+	held            keystate.Tracker
+	focused         bool
+	reportOpen      bool
 }
 
 func (m *machine) receiveUntilStopped(ctx context.Context, config Config, delays retryDelays) error {
@@ -167,13 +176,13 @@ func (m *machine) replayFrom(ctx context.Context, conn *transport.Conn) (lost, b
 		if err != nil {
 			return err, m.loseFocus()
 		}
-		if err := m.handle(received); err != nil {
+		if err := m.handle(ctx, received); err != nil {
 			return nil, err
 		}
 	}
 }
 
-func (m *machine) handle(received event.Event) error {
+func (m *machine) handle(ctx context.Context, received event.Event) error {
 	if !received.IsControl() {
 		return m.replayIfFocused(received)
 	}
@@ -185,10 +194,31 @@ func (m *machine) handle(received event.Event) error {
 		err := m.loseFocus()
 		m.clipboard.FocusLeaves()
 		return err
+	case event.ControlDragLeaves:
+		if m.dragLeaves == nil {
+			m.toClipboard(received)
+			return nil
+		}
+		m.endTheDragThatLeft(ctx)
 	default:
 		m.toClipboard(received)
 	}
 	return nil
+}
+
+func (m *machine) endTheDragThatLeft(ctx context.Context) {
+	bounded, cancel := context.WithTimeout(ctx, m.dragLeavesLimit)
+	defer cancel()
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		m.dragLeaves(bounded)
+	}()
+	select {
+	case <-ended:
+	case <-bounded.Done():
+	}
+	m.held.Observe(event.Key(event.ButtonLeft, event.KeyReleased))
 }
 
 func (m *machine) replayIfFocused(input event.Event) error {
