@@ -184,7 +184,8 @@ The first session showed that Escape and a release through uinput do not end a d
 
 Before the runs:
 
-- Stop lanhop on the Linux machine with `systemctl --user stop lanhop.service`, so that the pointer at the edge does not cross to the other machine. Start it again afterwards with `systemctl --user start lanhop.service`.
+- Leave lanhop running. On a Linux machine that receives, lanhop never reads the local mouse, so that mouse cannot cross to the other machine. For the runs with the physical mouse, keep lanhop's focus on the other machine, so that lanhop does not move this cursor.
+- After `release-real` writes, keep the mouse still until the log says "after 3s": if the mouse moves while the finger still holds the button, the mouse reports the button down again and X shows it held.
 - `release-real` writes to the event node of the mouse, `/dev/input/eventN`, which the `input` group can write. Check it with `ls -l /dev/input/event*` and `id`. Do not use sudo.
 - Open a Nautilus window of `~/drag-scratch`, so that `throwaway.txt` is visible.
 - While `edge` runs, the strip takes the clicks within 40 pixels of that edge. It is invisible.
