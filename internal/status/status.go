@@ -42,6 +42,7 @@ type Report struct {
 	Left            []Departure
 	Seats           []Seat
 	DragCannotReach []string
+	DragFilesOff    []string
 	DragCannotLeave bool
 }
 
@@ -137,6 +138,9 @@ func write(path string, report Report) error {
 	for _, machine := range report.DragCannotReach {
 		fmt.Fprintf(&text, "drag-cannot-reach=%s\n", oneLine(machine))
 	}
+	for _, machine := range report.DragFilesOff {
+		fmt.Fprintf(&text, "drag-files-off=%s\n", oneLine(machine))
+	}
 	if report.DragCannotLeave {
 		fmt.Fprintf(&text, "drag-cannot-leave=%s\n", yes)
 	}
@@ -190,6 +194,10 @@ func Read(directory string) (Report, error) {
 		case "drag-cannot-reach":
 			if value != "" {
 				report.DragCannotReach = append(report.DragCannotReach, value)
+			}
+		case "drag-files-off":
+			if value != "" {
+				report.DragFilesOff = append(report.DragFilesOff, value)
 			}
 		case "drag-cannot-leave":
 			report.DragCannotLeave = value == yes

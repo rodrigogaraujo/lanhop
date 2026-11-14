@@ -99,10 +99,13 @@ func showStatus(args []string, stdout io.Writer) error {
 }
 
 func aboutABlockedDrag(blocked sharer.BlockedDrag) string {
-	if blocked.Block == sharer.DragCannotLeave {
-		return "Dragging a file cannot leave this machine: on Linux, a dragged file crosses only from a machine that receives the keyboard and mouse. Copy the file and paste it on the other machine instead."
+	switch blocked.Block {
+	case sharer.DragCannotLeave:
+		return "A file dragged on this machine cannot leave it. Copying the file and pasting it on the other machine works instead."
+	case sharer.FilesOffThere:
+		return fmt.Sprintf("Dragging a file cannot reach %q: file sharing is off on that machine.", blocked.Machine)
 	}
-	return fmt.Sprintf("Dragging a file cannot reach %q, which does not take dragged files. Copy the file and paste it there instead.", blocked.Machine)
+	return fmt.Sprintf("Dragging a file cannot reach %q. Copying the file and pasting it there works instead.", blocked.Machine)
 }
 
 func describeDrags(report status.Report) string {
@@ -112,6 +115,9 @@ func describeDrags(report status.Report) string {
 	}
 	for _, machine := range report.DragCannotReach {
 		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Machine: machine, Block: sharer.DragCannotReach}))
+	}
+	for _, machine := range report.DragFilesOff {
+		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Machine: machine, Block: sharer.FilesOffThere}))
 	}
 	if len(notices) == 0 {
 		return ""

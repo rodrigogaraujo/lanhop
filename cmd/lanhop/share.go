@@ -116,6 +116,7 @@ type deskStatus struct {
 	stopped   bool
 
 	dragCannotReach []string
+	dragFilesOff    []string
 	dragCannotLeave bool
 }
 
@@ -178,6 +179,11 @@ func (d *deskStatus) blockedDrag(blocked sharer.BlockedDrag) {
 			return
 		}
 		d.dragCannotReach = append(d.dragCannotReach, blocked.Machine)
+	case sharer.FilesOffThere:
+		if slices.Contains(d.dragFilesOff, blocked.Machine) {
+			return
+		}
+		d.dragFilesOff = append(d.dragFilesOff, blocked.Machine)
 	case sharer.DragCannotLeave:
 		if d.dragCannotLeave {
 			return
@@ -211,6 +217,7 @@ func (d *deskStatus) write() {
 		Left:            left,
 		Seats:           slices.Clone(d.seats),
 		DragCannotReach: slices.Clone(d.dragCannotReach),
+		DragFilesOff:    slices.Clone(d.dragFilesOff),
 		DragCannotLeave: d.dragCannotLeave,
 	}
 	if len(d.connected) == 0 {

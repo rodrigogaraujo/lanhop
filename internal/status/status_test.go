@@ -226,7 +226,13 @@ func TestSeatsReadBackWithTheirVersionAndMark(t *testing.T) {
 
 func TestWhatADraggedFileCannotDoReadsBack(t *testing.T) {
 	directory := t.TempDir()
-	written := Report{State: Sharing, Machines: []string{"laptop", "wayland box"}, DragCannotReach: []string{"laptop", "wayland box"}, DragCannotLeave: true}
+	written := Report{
+		State:           Sharing,
+		Machines:        []string{"laptop", "wayland box", "tablet"},
+		DragCannotReach: []string{"laptop", "wayland box"},
+		DragFilesOff:    []string{"tablet"},
+		DragCannotLeave: true,
+	}
 	if err := OwnerOf(directory).Write(written); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -234,8 +240,8 @@ func TestWhatADraggedFileCannotDoReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if !slices.Equal(read.DragCannotReach, written.DragCannotReach) || !read.DragCannotLeave {
-		t.Errorf("read %+v, want the machines a dragged file cannot reach and that it cannot leave this one", read)
+	if !slices.Equal(read.DragCannotReach, written.DragCannotReach) || !slices.Equal(read.DragFilesOff, written.DragFilesOff) || !read.DragCannotLeave {
+		t.Errorf("read %+v, want the machines a dragged file cannot reach, those with file sharing off, and that it cannot leave this one", read)
 	}
 }
 
@@ -248,7 +254,7 @@ func TestAReportWithNothingAboutDraggedFilesReadsBackWithNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if len(read.DragCannotReach) != 0 || read.DragCannotLeave {
+	if len(read.DragCannotReach) != 0 || len(read.DragFilesOff) != 0 || read.DragCannotLeave {
 		t.Errorf("read %+v, want nothing about dragged files", read)
 	}
 	contents, err := os.ReadFile(filepath.Join(directory, FileName))
@@ -262,14 +268,14 @@ func TestAReportWithNothingAboutDraggedFilesReadsBackWithNothing(t *testing.T) {
 
 func TestOnlyYesSaysThatADraggedFileCannotLeaveAndAnEmptyNameIsNoMachine(t *testing.T) {
 	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, FileName), []byte("state=sharing\ndrag-cannot-leave=no\ndrag-cannot-reach=\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, FileName), []byte("state=sharing\ndrag-cannot-leave=no\ndrag-cannot-reach=\ndrag-files-off=\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	read, err := Read(directory)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if read.DragCannotLeave || len(read.DragCannotReach) != 0 {
+	if read.DragCannotLeave || len(read.DragCannotReach) != 0 || len(read.DragFilesOff) != 0 {
 		t.Errorf("read %+v, want neither a value other than yes nor an empty name to count", read)
 	}
 }

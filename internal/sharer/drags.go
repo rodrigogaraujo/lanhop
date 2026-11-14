@@ -27,6 +27,7 @@ type DragBlock int
 
 const (
 	DragCannotReach DragBlock = iota + 1
+	FilesOffThere
 	DragCannotLeave
 )
 
@@ -61,19 +62,26 @@ func (s *Sharer) dragStarted(drag Drag) {
 
 func (s *Sharer) hear(conn Conn, frame event.Event) {
 	if frame.IsControl() && frame.Code == event.ControlFeatures {
-		takes := frame.Value&(1<<features.Drag) != 0
-		s.inbox.put(func() { s.sideTakesDrags(conn, takes) })
+		announced := frame.Value
+		s.inbox.put(func() { s.sideAnnounced(conn, announced) })
 	}
 }
 
-func (s *Sharer) sideTakesDrags(conn Conn, takes bool) {
-	if _, known := s.takesDrags[conn]; known {
-		s.takesDrags[conn] = takes
+func (s *Sharer) sideAnnounced(conn Conn, announced int32) {
+	if _, known := s.announced[conn]; known {
+		s.announced[conn] = announced
 	}
 }
 
-func (s *Sharer) takesDragsHere() bool {
-	return s.edges.Features != nil && s.edges.Features.Has(features.Drag)
+func (s *Sharer) announcedHere() int32 {
+	if s.edges.Features == nil {
+		return 0
+	}
+	return s.edges.Features.Value()
+}
+
+func says(announced int32, bit int) bool {
+	return announced&(1<<bit) != 0
 }
 
 func (s *Sharer) armForTheDrag(watcher *edge.Watcher) {
@@ -84,15 +92,19 @@ func (s *Sharer) armForTheDrag(watcher *edge.Watcher) {
 	watcher.DragStarted(s.docks[s.nameOfFocused()])
 }
 
-func (s *Sharer) dragMayEnter(machine string, takesDrags bool) bool {
+func (s *Sharer) dragMayEnter(machine string, announced int32) bool {
 	if s.focused == nil && s.edges.DragsStayHere {
 		s.tellBlocked(BlockedDrag{Machine: s.edges.Name, Block: DragCannotLeave})
 		return false
 	}
-	if takesDrags || s.drag != nil && machine == s.drag.Origin {
+	if says(announced, features.Drag) || s.drag != nil && machine == s.drag.Origin {
 		return true
 	}
-	s.tellBlocked(BlockedDrag{Machine: machine, Block: DragCannotReach})
+	block := DragCannotReach
+	if !says(announced, features.Files) {
+		block = FilesOffThere
+	}
+	s.tellBlocked(BlockedDrag{Machine: machine, Block: block})
 	return false
 }
 

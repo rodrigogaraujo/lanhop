@@ -223,7 +223,7 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 		return nil
 	}
 	if neighbour == s.edges.Name {
-		if crossing.Dragging && !s.dragMayEnter(neighbour, s.takesDragsHere()) {
+		if crossing.Dragging && !s.dragMayEnter(neighbour, s.announcedHere()) {
 			return nil
 		}
 		s.tellDragCrossing(crossing, left, neighbour)
@@ -233,7 +233,7 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 	if !connected || s.wouldLeaveAKeyHeldHere(crossing.Dragging) {
 		return nil
 	}
-	if crossing.Dragging && !s.dragMayEnter(neighbour, s.takesDrags[receiver]) {
+	if crossing.Dragging && !s.dragMayEnter(neighbour, s.announced[receiver]) {
 		return nil
 	}
 	s.tellDragCrossing(crossing, left, neighbour)

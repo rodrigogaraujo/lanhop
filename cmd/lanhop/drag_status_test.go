@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	dragCannotReachLaptop = `Dragging a file cannot reach "laptop", which does not take dragged files. Copy the file and paste it there instead.`
-	dragCannotLeaveHere   = "Dragging a file cannot leave this machine: on Linux, a dragged file crosses only from a machine that receives the keyboard and mouse. Copy the file and paste it on the other machine instead."
+	dragCannotReachLaptop = `Dragging a file cannot reach "laptop". Copying the file and pasting it there works instead.`
+	filesOffOnTablet      = `Dragging a file cannot reach "tablet": file sharing is off on that machine.`
+	dragCannotLeaveHere   = "A file dragged on this machine cannot leave it. Copying the file and pasting it on the other machine works instead."
 )
 
 func TestShareSaysInItsLogAndItsStatusWhatADraggedFileCannotDo(t *testing.T) {
@@ -25,6 +26,7 @@ func TestShareSaysInItsLogAndItsStatusWhatADraggedFileCannotDo(t *testing.T) {
 	tell := tellBlockedDrags(&log, report)
 
 	tell(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
+	tell(sharer.BlockedDrag{Machine: "tablet", Block: sharer.FilesOffThere})
 	tell(sharer.BlockedDrag{Machine: "me", Block: sharer.DragCannotLeave})
 	report.receivers(nil)
 
@@ -32,10 +34,10 @@ func TestShareSaysInItsLogAndItsStatusWhatADraggedFileCannotDo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if read.State != status.Waiting || !slices.Equal(read.DragCannotReach, []string{"laptop"}) || !read.DragCannotLeave {
-		t.Errorf("status %+v, want waiting, with laptop out of reach of a dragged file and no drag leaving this machine", read)
+	if read.State != status.Waiting || !slices.Equal(read.DragCannotReach, []string{"laptop"}) || !slices.Equal(read.DragFilesOff, []string{"tablet"}) || !read.DragCannotLeave {
+		t.Errorf("status %+v, want waiting, with laptop out of reach of a dragged file, file sharing off on tablet and no drag leaving this machine", read)
 	}
-	if want := dragCannotReachLaptop + "\n" + dragCannotLeaveHere + "\n"; log.String() != want {
+	if want := dragCannotReachLaptop + "\n" + filesOffOnTablet + "\n" + dragCannotLeaveHere + "\n"; log.String() != want {
 		t.Errorf("the log reads %q, want %q", log.String(), want)
 	}
 }
@@ -47,27 +49,36 @@ func TestTheDeskStatusKeepsEachMachineADraggedFileCannotReachOnce(t *testing.T) 
 	report.blockedDrag(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
 	report.blockedDrag(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
 	report.blockedDrag(sharer.BlockedDrag{Machine: "tablet", Block: sharer.DragCannotReach})
+	report.blockedDrag(sharer.BlockedDrag{Machine: "laptop", Block: sharer.FilesOffThere})
+	report.blockedDrag(sharer.BlockedDrag{Machine: "laptop", Block: sharer.FilesOffThere})
 
 	read, err := status.Read(directory)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if !slices.Equal(read.DragCannotReach, []string{"laptop", "tablet"}) || read.DragCannotLeave {
-		t.Errorf("status %+v, want laptop and tablet once each, and nothing about leaving", read)
+	if !slices.Equal(read.DragCannotReach, []string{"laptop", "tablet"}) || !slices.Equal(read.DragFilesOff, []string{"laptop"}) || read.DragCannotLeave {
+		t.Errorf("status %+v, want laptop and tablet out of reach once each, file sharing off on laptop once, and nothing about leaving", read)
 	}
 }
 
 func TestStatusOnTheCentralSaysWhatADraggedFileCannotDoAfterTheDesk(t *testing.T) {
 	directory := useConfigDirectory(t)
-	trustAlready(t, directory, trust.Peer{Name: "laptop", Fingerprint: someFingerprint(1)})
-	openStatus().set(status.Report{State: status.Sharing, Machines: []string{"laptop"}, DragCannotReach: []string{"laptop"}, DragCannotLeave: true})
+	trustAlready(t, directory, trust.Peer{Name: "laptop", Fingerprint: someFingerprint(1)}, trust.Peer{Name: "tablet", Fingerprint: someFingerprint(2)})
+	openStatus().set(status.Report{
+		State:           status.Sharing,
+		Machines:        []string{"laptop", "tablet"},
+		DragCannotReach: []string{"laptop"},
+		DragFilesOff:    []string{"tablet"},
+		DragCannotLeave: true,
+	})
 
 	lines := strings.Split(lanhopStatus(t), "\n")
-	seat := slices.Index(lines, "  laptop  Ctrl+Alt+2   connected")
+	seat := slices.Index(lines, "  tablet  Ctrl+Alt+3   connected")
 	leave := slices.Index(lines, dragCannotLeaveHere)
 	reach := slices.Index(lines, dragCannotReachLaptop)
-	if seat < 0 || leave <= seat || reach <= leave {
-		t.Errorf("lanhop status printed\n%s\nwant the desk, then that a drag cannot leave, then that it cannot reach laptop", strings.Join(lines, "\n"))
+	off := slices.Index(lines, filesOffOnTablet)
+	if seat < 0 || leave <= seat || reach <= leave || off <= reach {
+		t.Errorf("lanhop status printed\n%s\nwant the desk, then that a drag cannot leave, that it cannot reach laptop, and that file sharing is off on tablet", strings.Join(lines, "\n"))
 	}
 }
 

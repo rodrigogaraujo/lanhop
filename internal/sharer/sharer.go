@@ -127,7 +127,7 @@ type Sharer struct {
 	moved              movement
 	heldHere           keystate.Tracker
 	inbox              *inbox
-	takesDrags         map[Conn]bool
+	announced          map[Conn]int32
 	docks              map[string]edge.Side
 	drag               *Drag
 	toldBlocked        map[BlockedDrag]bool
@@ -152,7 +152,7 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges Edge
 		ownEdges:           edge.New(edges.Watch),
 		remoteEdges:        watcherOfRemoteDesktops(edges.Watch),
 		inbox:              newInbox(),
-		takesDrags:         make(map[Conn]bool),
+		announced:          make(map[Conn]int32),
 		docks:              make(map[string]edge.Side),
 		toldBlocked:        make(map[BlockedDrag]bool),
 	}
@@ -356,7 +356,7 @@ func (s *Sharer) admit(conn Conn) error {
 	fingerprint := conn.Peer().Fingerprint
 	previous, reconnecting := s.receivers[fingerprint]
 	s.receivers[fingerprint] = conn
-	s.takesDrags[conn] = false
+	s.announced[conn] = 0
 	s.receiverChanges++
 	go s.watch(conn, s.clipboard.Connected(conn))
 	if !reconnecting {
@@ -392,7 +392,7 @@ func (s *Sharer) drop(conn Conn) error {
 }
 
 func (s *Sharer) giveInputBackThenClose(conn Conn) error {
-	delete(s.takesDrags, conn)
+	delete(s.announced, conn)
 	s.clipboard.Lost(conn)
 	err := s.takeFocusFrom(conn)
 	conn.Close()
@@ -400,7 +400,7 @@ func (s *Sharer) giveInputBackThenClose(conn Conn) error {
 }
 
 func (s *Sharer) forget(conn Conn) {
-	delete(s.takesDrags, conn)
+	delete(s.announced, conn)
 	s.clipboard.Lost(conn)
 	delete(s.receivers, conn.Peer().Fingerprint)
 	s.receiverChanges++

@@ -19,6 +19,7 @@ const (
 var (
 	takesDrags   = event.Features(event.FeatureClipboard | 1<<features.Files | 1<<features.Drag)
 	takesNoDrags = event.Features(event.FeatureClipboard | 1<<features.Files)
+	filesAreOff  = event.Features(event.FeatureClipboard)
 )
 
 func dragCrosses(crossing DragCrossing) string {
@@ -30,6 +31,8 @@ func dragIsBlocked(blocked BlockedDrag) string {
 	switch blocked.Block {
 	case DragCannotReach:
 		return "the central says a dragged file cannot reach " + blocked.Machine
+	case FilesOffThere:
+		return "the central says file sharing is off on " + blocked.Machine
 	case DragCannotLeave:
 		return "the central says a dragged file cannot leave " + blocked.Machine
 	}
@@ -42,6 +45,10 @@ func dragged(origin, from, to string, files int) string {
 
 func cannotReach(machine string) string {
 	return dragIsBlocked(BlockedDrag{Machine: machine, Block: DragCannotReach})
+}
+
+func filesOff(machine string) string {
+	return dragIsBlocked(BlockedDrag{Machine: machine, Block: FilesOffThere})
 }
 
 func cannotLeave(machine string) string {
@@ -87,9 +94,11 @@ func (s *sharing) dragStartsOn(origin string, files int, dock edge.Side) {
 	s.sharer.DragStarted(Drag{Origin: origin, Files: files, Dock: dock})
 }
 
-func takingDragsHere() *features.Set {
+func announcingHere(bits ...int) *features.Set {
 	own := new(features.Set)
-	own.Turn(features.Drag, true)
+	for _, bit := range bits {
+		own.Turn(bit, true)
+	}
 	return own
 }
 
@@ -166,14 +175,24 @@ func TestAFileDraggedOnTheCentralCrossesOnlyUnderTheRulesOfADrag(t *testing.T) {
 			want: then(cannotReach("desk")),
 		},
 		{
-			name:    "a neighbour that announced nothing does not take dragged files",
+			name:    "toward a neighbour with file sharing off nothing crosses, and the central says that file sharing is off there",
+			connect: func(s *sharing) { s.hears(s.connectSaying(desk), filesAreOff) },
+			act: func(s *sharing) {
+				s.holdsTheButton()
+				s.dragStartsOn(thisMachine, 2, noDock)
+				s.pushes(1, 0, 3*dragReportsToCross)
+			},
+			want: then(filesOff("desk")),
+		},
+		{
+			name:    "a neighbour that announced nothing has file sharing off",
 			connect: func(s *sharing) { s.connect(desk) },
 			act: func(s *sharing) {
 				s.holdsTheButton()
 				s.dragStartsOn(thisMachine, 2, noDock)
 				s.pushes(1, 0, 2*dragReportsToCross)
 			},
-			want: then(cannotReach("desk")),
+			want: then(filesOff("desk")),
 		},
 		{
 			name: "a neighbour that stopped taking dragged files is not crossed",
@@ -501,8 +520,11 @@ func TestADragThatStartsOnASideMachine(t *testing.T) {
 			gets(desk, enteredAt(farEdge, centre)...),
 		))
 	})
-	t.Run("toward the central, which does not take dragged files", func(t *testing.T) {
-		s := startSharingWithLayout(t, "me desk", desk)
+	t.Run("toward the central, which shares files but does not take dragged files", func(t *testing.T) {
+		s := newSharing(t, desk)
+		s.features = announcingHere(features.Clipboard, features.Files)
+		s.desk.Store(drawn(t, "me desk"))
+		s.startWithAScreen(ownDesktop)
 		s.connectTakingDrags(desk)
 
 		startOnDesk(s, noDock, -400)
@@ -515,9 +537,23 @@ func TestADragThatStartsOnASideMachine(t *testing.T) {
 			gets(desk, times(dragReportsToCross, positioned(0, centre)...)...),
 		))
 	})
+	t.Run("toward the central, which has file sharing off", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+
+		startOnDesk(s, noDock, -400)
+		s.pushes(-1, 0, 2*dragReportsToCross)
+
+		s.expectJournal(story(
+			holdingOnDesk(0),
+			gets(desk, times(dragReportsToCross, positioned(0, centre)...)...),
+			then(filesOff(thisMachine)),
+			gets(desk, times(dragReportsToCross, positioned(0, centre)...)...),
+		))
+	})
 	t.Run("toward the central, which takes dragged files", func(t *testing.T) {
 		s := newSharing(t, desk)
-		s.features = takingDragsHere()
+		s.features = announcingHere(features.Clipboard, features.Files, features.Drag)
 		s.desk.Store(drawn(t, "me desk"))
 		s.startWithAScreen(ownDesktop)
 		s.connectTakingDrags(desk)
@@ -581,6 +617,29 @@ func TestTheCentralSaysOncePerRunForEachMachineThatADraggedFileCannotReach(t *te
 	}
 
 	s.expectJournal(then(cannotReach("desk"), cannotReach("laptop")))
+}
+
+func TestEachReasonADraggedFileCannotReachAMachineIsSaidOncePerRun(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk", desk)
+	receiver := s.connectSaying(desk)
+	s.screen.cursorIsAt(1000, 125)
+	dragAcross := func() {
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 1, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+		s.releasesTheButton()
+	}
+
+	s.hears(receiver, filesAreOff)
+	dragAcross()
+	s.hears(receiver, takesNoDrags)
+	dragAcross()
+	s.hears(receiver, filesAreOff)
+	dragAcross()
+	s.hears(receiver, takesNoDrags)
+	dragAcross()
+
+	s.expectJournal(then(filesOff("desk"), cannotReach("desk")))
 }
 
 func TestTheClipboardAndTheEdgesHearTheSameFeaturesFrame(t *testing.T) {
