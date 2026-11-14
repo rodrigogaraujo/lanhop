@@ -1952,6 +1952,51 @@ func TestUninstallRemovesTheStatusOfTheServiceAndKeepsTheKey(t *testing.T) {
 	})
 }
 
+func TestUninstallRemovesTheFilesThatArrivedFromOtherMachinesAndNothingElseInTheCache(t *testing.T) {
+	folders := []struct {
+		name     string
+		system   string
+		cache    string
+		arrivals string
+		others   string
+		kept     string
+	}{
+		{"on Linux", "Linux", "", ".cache/lanhop/arrived", ".cache/another program/kept", linuxPeersFile},
+		{"on Linux with XDG_CACHE_HOME", "Linux", "cache elsewhere", "cache elsewhere/lanhop/arrived", "cache elsewhere/another program/kept", linuxPeersFile},
+		{"on macOS", "Darwin", "", "Library/Caches/lanhop/arrived", "Library/Caches/another program/kept", macPeersFile},
+	}
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, folder := range folders {
+			t.Run(folder.name, func(t *testing.T) {
+				m := newMachine(t, shell, folder.system, "x86_64", newReleases(t))
+				if folder.cache != "" {
+					m.settings["XDG_CACHE_HOME"] = m.path(folder.cache)
+				}
+				m.settings["LANHOP_ROLE"] = "share"
+				m.settings["LANHOP_YES"] = "1"
+				m.mustRun()
+				delete(m.settings, "LANHOP_ROLE")
+				writeFile(t, m.path(folder.kept), []byte("{}\n"), 0o600)
+				writeFile(t, m.path(folder.others), []byte("kept\n"), 0o600)
+				for _, name := range []string{"/5-00112233445566aa/notes.txt", "/5-00112233445566aa.complete", "/.lock"} {
+					writeFile(t, m.path(folder.arrivals+name), []byte("arrived\n"), 0o600)
+				}
+
+				output := m.mustRun("--uninstall")
+
+				left, want := m.files(), []string{folder.kept, folder.others}
+				slices.Sort(left)
+				slices.Sort(want)
+				expectSame(t, "files in the home directory", left, want)
+				expectMention(t, output, "Removed "+m.path(folder.arrivals)+", with the files that arrived from other machines")
+				if _, err := os.Stat(m.path(strings.TrimSuffix(folder.arrivals, "/arrived"))); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("the empty cache folder of lanhop is still there: %v", err)
+				}
+			})
+		}
+	})
+}
+
 func TestUninstallAlsoRemovesCopiesThatAnInterruptedUpdateLeft(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
 		m := newMachine(t, shell, "Darwin", "arm64", newReleases(t))
