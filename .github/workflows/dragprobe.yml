@@ -1,0 +1,85 @@
+name: Drag probes
+
+on:
+  pull_request:
+    paths:
+      - "research/dragprobe/**"
+      - "internal/x11/**"
+      - ".github/workflows/dragprobe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    name: Build lanhop-dragprobe.app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build for arm64 and amd64 and join them
+        env:
+          CGO_ENABLED: "1"
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          GOARCH=arm64 go build -trimpath -o dragprobe-arm64 ./research/dragprobe/mac
+          GOARCH=amd64 go build -trimpath -o dragprobe-amd64 ./research/dragprobe/mac
+          lipo -create -output lanhop-dragprobe dragprobe-arm64 dragprobe-amd64
+          lipo -archs lanhop-dragprobe | tee archs
+          grep -qw arm64 archs
+          grep -qw x86_64 archs
+      - name: Put it in lanhop-dragprobe.app and sign it ad hoc
+        run: |
+          app=out/lanhop-dragprobe.app
+          mkdir -p "$app/Contents/MacOS"
+          cp research/dragprobe/mac/Info.plist "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          cp lanhop-dragprobe "$app/Contents/MacOS/lanhop-dragprobe"
+          chmod 755 "$app/Contents/MacOS/lanhop-dragprobe"
+          codesign -s - --force --deep "$app"
+          codesign --verify --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>signature
+          cat signature
+          grep -Fx "Identifier=com.github.rodrigogaraujo.lanhop-dragprobe" signature
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = com.github.rodrigogaraujo.lanhop-dragprobe
+      - name: Check that the program starts and refuses a wrong command line
+        run: |
+          set +e
+          out/lanhop-dragprobe.app/Contents/MacOS/lanhop-dragprobe nothing 2>usage
+          code=$?
+          set -e
+          cat usage
+          test "$code" = 2
+          grep -F "unknown subcommand" usage
+      - name: Pack the app so its modes and signature survive the artifact
+        run: tar -czf lanhop-dragprobe-mac.tar.gz -C out lanhop-dragprobe.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lanhop-dragprobe-mac
+          path: lanhop-dragprobe-mac.tar.gz
+          if-no-files-found: error
+
+  linux:
+    name: Build the Linux probe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build for linux/amd64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -o lanhop-dragprobe ./research/dragprobe/linux
+          file lanhop-dragprobe | grep -F "statically linked"
+          tar -czf lanhop-dragprobe-linux-amd64.tar.gz lanhop-dragprobe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lanhop-dragprobe-linux-amd64
+          path: lanhop-dragprobe-linux-amd64.tar.gz
+          if-no-files-found: error
