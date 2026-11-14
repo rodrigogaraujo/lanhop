@@ -29,6 +29,7 @@ type Shield struct {
 	closed  *latch
 	closing sync.Once
 	err     error
+	at      Point
 }
 
 func newShield(window shieldWindow, lifetime time.Duration) *Shield {
@@ -61,8 +62,10 @@ func (s *Shield) waitUntilItTakesTheMouse(ctx context.Context, cursor func() Poi
 		if err := s.stopped(ctx); err != nil {
 			return err
 		}
-		taken, err := s.window.takeTheMouseAt(cursor())
+		at := cursor()
+		taken, err := s.window.takeTheMouseAt(at)
 		if taken && err == nil {
+			s.at = at
 			return nil
 		}
 		if !time.Now().Before(deadline) {
@@ -93,6 +96,10 @@ func (s *Shield) stopped(ctx context.Context) error {
 	default:
 		return nil
 	}
+}
+
+func (s *Shield) At() Point {
+	return s.at
 }
 
 func (s *Shield) Close() error {

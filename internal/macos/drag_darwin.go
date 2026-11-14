@@ -17,7 +17,10 @@ import (
 
 var ErrNoDragPasteboard = errors.New("macos: AppKit gave no name for the drag pasteboard")
 
-var _ dragEnder = Quartz{}
+var (
+	_ dragEnder         = Quartz{}
+	_ replayedDragEnder = Quartz{}
+)
 
 func WatchDrags(interval time.Duration) (*DragWatch, error) {
 	board, err := systemDragPasteboard()
@@ -29,6 +32,10 @@ func WatchDrags(interval time.Duration) (*DragWatch, error) {
 
 func EndSourceDrag() error {
 	return endSourceDrag(Quartz{}, CanPost, time.Sleep)
+}
+
+func EndReplayedSourceDrag(under Point) error {
+	return endReplayedSourceDrag(Quartz{}, CanPost, time.Sleep, under)
 }
 
 func leftButtonHeld() bool {
