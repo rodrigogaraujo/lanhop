@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -363,4 +364,19 @@ func TestNoDragOfTheCentralIsWatchedWithoutAClipboardToCarryIt(t *testing.T) {
 	drags := newDragsOfTheCentral(theCentral, nil, func() error { return nil }, &screen{})
 
 	drags.watch(context.Background())()
+}
+
+func TestEndingASourceDragUnderAShieldOnTheCentralSaysWhetherItEnded(t *testing.T) {
+	missed := func(context.Context) (io.Closer, error) { return nil, errors.New("the window did not take the mouse") }
+	log := &screen{}
+
+	if err := endTheSourceDragUnderAShield(context.Background(), missed, func() error { return nil }, nil, log); err != nil {
+		t.Errorf("a source drag ended after the shield missed gave %v, want no error", err)
+	}
+	if err := endTheSourceDragUnderAShield(context.Background(), missed, func() error { return errPostingRefused }, nil, log); !errors.Is(err, errPostingRefused) {
+		t.Errorf("a source drag that could not be ended gave %v, want %v", err, errPostingRefused)
+	}
+	if !strings.Contains(log.String(), "and ends it anyway") {
+		t.Errorf("the log says %q, want the missed shield", log.String())
+	}
 }

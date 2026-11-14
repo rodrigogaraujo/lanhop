@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 
 	"github.com/rodrigogaraujo/lanhop/internal/keymap"
@@ -36,16 +35,8 @@ func captureWhenAllowed(allowed bool) (inputCapture, error) {
 
 func endTheDragHere(done context.Context, capture sharer.Capture, log io.Writer) func() error {
 	return func() error {
-		shield, shieldMissed := macos.ShieldCursor(done)
-		if shieldMissed != nil {
-			fmt.Fprintf(log, "lanhop could not put its window under the cursor before it ended the file drag on this Mac, and ends it anyway: %s\n", forTheLog(shieldMissed))
-		}
-		ended := endSourceDragHere()
-		if err := shield.Close(); err != nil {
-			fmt.Fprintf(log, "lanhop could not take its window from under the cursor: %s\n", forTheLog(err))
-		}
-		if ended != nil {
-			return ended
+		if err := endTheSourceDragUnderAShield(done, shieldTheCursor, endSourceDragHere, nil, log); err != nil {
+			return err
 		}
 		if left, marks := capture.(marksTheLeftButton); marks {
 			left.LeftHeldUntilRealUp()

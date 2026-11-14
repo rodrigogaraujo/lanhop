@@ -32,13 +32,14 @@ func reportTheDragStayed(log io.Writer, stayed func(), why error) {
 
 type cursorShield func(ctx context.Context) (io.Closer, error)
 
-func endTheSourceDragUnderAShield(ctx context.Context, shield cursorShield, end func() error, hand *dropReplay, log io.Writer) {
+func endTheSourceDragUnderAShield(ctx context.Context, shield cursorShield, end func() error, hand *dropReplay, log io.Writer) error {
 	guard, err := shield(ctx)
 	if err != nil {
 		fmt.Fprintf(log, "lanhop could not put its window under the cursor before it ended the file drag that left this machine, and ends it anyway: %s\n", forTheLog(err))
 	}
-	if err := end(); err != nil {
-		fmt.Fprintf(log, "The file drag that left this machine could not be ended here: %s\n", forTheLog(err))
+	ended := end()
+	if ended != nil {
+		fmt.Fprintf(log, "The file drag that left this machine could not be ended here: %s\n", forTheLog(ended))
 	}
 	if guard != nil {
 		if err := guard.Close(); err != nil {
@@ -46,6 +47,7 @@ func endTheSourceDragUnderAShield(ctx context.Context, shield cursorShield, end 
 		}
 	}
 	hand.forgetTheLeftButton()
+	return ended
 }
 
 type dragDescriber interface {
