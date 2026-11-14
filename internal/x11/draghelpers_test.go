@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	opReparentWindow = 7
 	configureX       = 1
 	configureY       = 2
 	configureWidth   = 4
@@ -285,7 +286,7 @@ func startXdndTargetAt(t *testing.T, display string, behaviour targetBehaviour, 
 		}
 	})
 	names := []string{"XdndAware", "XdndProxy", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished",
-		"XdndSelection", "XdndActionCopy", "XdndActionMove", "text/uri-list", "TARGETS", "TIMESTAMP", "INCR", "LANHOP_TEST_DROP"}
+		"XdndSelection", "XdndActionCopy", "XdndActionMove", "text/uri-list", "TARGETS", "TIMESTAMP", "INCR", "LANHOP_TEST_DROP", "LANHOP_TEST_LAST"}
 	for _, name := range append(names, behaviour.asksOnPosition...) {
 		atom, err := internAtom(target.c, name)
 		if err != nil {
@@ -512,6 +513,8 @@ func (x *xdndTarget) handle(event []byte) {
 			took = 0
 		}
 		x.send(source, x.atoms["XdndFinished"], [5]uint32{x.window, took, x.atoms["XdndActionCopy"]})
+	case x.atoms["LANHOP_TEST_LAST"]:
+		x.record("LANHOP_TEST_LAST")
 	}
 }
 
@@ -627,6 +630,57 @@ func (desk *dragDesk) start(t *testing.T) *Drag {
 		waitForDrag(t, drag)
 		checkLeftNothingBehind(t, desk.display, desk.source)
 	})
+	return drag
+}
+
+func (desk *dragDesk) everythingTheTargetSaw(t *testing.T) []string {
+	t.Helper()
+	last := desk.target.atoms["LANHOP_TEST_LAST"]
+	sendClientMessage(desk.source.c, desk.target.receiver, desk.target.receiver, last, [5]uint32{})
+	seen := desk.target.messagesOnceItSaw("LANHOP_TEST_LAST")
+	if !slices.Contains(seen, "LANHOP_TEST_LAST") {
+		t.Fatal("the target never got the last message of the source")
+	}
+	return slices.DeleteFunc(seen, func(name string) bool { return name == "LANHOP_TEST_LAST" })
+}
+
+func (desk *dragDesk) idleRun() *dragRun {
+	drag := &Drag{
+		arrived:  make(chan []byte, 1),
+		cancel:   make(chan struct{}),
+		letGo:    make(chan struct{}),
+		accepted: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	return &dragRun{d: desk.source, drag: drag}
+}
+
+func (desk *dragDesk) frameTheTarget(t *testing.T) uint32 {
+	t.Helper()
+	c := desk.target.c
+	frame := c.newID()
+	c.send(newRequest(opCreateWindow, 0).u32(frame).u32(c.root).
+		u16(90).u16(70).u16(300).u16(300).u16(0).u16(classInputOutput).u32(0).u32(0).done())
+	c.send(newRequest(opMapWindow, 0).u32(frame).done())
+	c.send(newRequest(opReparentWindow, 0).u32(desk.target.window).u32(frame).u16(10).u16(30).done())
+	syncWith(t, c)
+	return frame
+}
+
+func (desk *dragDesk) moveFrame(t *testing.T, frame uint32, x, y uint32) {
+	t.Helper()
+	c := desk.target.c
+	c.send(newRequest(opConfigureWindow, 0).u32(frame).u16(configureX | configureY).u16(0).u32(x).u32(y).done())
+	syncWith(t, c)
+}
+
+func (desk *dragDesk) holdADrop(t *testing.T) *Drag {
+	t.Helper()
+	drag := desk.start(t)
+	desk.input.press(t, 1)
+	desk.dragIntoTheTarget(t)
+	desk.input.release(t, 1)
+	waitForAccepted(t, drag)
 	return drag
 }
 

@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
@@ -29,10 +30,11 @@ const (
 	finishedAccepted          = 1
 	enterHasTypeList          = 1
 	typeListLimit             = 256
+	narrowestStrip            = 2
 )
 
 var (
-	ErrEdgeStrip       = errors.New("x11: the edge strip must be 1 to 65535 pixels wide and high, at coordinates from -32768 to 32767")
+	ErrEdgeStrip       = errors.New("x11: the edge strip must be 2 to 65535 pixels wide and high, at coordinates from -32768 to 32767")
 	ErrEdgeNotViewable = errors.New("x11: the window at the edge is mapped but not viewable")
 	ErrNoDropAtEdge    = errors.New("x11: nothing was dropped on the window at the edge in time")
 )
@@ -44,7 +46,7 @@ type Rect struct {
 func (r Rect) fitsTheProtocol() bool {
 	inside := func(value, low, high int) bool { return value >= low && value <= high }
 	return inside(r.X, math.MinInt16, math.MaxInt16) && inside(r.Y, math.MinInt16, math.MaxInt16) &&
-		inside(r.Width, 1, math.MaxUint16) && inside(r.Height, 1, math.MaxUint16)
+		inside(r.Width, narrowestStrip, math.MaxUint16) && inside(r.Height, narrowestStrip, math.MaxUint16)
 }
 
 type EdgeDrop struct {
@@ -63,6 +65,9 @@ type EdgeCatch struct {
 	messages   chan clientMessage
 	accepted   chan struct{}
 	accepting  sync.Once
+	over       atomic.Bool
+	finishing  sync.Mutex
+	unfinished edgeVisit
 	dropped    chan EdgeDrop
 	stop       chan struct{}
 	stopping   sync.Once
@@ -136,12 +141,17 @@ func (e *EdgeCatch) Accepted() <-chan struct{} {
 	return e.accepted
 }
 
+func (e *EdgeCatch) Over() bool {
+	return e.over.Load()
+}
+
 func (e *EdgeCatch) Dropped() <-chan EdgeDrop {
 	return e.dropped
 }
 
 func (e *EdgeCatch) Close() error {
 	e.stopping.Do(func() { close(e.stop) })
+	e.finish(false)
 	e.vanish()
 	<-e.done
 	return nil
@@ -182,11 +192,13 @@ func (e *EdgeCatch) take(message clientMessage, visit *edgeVisit) (EdgeDrop, boo
 	source := message.data[0]
 	switch {
 	case message.kind == e.atoms.enter:
+		e.over.Store(false)
 		*visit = e.enter(message)
 	case visit.source == atomNone || source != visit.source:
 	case message.kind == e.atoms.position:
 		e.answerPosition(*visit)
 	case message.kind == e.atoms.leave:
+		e.over.Store(false)
 		*visit = edgeVisit{}
 	case message.kind == e.atoms.drop:
 		return e.takeDrop(*visit, message.data[2]), true
@@ -210,30 +222,45 @@ func (e *EdgeCatch) answerPosition(visit edgeVisit) {
 		flags, action = statusAccepts|statusWantsPositions, e.atoms.actionCopy
 	}
 	sendClientMessage(e.c, visit.source, visit.source, e.atoms.status, [5]uint32{e.window, flags, 0, 0, action})
-	if !visit.offersList {
+	if !visit.offersList || e.over.Load() {
 		return
 	}
-	e.accepting.Do(func() {
-		if _, err := ownerOf(e.c, e.atoms.selection); err == nil {
-			close(e.accepted)
-		}
-	})
+	if _, err := ownerOf(e.c, e.atoms.selection); err != nil {
+		return
+	}
+	e.over.Store(true)
+	e.accepting.Do(func() { close(e.accepted) })
 }
 
 func (e *EdgeCatch) takeDrop(visit edgeVisit, when uint32) EdgeDrop {
+	e.finishing.Lock()
+	e.unfinished = visit
+	e.finishing.Unlock()
 	drop := EdgeDrop{Err: clipboard.ErrNotFiles}
 	if visit.offersList {
 		drop.Paths, drop.Err = e.reader.readPaths(e.atoms.uriList, when, false, time.Now().Add(e.wholeRead))
 	}
-	finished := [5]uint32{e.window}
-	if visit.version >= xdndVersion && drop.Err == nil {
-		finished[1], finished[2] = finishedAccepted, e.atoms.actionCopy
-	}
-	sendClientMessage(e.c, visit.source, visit.source, e.atoms.finished, finished)
+	e.finish(drop.Err == nil)
 	return drop
 }
 
+func (e *EdgeCatch) finish(taken bool) {
+	e.finishing.Lock()
+	defer e.finishing.Unlock()
+	visit := e.unfinished
+	if visit.source == atomNone {
+		return
+	}
+	e.unfinished = edgeVisit{}
+	finished := [5]uint32{e.window}
+	if visit.version >= xdndVersion && taken {
+		finished[1], finished[2] = finishedAccepted, e.atoms.actionCopy
+	}
+	sendClientMessage(e.c, visit.source, visit.source, e.atoms.finished, finished)
+}
+
 func (e *EdgeCatch) end(drop EdgeDrop) {
+	e.over.Store(false)
 	e.vanish()
 	select {
 	case <-e.stop:

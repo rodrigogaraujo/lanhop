@@ -132,6 +132,7 @@ type Drag struct {
 	arrived    chan []byte
 	cancel     chan struct{}
 	cancelling sync.Once
+	deciding   sync.Mutex
 	letGo      chan struct{}
 	accepted   chan struct{}
 	done       chan struct{}
@@ -274,7 +275,9 @@ func (g *Drag) FilesArrived(paths []string) error {
 }
 
 func (g *Drag) Cancel() {
+	g.deciding.Lock()
 	g.cancelling.Do(func() { close(g.cancel) })
+	g.deciding.Unlock()
 	select {
 	case <-g.letGo:
 	case <-g.done:
@@ -406,8 +409,10 @@ func (r *dragRun) release(at pointerEvent) (pointerEvent, dragTarget, error) {
 		return at, on, err
 	}
 	r.heldOver = area
-	r.accept()
-	return at, on, nil
+	return at, on, r.unlessCancelled(func() error {
+		r.accept()
+		return nil
+	})
 }
 
 func (r *dragRun) dropWhenTheFilesArrive(released pointerEvent, on dragTarget) error {
@@ -486,8 +491,11 @@ func (r *dragRun) awaitStatus() error {
 }
 
 func (r *dragRun) drop(released pointerEvent) error {
-	r.accept()
-	if err := r.send(r.d.atoms.drop, [5]uint32{r.d.window, 0, latest(released.time, r.since)}); err != nil {
+	err := r.unlessCancelled(func() error {
+		r.accept()
+		return r.send(r.d.atoms.drop, [5]uint32{r.d.window, 0, latest(released.time, r.since)})
+	})
+	if err != nil {
 		return err
 	}
 	r.dropped = true
@@ -508,6 +516,17 @@ func (r *dragRun) drop(released pointerEvent) error {
 		case <-r.d.c.closed:
 			return r.d.c.err()
 		}
+	}
+}
+
+func (r *dragRun) unlessCancelled(step func() error) error {
+	r.drag.deciding.Lock()
+	defer r.drag.deciding.Unlock()
+	select {
+	case <-r.drag.cancel:
+		return ErrDragCancelled
+	default:
+		return step()
 	}
 }
 

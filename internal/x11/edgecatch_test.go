@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	badWindow   = 3
-	inTheStripX = 280
-	inTheStripY = 150
+	opGrabServer   = 36
+	opUngrabServer = 37
+	badWindow      = 3
+	inTheStripX    = 280
+	inTheStripY    = 150
 )
 
 var edgeStrip = Rect{X: 260, Y: 0, Width: 40, Height: 600}
@@ -401,6 +403,8 @@ func TestLosingTheXServerEndsTheEdge(t *testing.T) {
 
 func TestAnEdgeStripTheProtocolCannotCarryIsRefused(t *testing.T) {
 	for _, strip := range []Rect{
+		{X: 0, Y: 0, Width: 1, Height: 100},
+		{X: 0, Y: 0, Width: 40, Height: 1},
 		{X: 0, Y: 0, Width: 0, Height: 100},
 		{X: 0, Y: 0, Width: 40, Height: -1},
 		{X: 0, Y: 0, Width: 65536, Height: 100},
@@ -411,4 +415,194 @@ func TestAnEdgeStripTheProtocolCannotCarryIsRefused(t *testing.T) {
 			t.Errorf("CatchAtEdge(%+v) = %v, %v, want %v", strip, catch, err, ErrEdgeStrip)
 		}
 	}
+}
+
+func grabTheServer(t *testing.T, display string) (*conn, func()) {
+	t.Helper()
+	grabber := dialForTest(t, display, func([]byte) {})
+	grabber.send(newRequest(opGrabServer, 0).done())
+	syncWith(t, grabber)
+	return grabber, func() {
+		grabber.send(newRequest(opUngrabServer, 0).done())
+		syncWith(t, grabber)
+	}
+}
+
+func waitUntilOverIs(t *testing.T, catch *EdgeCatch, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for catch.Over() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("Over stayed %v, want %v", !want, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestTheEdgeIsAcceptedOnlyOnceTheXServerHasItsStatus(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	catch := catchOn(t, drags)
+	source := startXdndSource(t, display, sourceOffer{types: []string{"text/uri-list"}, list: listOf(pathsDraggedAfter...)})
+	target := enterTheEdge(t, drags, source, catch)
+	syncWith(t, source.c)
+
+	grabber, ungrab := grabTheServer(t, display)
+	place := uint32(inTheStripX)<<16 | uint32(inTheStripY)
+	sendClientMessage(grabber, target, target, source.atoms["XdndPosition"], [5]uint32{source.window, 0, place, currentTime, source.atoms["XdndActionCopy"]})
+	syncWith(t, grabber)
+	select {
+	case <-catch.Accepted():
+		t.Error("Accepted closed while the X server could not have taken the XdndStatus yet")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if catch.Over() {
+		t.Error("Over was true while the X server could not have taken the XdndStatus yet")
+	}
+	ungrab()
+
+	waitForEdgeAccepted(t, catch)
+	if !catch.Over() {
+		t.Error("Over is false after the edge accepted the drag")
+	}
+	if status := source.status(t, target); !status.accepted || status.action != "XdndActionCopy" {
+		t.Errorf("XdndStatus = %+v, want an accepted XdndActionCopy", status)
+	}
+}
+
+func TestTheEdgeMappedUnderAStillCursorTakesTheDropOnlyAfterANudge(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	standIn := startXdndTarget(t, display, targetBehaviour{})
+	source := openDragsOn(t, display)
+	input := startFakeInput(t, display)
+	input.moveTo(t, 20, 20)
+	drag, err := source.Start()
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(drag.Cancel)
+	input.press(t, 1)
+	if err := drag.FilesArrived(arrivedPaths); err != nil {
+		t.Fatalf("FilesArrived: %v", err)
+	}
+	for _, at := range [][2]int{{100, 60}, {150, 150}, {inTheStripX, inTheStripY}} {
+		input.moveTo(t, at[0], at[1])
+		time.Sleep(10 * time.Millisecond)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for standIn.lastPosition() != [2]int{inTheStripX, inTheStripY} {
+		if time.Now().After(deadline) {
+			t.Fatalf("the drag never reached %d,%d over the window below the strip", inTheStripX, inTheStripY)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	catch := catchOn(t, drags)
+	select {
+	case <-catch.Accepted():
+		t.Error("Accepted closed although the cursor did not move over the edge window")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if catch.Over() {
+		t.Error("Over was true although the cursor did not move over the edge window")
+	}
+	input.moveTo(t, inTheStripX+1, inTheStripY)
+	input.moveTo(t, inTheStripX, inTheStripY)
+	waitForEdgeAccepted(t, catch)
+	if !catch.Over() {
+		t.Error("Over is false right after the edge accepted the drag")
+	}
+	input.release(t, 1)
+
+	if err := waitForDrag(t, drag); err != nil {
+		t.Errorf("the source drag ended with %v, want a drop the edge took", err)
+	}
+	if drop, delivered := nextDrop(t, catch); !delivered || drop.Err != nil || !slices.Equal(drop.Paths, arrivedPaths) {
+		t.Errorf("Dropped gave %+v, %v, want %q", drop, delivered, arrivedPaths)
+	}
+	if seen := standIn.messages(); slices.Contains(seen, "XdndDrop") || !slices.Contains(seen, "XdndLeave") {
+		t.Errorf("the window below the strip saw %v, want an XdndLeave and no XdndDrop", seen)
+	}
+}
+
+func TestXdndLeaveTakesTheDragOffTheEdgeAndALaterDropIsIgnored(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	catch := catchOn(t, drags)
+	source := startXdndSource(t, display, filesOffer(pathsDraggedAfter...))
+	target := enterTheEdge(t, drags, source, catch)
+	source.position(target, inTheStripX, inTheStripY, source.serverTime(t), "XdndActionCopy")
+	source.status(t, target)
+	waitForEdgeAccepted(t, catch)
+	if !catch.Over() {
+		t.Error("Over is false after the edge accepted the drag")
+	}
+
+	source.leave(target)
+
+	waitUntilOverIs(t, catch, false)
+	source.drop(target, source.serverTime(t))
+	if reply, answered := source.replyFrom(target, "XdndFinished", 500*time.Millisecond); answered {
+		t.Errorf("a drop after XdndLeave got XdndFinished %+v", reply)
+	}
+	select {
+	case drop := <-catch.Dropped():
+		t.Errorf("a drop after XdndLeave ended the edge with %+v", drop)
+	default:
+	}
+}
+
+func TestTheEdgeFindsTheAddressListOnlyInXdndTypeList(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	catch := catchOn(t, drags)
+	path, content := fileToDrag(t)
+	types := []string{"application/vnd.portal.filetransfer", "application/vnd.portal.files", "x-special/gnome-icon-list", "text/uri-list"}
+	source := startXdndSource(t, display, sourceOffer{types: types, list: listOf(path)})
+	source.deletesOnMove(path)
+
+	target := enterTheEdge(t, drags, source, catch)
+	source.position(target, inTheStripX, inTheStripY, source.serverTime(t), "XdndActionMove")
+	if status := source.status(t, target); !status.accepted || status.action != "XdndActionCopy" {
+		t.Errorf("XdndStatus = %+v, want an accepted XdndActionCopy", status)
+	}
+	source.drop(target, source.serverTime(t))
+
+	if finished := source.finished(t, target); !finished.accepted || finished.action != "XdndActionCopy" {
+		t.Errorf("XdndFinished = %+v, want an accepted XdndActionCopy", finished)
+	}
+	if drop, delivered := nextDrop(t, catch); !delivered || drop.Err != nil || !slices.Equal(drop.Paths, []string{path}) {
+		t.Errorf("Dropped gave %+v, %v, want %q", drop, delivered, path)
+	}
+	checkUntouched(t, path, content)
+}
+
+func TestClosingTheEdgeWhileItReadsADropFinishesTheDropAsNotTaken(t *testing.T) {
+	display := startXvfb(t)
+	drags := openDragsOn(t, display)
+	catch := catchOn(t, drags)
+	observer := dialForTest(t, display, func([]byte) {})
+	source := startXdndSource(t, display, sourceOffer{types: nautilusTypes, silent: true})
+	target := enterTheEdge(t, drags, source, catch)
+	source.position(target, inTheStripX, inTheStripY, source.serverTime(t), "XdndActionCopy")
+	source.status(t, target)
+	source.drop(target, source.serverTime(t))
+	source.wasAsked(t, "text/uri-list")
+
+	started := time.Now()
+	if err := catch.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+
+	if took := time.Since(started); took > time.Second {
+		t.Errorf("Close took %v while the edge read the drop, want it at once", took)
+	}
+	if finished := source.finished(t, target); finished.accepted || finished.action != "" {
+		t.Errorf("XdndFinished = %+v, want a drop not taken, with no action", finished)
+	}
+	if reply, answered := source.replyFrom(target, "XdndFinished", 300*time.Millisecond); answered {
+		t.Errorf("the source got a second XdndFinished %+v", reply)
+	}
+	checkGone(t, observer, catch)
 }
