@@ -15,6 +15,10 @@ func StartDrop(context.Context, []PromisedFile, WriteFile) (*Drop, error) {
 	return nil, ErrDropNotBuilt
 }
 
+func ShieldCursor(context.Context) (*Shield, error) {
+	return nil, ErrDropNotBuilt
+}
+
 func (*Drop) Ended() <-chan struct{} {
 	return nil
 }

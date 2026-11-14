@@ -111,6 +111,40 @@ func openDropWindow(id uint64, files []PromisedFile, home Point) (dropWindow, er
 	return nativeWindow{pointer: pointer}, nil
 }
 
+func openShieldWindow(at Point) (dropWindow, error) {
+	pointer := C.lanhopShieldOpen(C.double(at.X), C.double(at.Y), C.double(dropWindowSide))
+	if pointer == nil {
+		return nil, ErrNoDropWindow
+	}
+	return nativeWindow{pointer: pointer}, nil
+}
+
+func ShieldCursor(ctx context.Context) (*Shield, error) {
+	return shieldUnder(ctx, Quartz{}.Cursor)
+}
+
+func shieldUnder(ctx context.Context, cursor func() Point) (*Shield, error) {
+	if !mainThreadIsServed() {
+		return nil, ErrNoMainThread
+	}
+	if err := startAppKit(); err != nil {
+		return nil, err
+	}
+	window, err := openShieldWindow(cursor())
+	if err != nil {
+		return nil, err
+	}
+	shield := newShield(window)
+	if err := shield.raise(ctx, cursor, shieldLimit, shieldPoll); err != nil {
+		return nil, err
+	}
+	return shield, nil
+}
+
+func appIsActive() bool {
+	return bool(C.lanhopAppIsActive())
+}
+
 func StartDrop(ctx context.Context, files []PromisedFile, write WriteFile) (*Drop, error) {
 	if err := checkPromisedFiles(files, clipboard.FilesAndFoldersLimit); err != nil {
 		return nil, err
