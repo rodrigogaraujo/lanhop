@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -61,6 +62,44 @@ func TestTheDeskStatusWritesNothingOnceShareHasStopped(t *testing.T) {
 	}
 	if read.State != status.Sharing || !slices.Equal(read.Machines, []string{"desk"}) || len(read.Seats) != 0 {
 		t.Errorf("after lanhop share stopped, the status became %+v, want it as it was when share stopped", read)
+	}
+}
+
+func TestShareWritesNothingInTheStatusAfterItStopped(t *testing.T) {
+	patience := versionPatience
+	versionPatience = 300 * time.Millisecond
+	t.Cleanup(func() { versionPatience = patience })
+	directory := useConfigDirectory(t)
+	local := identityIn(t, directory)
+	quiet := identityIn(t, t.TempDir())
+	trustAlready(t, directory, trust.Peer{Name: "quiet", Fingerprint: quiet.Fingerprint})
+	share := startShare(t)
+
+	conn, err := dialShare(quiet, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	for deadline := time.Now().Add(testPatience); ; time.Sleep(5 * time.Millisecond) {
+		read, err := status.Read(directory)
+		if err == nil && read.State == status.Sharing && slices.Contains(read.Machines, "quiet") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the status never showed quiet connected: %+v, %v", read, err)
+		}
+	}
+	share.stop()
+	<-share.finished
+	written, err := os.ReadFile(filepath.Join(directory, status.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(2 * versionPatience)
+	after, err := os.ReadFile(filepath.Join(directory, status.FileName))
+	if err != nil || string(after) != string(written) {
+		t.Errorf("after lanhop share stopped, the status changed from\n%s\nto\n%s (%v)", written, after, err)
 	}
 }
 

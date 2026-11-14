@@ -24,6 +24,7 @@ var (
 	updateFrom              = ""
 	errRestartForTheUpdate  = errors.New("lanhop ended so that its service starts the new version")
 	exitStatusForTheRestart = 3
+	versionPatience         = follow.DefaultVersionPatience
 )
 
 func releaseOf(text string) update.Version {
@@ -102,7 +103,7 @@ func followerOfThisSide(ctx context.Context, directory string, announced *featur
 }
 
 func followerOfTheCentral(onChange func([]follow.Seat)) *follow.Central {
-	return follow.NewCentral(follow.CentralConfig{Running: releaseOf(version), From: releaseOf(updateFrom), OnChange: onChange})
+	return follow.NewCentral(follow.CentralConfig{Running: releaseOf(version), From: releaseOf(updateFrom), VersionPatience: versionPatience, OnChange: onChange})
 }
 
 func switchUpdates(args []string, stdout io.Writer) error {
