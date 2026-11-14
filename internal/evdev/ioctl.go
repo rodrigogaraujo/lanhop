@@ -37,7 +37,12 @@ func withDescriptor(file *os.File, call func(fd uintptr) syscall.Errno) error {
 		return err
 	}
 	var errno syscall.Errno
-	if err := conn.Control(func(fd uintptr) { errno = call(fd) }); err != nil {
+	if err := conn.Control(func(fd uintptr) {
+		errno = call(fd)
+		for errno == syscall.EINTR {
+			errno = call(fd)
+		}
+	}); err != nil {
 		return err
 	}
 	if errno != 0 {
