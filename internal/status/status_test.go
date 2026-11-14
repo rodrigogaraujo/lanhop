@@ -4,7 +4,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -219,5 +221,55 @@ func TestSeatsReadBackWithTheirVersionAndMark(t *testing.T) {
 	}
 	if !slices.Equal(read.Seats, seats) {
 		t.Errorf("seats read as %+v, want %+v", read.Seats, seats)
+	}
+}
+
+func TestWhatADraggedFileCannotDoReadsBack(t *testing.T) {
+	directory := t.TempDir()
+	written := Report{State: Sharing, Machines: []string{"laptop", "wayland box"}, DragCannotReach: []string{"laptop", "wayland box"}, DragCannotLeave: true}
+	if err := OwnerOf(directory).Write(written); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	read, err := Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !slices.Equal(read.DragCannotReach, written.DragCannotReach) || !read.DragCannotLeave {
+		t.Errorf("read %+v, want the machines a dragged file cannot reach and that it cannot leave this one", read)
+	}
+}
+
+func TestAReportWithNothingAboutDraggedFilesReadsBackWithNothing(t *testing.T) {
+	directory := t.TempDir()
+	if err := OwnerOf(directory).Write(Report{State: Waiting}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	read, err := Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.DragCannotReach) != 0 || read.DragCannotLeave {
+		t.Errorf("read %+v, want nothing about dragged files", read)
+	}
+	contents, err := os.ReadFile(filepath.Join(directory, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "drag") {
+		t.Errorf("the status holds %q, want no line about dragged files", contents)
+	}
+}
+
+func TestOnlyYesSaysThatADraggedFileCannotLeaveAndAnEmptyNameIsNoMachine(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, FileName), []byte("state=sharing\ndrag-cannot-leave=no\ndrag-cannot-reach=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read, err := Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if read.DragCannotLeave || len(read.DragCannotReach) != 0 {
+		t.Errorf("read %+v, want neither a value other than yes nor an empty name to count", read)
 	}
 }

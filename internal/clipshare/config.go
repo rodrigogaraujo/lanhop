@@ -52,6 +52,7 @@ type Config struct {
 	DataSilenceLimit time.Duration
 	Log              io.Writer
 	Features         *features.Set
+	StartsDrags      bool
 }
 
 func (c Config) withDefaults() Config {
@@ -82,6 +83,7 @@ func (c Config) withDefaults() Config {
 func (c Config) announcing(kinds clipboard.Kinds) *features.Set {
 	c.Features.Turn(features.Clipboard, kinds.Has(clipboard.Text))
 	c.Features.Turn(features.Files, kinds.Has(clipboard.Files))
+	c.Features.Turn(features.Drag, c.StartsDrags && kinds.Has(clipboard.Files))
 	return c.Features
 }
 

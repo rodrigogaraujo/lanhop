@@ -5,6 +5,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/layout"
 )
 
@@ -27,10 +28,12 @@ func DefaultSpeed() Speed {
 }
 
 type EdgeSwitching struct {
-	Name   string
-	Layout func() *layout.Layout
-	Speed  Speed
-	Watch  edge.Settings
+	Name          string
+	Layout        func() *layout.Layout
+	Speed         Speed
+	Watch         edge.Settings
+	Features      *features.Set
+	DragsStayHere bool
 }
 
 type CursorCapture interface {
@@ -161,6 +164,9 @@ func (s *Sharer) observeKeysAndButtons(captured event.Event) {
 	pressed := captured.Value == event.KeyPressed
 	s.ownEdges.Button(captured.Code, pressed)
 	s.remoteEdges.Button(captured.Code, pressed)
+	if captured.Code == event.ButtonLeft && !pressed {
+		s.drag = nil
+	}
 }
 
 func (s *Sharer) watchOwnScreen(captured event.Event) error {
@@ -181,6 +187,7 @@ func (s *Sharer) watchOwnScreen(captured event.Event) error {
 		return nil
 	}
 	s.ownEdges.SetBounds(desktop)
+	s.armForTheDrag(s.ownEdges)
 	if crossing, pushedThrough := s.ownEdges.Move(s.now(), x, y, moved.dx, moved.dy); pushedThrough {
 		return s.cross(crossing)
 	}
@@ -198,6 +205,7 @@ func (s *Sharer) endReport() error {
 		return err
 	}
 	x, y := s.remoteCursor.at()
+	s.armForTheDrag(s.remoteEdges)
 	if crossing, pushedThrough := s.remoteEdges.Move(s.now(), x, y, moved.dx, moved.dy); pushedThrough {
 		return s.cross(crossing)
 	}
@@ -209,22 +217,27 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 	if desk == nil || s.focusedIsANamesakeOfThisMachine() {
 		return nil
 	}
-	neighbour, found := desk.Neighbour(s.nameOfFocused(), onTheDesk(crossing.Side))
+	left := s.nameOfFocused()
+	neighbour, found := desk.Neighbour(left, onTheDesk(crossing.Side))
 	if !found {
 		return nil
 	}
 	if neighbour == s.edges.Name {
+		if crossing.Dragging && !s.dragMayEnter(neighbour, s.takesDragsHere()) {
+			return nil
+		}
+		s.tellDragCrossing(crossing, left, neighbour)
 		return s.comeBack(acrossFrom(crossing))
 	}
 	receiver, connected := s.receiverNamed(neighbour)
-	if !connected || s.wouldLeaveAKeyHeldHere() {
+	if !connected || s.wouldLeaveAKeyHeldHere(crossing.Dragging) {
 		return nil
 	}
+	if crossing.Dragging && !s.dragMayEnter(neighbour, s.takesDrags[receiver]) {
+		return nil
+	}
+	s.tellDragCrossing(crossing, left, neighbour)
 	return s.enter(receiver, acrossFrom(crossing))
-}
-
-func (s *Sharer) wouldLeaveAKeyHeldHere() bool {
-	return s.focused == nil && len(s.heldHere.Held()) > 0
 }
 
 func (s *Sharer) focusedIsANamesakeOfThisMachine() bool {

@@ -93,8 +93,30 @@ func showStatus(args []string, stdout io.Writer) error {
 		if trusted, err := openTrusted(); err == nil {
 			fmt.Fprint(stdout, describeDesk(trusted.Peers(), report, time.Now()))
 		}
+		fmt.Fprint(stdout, describeDrags(report))
 	}
 	return nil
+}
+
+func aboutABlockedDrag(blocked sharer.BlockedDrag) string {
+	if blocked.Block == sharer.DragCannotLeave {
+		return "Dragging a file cannot leave this machine: on Linux, a dragged file crosses only from a machine that receives the keyboard and mouse. Copy the file and paste it on the other machine instead."
+	}
+	return fmt.Sprintf("Dragging a file cannot reach %q, which does not take dragged files. Copy the file and paste it there instead.", blocked.Machine)
+}
+
+func describeDrags(report status.Report) string {
+	var notices []string
+	if report.DragCannotLeave {
+		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Block: sharer.DragCannotLeave}))
+	}
+	for _, machine := range report.DragCannotReach {
+		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Machine: machine, Block: sharer.DragCannotReach}))
+	}
+	if len(notices) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(notices, "\n") + "\n"
 }
 
 func describeDesk(peers []trust.Peer, report status.Report, now time.Time) string {
