@@ -24,6 +24,9 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
+      - name: Vet the build for the container test
+        if: runner.os == 'Linux'
+        run: go vet -tags containertest ./...
       - name: Test
         run: go test -race ./...
       - name: Time keys behind copies and files, without the race detector
@@ -90,6 +93,9 @@ jobs:
           "$program" status >"$answers/status"
           cat "$answers/status"
           test "$(cat "$answers/status")" = "stopped: lanhop is not running here."
+      - name: Test the input backends of the container test
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 -tags containertest -run '^TestTheContainerTest' ./internal/x11 ./cmd/lanhop
       - name: Test the macOS build without cgo
         if: runner.os == 'macOS'
         env:
@@ -97,7 +103,7 @@ jobs:
         run: go test ./cmd/lanhop
       - name: Check the installer and the release scripts
         if: runner.os == 'Linux'
-        run: shellcheck install.sh $(find scripts/release -maxdepth 1 -type f)
+        run: shellcheck install.sh $(find scripts/release -maxdepth 1 -type f) test/containers/run test/containers/machine
       - name: Test Linux input with uinput
         if: runner.os == 'Linux'
         shell: bash
@@ -111,6 +117,17 @@ jobs:
           fi
           go test -race -c -o lanhop.test ./cmd/lanhop
           sudo ./lanhop.test -test.v
+
+  linux-to-linux:
+    name: Linux to Linux in containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Drag a file from one side machine to another under a central, each in its own container
+        env:
+          LANHOP_CONTAINERS_LOGS: "1"
+        run: test/containers/run
 
   release-checks:
     name: Release checks refuse what they must (${{ matrix.os }})
@@ -172,6 +189,16 @@ jobs:
             echo "::error::check-build-tags took a program built with a build tag"
             exit 1
           fi
+      - name: Refuse a program built for the container test
+        if: runner.os == 'Linux'
+        run: |
+          go build -tags containertest -o "$RUNNER_TEMP/containertest" ./cmd/lanhop
+          if scripts/release/check-build-tags "$RUNNER_TEMP/containertest" 2>"$RUNNER_TEMP/containertest.refusal"; then
+            echo "::error::check-build-tags took a program built with -tags containertest"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/containertest.refusal"
+          grep -q -- '-tags=containertest' "$RUNNER_TEMP/containertest.refusal"
       - name: Make a small release for this system
         run: |
           mkdir -p "$WORK/release"
