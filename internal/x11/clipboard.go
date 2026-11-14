@@ -3,13 +3,10 @@
 package x11
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -71,8 +68,8 @@ var (
 	ErrNoAnswer    = errors.New("x11: the program that owns the clipboard did not answer")
 	ErrRefused     = errors.New("x11: the X server did not let lanhop own the clipboard")
 	ErrNoXFixes    = errors.New("x11: the X server has no XFIXES extension")
-	ErrNotAbsolute = errors.New("x11: a file to put on the clipboard is not given by an absolute path")
-	ErrNULInPath   = errors.New("x11: a path to put on the clipboard holds a NUL byte")
+	ErrNotAbsolute = errors.New("x11: a file is not given by an absolute path")
+	ErrNULInPath   = errors.New("x11: a file path holds a NUL byte")
 )
 
 type atoms struct {
@@ -111,20 +108,12 @@ func (h heldCopy) holdsFiles() bool {
 	return len(h.paths) > 0
 }
 
-type transfer struct {
-	requestor uint32
-	property  uint32
-	kind      uint32
-	data      []byte
-	started   time.Time
-}
-
 type Clipboard struct {
 	c            *conn
 	window       uint32
 	atoms        atoms
 	xfixesEvent  byte
-	chunk        int
+	writer       *propertyWriter
 	notifies     chan selectionNotify
 	newValues    chan uint32
 	times        chan uint32
@@ -134,7 +123,6 @@ type Clipboard struct {
 	ownedSince   uint32
 	held         heldCopy
 	extraOffers  map[uint32][]byte
-	transfers    []*transfer
 	readTimeout  time.Duration
 	reader       atomic.Uint32
 	retired      []retiredWindow
@@ -143,35 +131,11 @@ type Clipboard struct {
 }
 
 func Open() (*Clipboard, error) {
-	if value := os.Getenv("DISPLAY"); value != "" {
-		return openNamed(value, authorityFile())
-	}
-	asking, cancel := context.WithTimeout(context.Background(), dialTimeout)
-	defer cancel()
-	if output, err := exec.CommandContext(asking, "systemctl", "--user", "show-environment").Output(); err == nil {
-		if value, authority := sessionEnvironment(output); value != "" {
-			if board, err := openNamed(value, authority); err == nil {
-				return board, nil
-			}
-		}
-	}
-	var failures []error
-	for _, d := range displaysOnThisMachine(socketDirectory, 0, uint32(os.Getuid())) {
-		board, err := open(d, cookieFromFile(d.number, authorityFile()))
-		if err == nil {
-			return board, nil
-		}
-		failures = append(failures, err)
-	}
-	return nil, errors.Join(append([]error{ErrNoDisplay}, failures...)...)
+	return openSession(open)
 }
 
 func openNamed(value, authority string) (*Clipboard, error) {
-	d, err := parseDisplay(value)
-	if err != nil {
-		return nil, err
-	}
-	return open(d, cookieFromFile(d.number, authority))
+	return openNamedWith(open, value, authority)
 }
 
 func open(d display, cookie []byte) (*Clipboard, error) {
@@ -187,7 +151,6 @@ func open(d display, cookie []byte) (*Clipboard, error) {
 		return nil, err
 	}
 	board.c = c
-	board.chunk = min(largestChunk, c.maxRequestBytes-64)
 	if err := board.prepare(); err != nil {
 		c.close()
 		return nil, err
@@ -220,6 +183,7 @@ func (b *Clipboard) prepare() error {
 		}
 		*atom = binary.LittleEndian.Uint32(reply[8:12])
 	}
+	b.writer = newPropertyWriter(b.c, b.atoms.incr)
 
 	reply, err := b.c.call(newRequest(opQueryExtension, 0).u16(uint16(len("XFIXES"))).u16(0).raw([]byte("XFIXES")).done())
 	if err != nil {
@@ -326,26 +290,37 @@ func (b *Clipboard) textCopy(text []byte, offered hint) heldCopy {
 }
 
 func (b *Clipboard) filesCopy(paths []string, offered hint) (heldCopy, error) {
+	addresses, err := fileAddresses(paths)
+	if err != nil {
+		return heldCopy{}, err
+	}
+	gnomeList := []byte("copy\n" + strings.Join(addresses, "\n"))
+	offers := []offer{
+		{target: b.atoms.gnomeFiles, kind: b.atoms.gnomeFiles, data: gnomeList},
+		{target: b.atoms.uriList, kind: b.atoms.uriList, data: addressList(addresses)},
+	}
+	return heldCopy{paths: slices.Clone(paths), offers: offers, hint: offered}, nil
+}
+
+func fileAddresses(paths []string) ([]string, error) {
 	if len(paths) == 0 {
-		return heldCopy{}, clipboard.ErrEmpty
+		return nil, clipboard.ErrEmpty
 	}
 	addresses := make([]string, len(paths))
 	for i, path := range paths {
 		if !filepath.IsAbs(path) {
-			return heldCopy{}, fmt.Errorf("%w: %q", ErrNotAbsolute, path)
+			return nil, fmt.Errorf("%w: %q", ErrNotAbsolute, path)
 		}
 		if strings.ContainsRune(path, 0) {
-			return heldCopy{}, fmt.Errorf("%w: %q", ErrNULInPath, path)
+			return nil, fmt.Errorf("%w: %q", ErrNULInPath, path)
 		}
 		addresses[i] = fileAddress(path)
 	}
-	gnomeList := []byte("copy\n" + strings.Join(addresses, "\n"))
-	uriList := []byte(strings.Join(addresses, "\r\n") + "\r\n")
-	offers := []offer{
-		{target: b.atoms.gnomeFiles, kind: b.atoms.gnomeFiles, data: gnomeList},
-		{target: b.atoms.uriList, kind: b.atoms.uriList, data: uriList},
-	}
-	return heldCopy{paths: slices.Clone(paths), offers: offers, hint: offered}, nil
+	return addresses, nil
+}
+
+func addressList(addresses []string) []byte {
+	return []byte(strings.Join(addresses, "\r\n") + "\r\n")
 }
 
 func fileAddress(path string) string {
@@ -715,7 +690,7 @@ func (b *Clipboard) takeProperty(limit int) (kind uint32, data []byte, tooLarge 
 
 func (b *Clipboard) serverTime() (uint32, error) {
 	drain(b.times)
-	b.changePropertyMode(b.window, b.atoms.timeProperty, atomString, 8, nil, modeAppend)
+	b.writer.changeMode(b.window, b.atoms.timeProperty, atomString, 8, nil, modeAppend)
 	select {
 	case when := <-b.times:
 		return when, nil
@@ -777,7 +752,7 @@ func (b *Clipboard) handle(event []byte) {
 			return
 		}
 		if state == propertyDeleted {
-			b.continueTransfer(window, property)
+			b.writer.propertyDeleted(window, property)
 		}
 	}
 }
@@ -802,14 +777,7 @@ func (b *Clipboard) answer(event []byte) {
 			answered = property
 		}
 	}
-	notify := make([]byte, 32)
-	notify[0] = eventSelectionNotify
-	binary.LittleEndian.PutUint32(notify[4:8], when)
-	binary.LittleEndian.PutUint32(notify[8:12], requestor)
-	binary.LittleEndian.PutUint32(notify[12:16], selection)
-	binary.LittleEndian.PutUint32(notify[16:20], target)
-	binary.LittleEndian.PutUint32(notify[20:24], answered)
-	b.c.send(newRequest(opSendEvent, 0).u32(requestor).u32(0).raw(notify).done())
+	notifySelection(b.c, when, requestor, selection, target, answered)
 }
 
 func (b *Clipboard) provide(requestor, property, target, since uint32, held heldCopy) bool {
@@ -817,7 +785,7 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, held held
 	extra, isExtra := b.extraOffers[target]
 	b.state.Unlock()
 	if isExtra {
-		b.changeProperty(requestor, property, target, 8, extra)
+		b.writer.change(requestor, property, target, 8, extra)
 		return true
 	}
 	switch target {
@@ -838,78 +806,25 @@ func (b *Clipboard) provide(requestor, property, target, since uint32, held held
 		for _, atom := range targets {
 			data = binary.LittleEndian.AppendUint32(data, atom)
 		}
-		b.changeProperty(requestor, property, atomAtom, 32, data)
+		b.writer.change(requestor, property, atomAtom, 32, data)
 		return true
 	case b.atoms.timestamp:
-		b.changeProperty(requestor, property, atomInteger, 32, binary.LittleEndian.AppendUint32(nil, since))
+		b.writer.change(requestor, property, atomInteger, 32, binary.LittleEndian.AppendUint32(nil, since))
 		return true
 	case b.atoms.passwordHint:
 		if held.hint != secretHint {
 			return false
 		}
-		b.changeProperty(requestor, property, b.atoms.utf8String, 8, []byte(privateHintValue))
+		b.writer.change(requestor, property, b.atoms.utf8String, 8, []byte(privateHintValue))
 		return true
 	}
 	for _, offered := range held.offers {
 		if offered.target == target {
-			return b.give(requestor, property, offered.kind, offered.data)
+			b.writer.give(requestor, property, offered.kind, offered.data)
+			return true
 		}
 	}
 	return false
-}
-
-func (b *Clipboard) give(requestor, property, kind uint32, data []byte) bool {
-	if len(data) <= b.chunk {
-		b.changeProperty(requestor, property, kind, 8, data)
-		return true
-	}
-	b.startTransfer(requestor, property, kind, data)
-	return true
-}
-
-func (b *Clipboard) startTransfer(requestor, property, kind uint32, data []byte) {
-	b.c.send(newRequest(opChangeWindowAttributes, 0).u32(requestor).u32(attributeEventMask).u32(propertyChangeMask).done())
-	now := time.Now()
-	b.state.Lock()
-	b.transfers = slices.DeleteFunc(b.transfers, func(t *transfer) bool {
-		return now.Sub(t.started) > transferLifetime || (t.requestor == requestor && t.property == property)
-	})
-	b.transfers = append(b.transfers, &transfer{requestor: requestor, property: property, kind: kind, data: data, started: now})
-	b.state.Unlock()
-	b.changeProperty(requestor, property, b.atoms.incr, 32, binary.LittleEndian.AppendUint32(nil, uint32(len(data))))
-}
-
-func (b *Clipboard) continueTransfer(requestor, property uint32) {
-	b.state.Lock()
-	index := slices.IndexFunc(b.transfers, func(t *transfer) bool {
-		return t.requestor == requestor && t.property == property
-	})
-	if index < 0 {
-		b.state.Unlock()
-		return
-	}
-	current := b.transfers[index]
-	part := current.data[:min(b.chunk, len(current.data))]
-	current.data = current.data[len(part):]
-	lastToThisWindow := false
-	if len(part) == 0 {
-		b.transfers = slices.Delete(b.transfers, index, index+1)
-		lastToThisWindow = !slices.ContainsFunc(b.transfers, func(t *transfer) bool { return t.requestor == requestor })
-	}
-	b.state.Unlock()
-	b.changeProperty(requestor, property, current.kind, 8, part)
-	if lastToThisWindow {
-		b.c.send(newRequest(opChangeWindowAttributes, 0).u32(requestor).u32(attributeEventMask).u32(0).done())
-	}
-}
-
-func (b *Clipboard) changeProperty(window, property, kind uint32, format byte, data []byte) {
-	b.changePropertyMode(window, property, kind, format, data, modeReplace)
-}
-
-func (b *Clipboard) changePropertyMode(window, property, kind uint32, format byte, data []byte, mode byte) {
-	units := len(data) / int(format/8)
-	b.c.send(newRequest(opChangeProperty, mode).u32(window).u32(property).u32(kind).u8(format).u8(0).u8(0).u8(0).u32(uint32(units)).raw(data).done())
 }
 
 func drain[T any](events chan T) {
