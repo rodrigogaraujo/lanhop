@@ -2,6 +2,7 @@ package sharer
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -951,4 +952,255 @@ func TestTheClipboardAndTheEdgesHearTheSameFeaturesFrame(t *testing.T) {
 		tookInput,
 		entered(thisMachine, thisMachine, "desk", 1),
 	)
+}
+
+func dragEnds(drag Drag) string {
+	return fmt.Sprintf("the drag of %d files from %s ended", drag.Files, drag.Origin)
+}
+
+func ended(origin string, files int) string {
+	return dragEnds(Drag{Origin: origin, Files: files})
+}
+
+func (s *sharing) dragEnded(drag Drag) {
+	if s.sharer.drag != nil {
+		s.journal.note("a drag is still in progress when the end of the last one is told")
+	}
+	s.dragsEnded.note(dragEnds(drag))
+	if s.endsShown {
+		s.journal.note(dragEnds(drag))
+	}
+	if s.whenEnded != nil {
+		s.whenEnded(drag)
+	}
+}
+
+func (s *sharing) expectDragsEnded(want ...string) {
+	s.t.Helper()
+	s.eventually("telling the end of every drag", func() bool { return len(s.dragsEnded.read()) >= len(want) })
+	if got := s.dragsEnded.read(); !slices.Equal(got, want) {
+		s.t.Errorf("the ends of drags told are %q, want %q", got, want)
+	}
+}
+
+func startShowingTheEndOfDrags(t *testing.T, desk string, peers ...trust.Peer) *sharing {
+	t.Helper()
+	s := newSharing(t, peers...)
+	s.endsShown = true
+	s.desk.Store(drawn(t, desk))
+	s.startWithAScreen(ownDesktop)
+	return s
+}
+
+func TestTheEndOfADragIsToldOnceForEachReasonItEnds(t *testing.T) {
+	t.Run("the left button is released", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 1, noDock)
+		s.moves(0, 1)
+		s.releasesTheButton()
+		s.pushes(1, 0, reportsToCross)
+
+		s.expectJournal(story(
+			then(ended(thisMachine, 1), tookInput),
+			gets(desk, enteredAt(0, 16384)...),
+		))
+		s.expectDragsEnded(ended(thisMachine, 1))
+	})
+	t.Run("the drag is cancelled", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 2, noDock)
+		s.moves(0, 1)
+		s.sharer.DragCancelled()
+		s.pushes(1, 0, 2*dragReportsToCross)
+		s.releasesTheButton()
+
+		s.expectJournal(then(ended(thisMachine, 2)))
+		s.expectDragsEnded(ended(thisMachine, 2))
+	})
+	t.Run("the drag ends on its origin before it crossed", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 3, noDock)
+		s.moves(0, 1)
+		s.sharer.SourceDragEnded(thisMachine)
+		s.pushes(1, 0, 2*dragReportsToCross)
+		s.releasesTheButton()
+
+		s.expectJournal(then(ended(thisMachine, 3)))
+		s.expectDragsEnded(ended(thisMachine, 3))
+	})
+	t.Run("the drag crosses back to its origin", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 4, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+		s.pushes(-1, 0, dragReportsToCross)
+		s.releasesTheButton()
+
+		s.expectJournal(story(
+			then(dragged(thisMachine, thisMachine, "desk", 4), tookInput),
+			gets(desk, enteredAt(0, 16384)...),
+			then(entered(thisMachine, thisMachine, "desk", 4)),
+			gets(desk, times(dragReportsToCross, positioned(0, 16384)...)...),
+			then(dragged(thisMachine, "desk", thisMachine, 4)),
+			gets(desk, event.Leave()),
+			then(gaveInputBack, cursorPlacedAt(1000, 125), entered(thisMachine, "desk", thisMachine, 4), ended(thisMachine, 4)),
+		))
+		s.expectDragsEnded(ended(thisMachine, 4))
+	})
+	t.Run("the origin side is lost while it has the cursor", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		lost := s.connect(desk)
+
+		s.focusOn(2)
+		s.holdsTheButton()
+		s.dragStartsOn("desk", 5, noDock)
+		s.moves(1, 0)
+		lost.loseConnection()
+		s.waitsForTheInputBack()
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			gets(desk, press(event.ButtonLeft), event.Sync()),
+			gets(desk, positioned(32867, centre)...),
+			then(closed(desk), ended("desk", 5), gaveInputBack),
+		))
+		s.expectDragsEnded(ended("desk", 5))
+	})
+	t.Run("the machine holding the drag connects again", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		s.connectTakingDrags(desk)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 6, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+		s.connectTakingDrags(desk)
+		s.moves(0, 1)
+
+		s.expectJournal(story(
+			then(dragged(thisMachine, thisMachine, "desk", 6), tookInput),
+			gets(desk, enteredAt(0, 16384)...),
+			then(entered(thisMachine, thisMachine, "desk", 6)),
+			then(ended(thisMachine, 6), gaveInputBack, closed(desk)),
+		))
+		s.expectDragsEnded(ended(thisMachine, 6))
+	})
+	t.Run("the origin side is forgotten while the drag leaves it", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk laptop", desk, laptop)
+		leaving := s.connect(desk)
+		s.connectTakingDrags(laptop)
+
+		s.focusOn(2)
+		s.moves(400, 0)
+		s.holdsTheButton()
+		s.dragStartsOn("desk", 7, noDock)
+		leaving.leaveFails.Store(true)
+		s.pushes(1, 0, dragReportsToCross)
+
+		s.expectJournal(story(
+			then(tookInput),
+			gets(desk, enteredAt(centre, centre)...),
+			gets(desk, positioned(farEdge, centre)...),
+			gets(desk, press(event.ButtonLeft), event.Sync()),
+			gets(desk, times(dragReportsToCross, positioned(farEdge, centre)...)...),
+			then(dragged("desk", "desk", "laptop", 7), ended("desk", 7), closed(desk)),
+			gets(laptop, enteredAt(0, centre)...),
+		))
+		s.expectDragsEnded(ended("desk", 7))
+	})
+	t.Run("the neighbour cannot be entered", func(t *testing.T) {
+		s := startShowingTheEndOfDrags(t, "me desk", desk)
+		refusing := s.connectTakingDrags(desk)
+		refusing.sendFails.Store(true)
+		s.screen.cursorIsAt(1000, 125)
+
+		s.holdsTheButton()
+		s.dragStartsOn(thisMachine, 8, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+
+		s.expectJournal(then(dragged(thisMachine, thisMachine, "desk", 8), tookInput, ended(thisMachine, 8), gaveInputBack, closed(desk)))
+		s.expectDragsEnded(ended(thisMachine, 8))
+	})
+}
+
+func TestTheEndOfEachDragIsToldExactlyOnce(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk", desk)
+	s.connectTakingDrags(desk)
+	s.screen.cursorIsAt(1000, 125)
+
+	s.holdsTheButton()
+	s.dragStartsOn(thisMachine, 1, noDock)
+	s.moves(0, 1)
+	s.sharer.DragCancelled()
+	s.sharer.DragCancelled()
+	s.sharer.SourceDragEnded(thisMachine)
+	s.moves(0, 1)
+	s.releasesTheButton()
+
+	s.holdsTheButton()
+	s.dragStartsOn(thisMachine, 2, noDock)
+	s.pushes(1, 0, dragReportsToCross)
+	s.pushes(-1, 0, dragReportsToCross)
+	s.sharer.DragCancelled()
+	s.releasesTheButton()
+
+	s.holdsTheButton()
+	s.dragStartsOn(thisMachine, 3, noDock)
+	s.pushes(1, 0, dragReportsToCross)
+	s.sharer.SourceDragEnded(thisMachine)
+	s.releasesTheButton()
+	s.sharer.DragCancelled()
+	s.moves(0, 1)
+
+	s.expectDragsEnded(ended(thisMachine, 1), ended(thisMachine, 2), ended(thisMachine, 3))
+}
+
+func TestInputsCanBeCalledFromTheEndOfADrag(t *testing.T) {
+	s := newSharing(t, desk)
+	s.desk.Store(drawn(t, "me desk"))
+	calledOnce := false
+	s.whenEnded = func(Drag) {
+		if calledOnce {
+			return
+		}
+		calledOnce = true
+		s.sharer.DragCancelled()
+		s.sharer.SourceDragEnded(thisMachine)
+		s.sharer.SetDock(thisMachine, edge.Top)
+		s.sharer.DragStarted(Drag{Origin: "desk", Files: 9})
+	}
+	s.startWithAScreen(ownDesktop)
+	s.connectTakingDrags(desk)
+	s.screen.cursorIsAt(1000, 125)
+
+	s.holdsTheButton()
+	s.dragStartsOn(thisMachine, 1, noDock)
+	s.moves(0, 1)
+	s.releasesTheButton()
+	s.holdsTheButton()
+	s.dragStartsOn(thisMachine, 2, noDock)
+	s.pushes(1, 0, dragReportsToCross)
+
+	s.expectJournal(story(
+		then(dragged(thisMachine, thisMachine, "desk", 2), tookInput),
+		gets(desk, enteredAt(0, 16384)...),
+		then(entered(thisMachine, thisMachine, "desk", 2)),
+	))
+	s.expectDragsEnded(ended(thisMachine, 1))
 }

@@ -238,6 +238,9 @@ type sharing struct {
 	features    *features.Set
 	dragsStay   bool
 	noDragHooks bool
+	dragsEnded  *journal
+	endsShown   bool
+	whenEnded   func(drag Drag)
 	leftButtons func(pressed bool)
 	sharer      *Sharer
 	onReceivers func(names []string)
@@ -288,6 +291,8 @@ func (s *sharing) start(capture Capture) {
 		s.sharer.OnDragEntered(func(crossing DragCrossing) { s.journal.note(dragEnters(crossing)) })
 		s.sharer.OnBlockedDrag(func(blocked BlockedDrag) { s.journal.note(dragIsBlocked(blocked)) })
 		s.sharer.OnDragUnblocked(func(unblocked BlockedDrag) { s.journal.note(dragIsUnblocked(unblocked)) })
+		s.dragsEnded = &journal{}
+		s.sharer.OnDragEnded(func(drag Drag) { s.dragEnded(drag) })
 		s.sharer.OnEscape(func(duringADrag bool) { s.journal.note(escapeIsPressed(duringADrag)) })
 	}
 	if s.leftButtons != nil {
