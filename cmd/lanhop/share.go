@@ -112,6 +112,7 @@ type deskStatus struct {
 	connected []string
 	departed  map[string]time.Time
 	seats     []status.Seat
+	stopped   bool
 }
 
 func newDeskStatus(record statusFile, now func() time.Time, trusted peerList) *deskStatus {
@@ -144,6 +145,12 @@ func (d *deskStatus) receivers(names []string) {
 	d.write()
 }
 
+func (d *deskStatus) stop() {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	d.stopped = true
+}
+
 func (d *deskStatus) seatsChanged(seats []follow.Seat) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
@@ -159,6 +166,9 @@ func (d *deskStatus) seatsChanged(seats []follow.Seat) {
 }
 
 func (d *deskStatus) write() {
+	if d.stopped {
+		return
+	}
 	left := make([]status.Departure, 0, len(d.departed))
 	for name, at := range d.departed {
 		left = append(left, status.Departure{Name: name, At: at})
@@ -212,6 +222,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	})
 	desk.ownEdges = machine.OwnScreenHasEdges()
 	report := newDeskStatus(openStatus(), time.Now, trusted)
+	defer report.stop()
 	machine.OnReceivers(report.receivers)
 	defer shareTheClipboard(done, machine, directory, listener.AwaitData, new(features.Set), followerOfTheCentral(report.seatsChanged), stdout)()
 	go func() {

@@ -46,6 +46,24 @@ func TestShareWritesWhenEachMachineLeftAndForgetsItWhenItComesBack(t *testing.T)
 	}
 }
 
+func TestTheDeskStatusWritesNothingOnceShareHasStopped(t *testing.T) {
+	directory := useConfigDirectory(t)
+	desk := newDeskStatus(openStatus(), time.Now, nil)
+	desk.receivers([]string{"desk"})
+	desk.stop()
+
+	desk.seatsChanged([]follow.Seat{{Name: "desk", Version: update.Version{Major: 0, Minor: 1, Patch: 2}, Mark: follow.Follows}})
+	desk.receivers(nil)
+
+	read, err := status.Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if read.State != status.Sharing || !slices.Equal(read.Machines, []string{"desk"}) || len(read.Seats) != 0 {
+		t.Errorf("after lanhop share stopped, the status became %+v, want it as it was when share stopped", read)
+	}
+}
+
 func TestTheDeskListsEachSideMachineWithItsHotkeyAndWhetherItIsConnected(t *testing.T) {
 	now := time.Date(2026, 11, 13, 15, 0, 0, 0, time.Local)
 	peers := []trust.Peer{
