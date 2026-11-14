@@ -29,6 +29,14 @@ func TestCaptureOfAMacTellsAndPlacesItsCursorSoTheEdgesOfItsOwnScreenCanCross(t 
 	}
 }
 
+func TestCaptureOfAMacCanKeepTheLeftButtonHeldAfterLanhopEndsTheDragOnIt(t *testing.T) {
+	var capture sharer.Capture = &macos.Capture{}
+
+	if _, marks := capture.(marksTheLeftButton); !marks {
+		t.Error("the capture of a Mac cannot keep the left button held until its real release, so a modifier would drop a crossed file early")
+	}
+}
+
 func TestDevicesReportsWhatThisMacAllows(t *testing.T) {
 	cases := []struct {
 		name                string

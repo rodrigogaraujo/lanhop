@@ -151,14 +151,16 @@ func clipboardConfigIn(done context.Context, directory string, announced *featur
 	}, release, true
 }
 
-func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory string, awaitData clipshare.AwaitData, announced *features.Set, alongside sharer.Clipboard, stdout io.Writer) (stop func()) {
+func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory string, awaitData clipshare.AwaitData, announced *features.Set, alongside sharer.Clipboard, drags *dragsOfTheCentral, stdout io.Writer) (stop func()) {
 	config, release, supported := clipboardConfigIn(done, directory, announced, stdout)
 	if !supported {
 		machine.ShareClipboard(alongside)
 		return func() {}
 	}
 	config.AwaitData = awaitData
+	config.Name, config.Drops = drags.name, drags.drops
 	central := clipshare.NewCentral(config)
+	drags.wire(machine, central)
 	machine.ShareClipboard(sharer.Together(central, alongside))
 	return inTurn(runUntilStopped(done, central.Run), release)
 }

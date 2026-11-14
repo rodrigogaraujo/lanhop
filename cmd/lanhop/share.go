@@ -292,7 +292,16 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	machine.OnReceivers(report.receivers)
 	machine.OnBlockedDrag(tellBlockedDrags(stdout, report))
 	machine.OnDragUnblocked(report.unblockedDrag)
-	defer shareTheClipboard(done, machine, directory, listener.AwaitData, announced, followerOfTheCentral(report.seatsChanged), stdout)()
+	drops, closeDrops, err := openDrops(true)
+	if err != nil {
+		fmt.Fprintf(stdout, "Files dragged to this machine cannot be dropped here: %v\n", err)
+	}
+	if closeDrops != nil {
+		defer closeDrops()
+	}
+	drags := newDragsOfTheCentral(own, drops, readDock, endTheDragHere(done, capture, stdout), stdout)
+	defer shareTheClipboard(done, machine, directory, listener.AwaitData, announced, followerOfTheCentral(report.seatsChanged), drags, stdout)()
+	defer drags.watch(done)()
 	go func() {
 		for {
 			receiver, err := listener.Accept()
