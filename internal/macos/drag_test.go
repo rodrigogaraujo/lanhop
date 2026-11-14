@@ -95,6 +95,12 @@ func (b *dragBoard) finishWriting(paths ...string) {
 	b.paths, b.err = paths, nil
 }
 
+func (b *dragBoard) finishWritingNoFiles(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.paths, b.err = nil, err
+}
+
 func (b *dragBoard) readCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -146,7 +152,34 @@ func TestAChangeOfTheDragPasteboardWithTheLeftButtonHeldStartsADragOfItsFiles(t 
 	board.press()
 	board.holdFiles("/Users/someone/report.pdf", "/Users/someone/photos")
 
-	expectDragEvents(t, pollTimes(tracker, board.source(), 1), startedWith("/Users/someone/report.pdf", "/Users/someone/photos"))
+	expectDragEvents(t, pollTimes(tracker, board.source(), 2), startedWith("/Users/someone/report.pdf", "/Users/someone/photos"))
+}
+
+func TestADragStartsOnlyOnceTwoReadsInARowGiveTheSameFiles(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/a.txt")
+	partial := pollTimes(tracker, board.source(), 1)
+
+	board.finishWriting("/tmp/a.txt", "/tmp/b.txt")
+
+	expectDragEvents(t, append(partial, pollTimes(tracker, board.source(), 3)...), startedWith("/tmp/a.txt", "/tmp/b.txt"))
+	if got := board.readCount(); got != 3 {
+		t.Errorf("the drag pasteboard was read %d times, want 3", got)
+	}
+}
+
+func TestFilesThatTurnIntoACopyWithoutFilesStartNoDrag(t *testing.T) {
+	board := newDragBoard()
+	tracker := board.tracker()
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	partial := pollTimes(tracker, board.source(), 1)
+
+	board.finishWritingNoFiles(clipboard.ErrNotFiles)
+
+	expectDragEvents(t, append(partial, pollTimes(tracker, board.source(), 6)...))
 }
 
 func TestTheEndIsReportedOnceWhenTheLeftButtonComesUp(t *testing.T) {
@@ -166,13 +199,13 @@ func TestAChangeDuringADragWithTheSameFilesIsReadOnceAndReportsNothing(t *testin
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/report.pdf")
-	pollTimes(tracker, board.source(), 1)
+	pollTimes(tracker, board.source(), 2)
 
 	board.holdFiles("/tmp/report.pdf")
 
 	expectDragEvents(t, pollTimes(tracker, board.source(), 3))
-	if got := board.readCount(); got != 2 {
-		t.Errorf("the drag pasteboard was read %d times, want 2", got)
+	if got := board.readCount(); got != 3 {
+		t.Errorf("the drag pasteboard was read %d times, want 3", got)
 	}
 }
 
@@ -181,7 +214,7 @@ func TestADropAndANewDragBetweenTwoPollsEndTheFirstDragAndStartTheSecond(t *test
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/first.pdf")
-	first := pollTimes(tracker, board.source(), 1)
+	first := pollTimes(tracker, board.source(), 2)
 
 	board.release()
 	board.press()
@@ -195,13 +228,13 @@ func TestAChangeDuringADragThatHoldsNoFilesYetEndsItAndTheNextFilesStartANewOne(
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/first.pdf")
-	pollTimes(tracker, board.source(), 1)
+	pollTimes(tracker, board.source(), 2)
 	board.holdNoFiles(clipboard.ErrNotFiles)
 	ending := pollTimes(tracker, board.source(), 1)
 
 	board.finishWriting("/tmp/second.pdf")
 
-	expectDragEvents(t, append(ending, pollTimes(tracker, board.source(), 1)...), dragEnd, startedWith("/tmp/second.pdf"))
+	expectDragEvents(t, append(ending, pollTimes(tracker, board.source(), 2)...), dragEnd, startedWith("/tmp/second.pdf"))
 }
 
 func TestAChangeDuringADragToAPrivateCopyEndsItAndIsReadOnce(t *testing.T) {
@@ -209,13 +242,13 @@ func TestAChangeDuringADragToAPrivateCopyEndsItAndIsReadOnce(t *testing.T) {
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/report.pdf")
-	pollTimes(tracker, board.source(), 1)
+	pollTimes(tracker, board.source(), 2)
 
 	board.holdNoFiles(clipboard.ErrPrivate)
 
 	expectDragEvents(t, pollTimes(tracker, board.source(), 6), dragEnd)
-	if got := board.readCount(); got != 2 {
-		t.Errorf("the drag pasteboard was read %d times, want 2", got)
+	if got := board.readCount(); got != 3 {
+		t.Errorf("the drag pasteboard was read %d times, want 3", got)
 	}
 }
 
@@ -224,7 +257,7 @@ func TestTheStartedPathsBelongToWhoeverReadsThem(t *testing.T) {
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/report.pdf")
-	started := pollTimes(tracker, board.source(), 1)
+	started := pollTimes(tracker, board.source(), 2)
 	started[0].Paths[0] = "/tmp/changed.pdf"
 
 	board.holdFiles("/tmp/report.pdf")
@@ -266,7 +299,7 @@ func TestFilesWrittenAfterTheChangeWasSeenStillStartTheDrag(t *testing.T) {
 
 	board.finishWriting("/tmp/report.pdf")
 
-	expectDragEvents(t, pollTimes(tracker, board.source(), 1), startedWith("/tmp/report.pdf"))
+	expectDragEvents(t, pollTimes(tracker, board.source(), 2), startedWith("/tmp/report.pdf"))
 }
 
 func TestADragOfSomethingOtherThanFilesIsReadFiveTimes(t *testing.T) {
@@ -335,7 +368,7 @@ func TestAClickAfterADragDoesNotReadTheFilesOfThatDragAgain(t *testing.T) {
 	tracker := board.tracker()
 	board.press()
 	board.holdFiles("/tmp/report.pdf")
-	pollTimes(tracker, board.source(), 1)
+	pollTimes(tracker, board.source(), 2)
 	board.holdFiles("/tmp/report.pdf")
 	pollTimes(tracker, board.source(), 1)
 	board.release()
@@ -429,7 +462,7 @@ func TestAResetDropsTheEventsNotYetReadAndForgetsTheDrag(t *testing.T) {
 	board.press()
 	board.holdFiles("/tmp/first.pdf")
 	deadline := time.Now().Add(watchPatience)
-	for board.readCount() == 0 {
+	for board.readCount() < 2 {
 		if time.Now().After(deadline) {
 			t.Fatalf("the watch did not read the drag within %v", watchPatience)
 		}
@@ -470,18 +503,18 @@ type flickeringDrag struct {
 }
 
 func (f *flickeringDrag) Mark() int64 {
-	return f.polls.Add(1)
+	return (f.polls.Add(1) + 1) / 3
 }
 
 func (f *flickeringDrag) ReadFiles() ([]string, error) {
-	return []string{fmt.Sprintf("/tmp/drag-%d", f.polls.Load())}, nil
+	return []string{fmt.Sprintf("/tmp/drag-%d", (f.polls.Load()+1)/3)}, nil
 }
 
 func (f *flickeringDrag) leftHeld() bool {
-	return f.polls.Load()%2 == 1
+	return f.polls.Load()%3 != 1
 }
 
-const marksWhenTheQueueIsFull = 1 + 1 + dragEventQueue
+const marksWhenTheQueueIsFull = 1 + 3*dragEventQueue/2
 
 func watchThatNobodyReads(t *testing.T) (*flickeringDrag, *DragWatch) {
 	t.Helper()
@@ -527,8 +560,8 @@ func TestAWatchThatNobodyReadsLosesNoEvent(t *testing.T) {
 	}
 
 	var want []DragEvent
-	for started := 3; len(want) < 12; started += 2 {
-		want = append(want, startedWith(fmt.Sprintf("/tmp/drag-%d", started)), dragEnd)
+	for drag := 1; len(want) < 12; drag++ {
+		want = append(want, startedWith(fmt.Sprintf("/tmp/drag-%d", drag)), dragEnd)
 	}
 	expectDragEvents(t, got, want...)
 }

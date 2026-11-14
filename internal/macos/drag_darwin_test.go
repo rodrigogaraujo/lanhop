@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const testDragPoll = 5 * time.Millisecond
+const testDragPoll = DragPollInterval
 
 type countedReads struct {
 	Pasteboard
