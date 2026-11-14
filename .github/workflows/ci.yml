@@ -133,6 +133,7 @@ jobs:
       - name: Drag a file from one side machine to another under a central, each in its own container
         env:
           LANHOP_CONTAINERS_LOGS: "1"
+          LANHOP_CONTAINERS_EXPECT_DROP: "1"
         run: test/containers/run
 
   release-checks:
