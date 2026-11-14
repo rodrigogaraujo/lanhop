@@ -66,9 +66,9 @@ func openTheDropWindowThenQuit() int {
 		time.Sleep(20 * time.Millisecond)
 	}
 	taken, tries := false, 0
-	for deadline := time.Now().Add(2 * time.Second); !taken && err == nil && time.Now().Before(deadline); tries++ {
+	for deadline := time.Now().Add(dropReleaseLimit); !taken && err == nil && time.Now().Before(deadline); tries++ {
 		if tries > 0 {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(dropReleasePoll)
 		}
 		taken, err = window.takeTheMouseAt(elsewhere)
 	}

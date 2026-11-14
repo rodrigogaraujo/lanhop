@@ -141,7 +141,10 @@ func planDrag(cursor Point, displays []Rect) dragPlan {
 	return dragPlan{start: cursor, steps: steps}
 }
 
-const macOSEscape uint16 = 0x35
+const (
+	macOSEscape         uint16 = 0x35
+	escapeBeforeRelease        = 20 * time.Millisecond
+)
 
 type dragScreen interface {
 	PostMouse(MouseEvent)
@@ -236,6 +239,7 @@ func (h *heldDown) releaseWithADragAt(at Point, escapeFirst bool) bool {
 	if escapeFirst {
 		h.screen.PostKey(KeyPress{Code: macOSEscape, Down: true})
 		h.screen.PostKey(KeyPress{Code: macOSEscape, Down: false})
+		time.Sleep(escapeBeforeRelease)
 	}
 	h.screen.PostMouse(MouseEvent{Action: MouseDragged, At: at, Clicks: 1})
 	h.screen.PostMouse(MouseEvent{Action: MouseUp, At: at, Clicks: 1})

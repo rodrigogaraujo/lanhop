@@ -39,6 +39,7 @@ type dropScreen struct {
 	posted  []MouseEvent
 	keys    []KeyPress
 	onPost  func(MouseEvent)
+	onKey   func(KeyPress)
 	journal *journal
 }
 
@@ -57,8 +58,12 @@ func (s *dropScreen) PostMouse(mouse MouseEvent) {
 func (s *dropScreen) PostKey(key KeyPress) {
 	s.mu.Lock()
 	s.keys = append(s.keys, key)
+	react := s.onKey
 	s.mu.Unlock()
 	s.journal.note("key %#x down %v", key.Code, key.Down)
+	if react != nil {
+		react(key)
+	}
 }
 
 func (s *dropScreen) keysPosted() []KeyPress {
@@ -643,6 +648,8 @@ func (w *fakeDropWindow) seen() (refused bool, movedTo []Point, closed int) {
 	return w.refused, slices.Clone(w.movedTo), w.closed
 }
 
+const shortReleaseLimit = 50 * time.Millisecond
+
 var (
 	finderUnderTheCursor = Point{X: 803, Y: 250}
 	mailUnderTheCursor   = Point{X: 900, Y: 300}
@@ -691,7 +698,7 @@ func runningSessionOver(window *fakeDropWindow) *endUnderTest {
 		window:       window,
 		ended:        e.ended.done,
 		downAtEnd:    func() bool { return false },
-		releaseLimit: 50 * time.Millisecond,
+		releaseLimit: time.Second,
 		releasePoll:  5 * time.Millisecond,
 		endLimit:     time.Second,
 		logf:         e.logf,
@@ -748,8 +755,26 @@ func TestAClosedSessionReleasesOnlyOnceTheWindowTakesTheMouse(t *testing.T) {
 
 func TestAClosedSessionWhoseWindowNeverTakesTheMouseEscapesBeforeTheRelease(t *testing.T) {
 	e := runningSessionOver(&fakeDropWindow{answers: []bool{false}})
+	e.end.releaseLimit = shortReleaseLimit
+	var escapedAt, draggedAt time.Time
+	e.screen.onKey = func(key KeyPress) {
+		if !key.Down {
+			escapedAt = time.Now()
+		}
+	}
+	react := e.screen.onPost
+	e.screen.onPost = func(mouse MouseEvent) {
+		if mouse.Action == MouseDragged {
+			draggedAt = time.Now()
+		}
+		react(mouse)
+	}
 
 	e.end.run()
+
+	if gap := draggedAt.Sub(escapedAt); gap < escapeBeforeRelease {
+		t.Errorf("the dragged event followed Escape after %v, want at least %v", gap, escapeBeforeRelease)
+	}
 
 	got := e.journal.read()
 	if len(got) < 6 || got[0] != "refuse" || movesUntilTheEnd(got) < 2 {
@@ -780,6 +805,7 @@ func TestARefusalTheMainThreadAnsweredLateIsSaidAndTheReleaseStillGoesOverTheWin
 
 func TestAMoveTheMainThreadAnsweredLateEndsInEscapeAndSaysDropsWereNotRefused(t *testing.T) {
 	e := runningSessionOver(&fakeDropWindow{answers: []bool{true}, refuseLate: true, takeLate: true})
+	e.end.releaseLimit = shortReleaseLimit
 
 	e.end.run()
 

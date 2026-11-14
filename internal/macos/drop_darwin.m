@@ -27,6 +27,7 @@ static const NSUInteger pileDepth = 4;
 static const NSInteger concurrentWrites = 4;
 static const CGFloat nearlyClear = 0.01;
 static const NSTimeInterval abandonAfterSeconds = 10;
+static const NSTimeInterval shieldLifetimeSeconds = 6;
 static const NSTimeInterval quitBackstopSeconds = 15;
 static const int hungShutdownExitCode = 1;
 static const double mainThreadLimitSeconds = 2;
@@ -258,6 +259,7 @@ static NSPoint onTheScreens(CGPoint at) {
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin;
 - (void)closeWindow;
 - (void)abandon;
+- (void)expire;
 @end
 
 @implementation LanhopDropView
@@ -340,6 +342,13 @@ static NSPoint onTheScreens(CGPoint at) {
 	[self closeWindow];
 	giveBackActivation(frontBefore);
 	lanhopDropSessionOver(dropID);
+}
+
+- (void)expire {
+	if (closed) {
+		return;
+	}
+	[self closeWindow];
 }
 
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin {
@@ -452,7 +461,15 @@ static LanhopDropSource *openOnMainThread(uint64_t dropID, NSArray<NSString *> *
 	}
 
 	NSRect frame = NSMakeRect(home.x - side / 2, NSMaxY([primary frame]) - home.y - side / 2, side, side);
-	NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+	NSWindow *window = nil;
+	if (shield) {
+		NSPanel *panel = [[NSPanel alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel backing:NSBackingStoreBuffered defer:NO];
+		[panel setBecomesKeyOnlyIfNeeded:YES];
+		[panel setHidesOnDeactivate:NO];
+		window = panel;
+	} else {
+		window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+	}
 	[window setReleasedWhenClosed:NO];
 	[window setLevel:NSStatusWindowLevel];
 	[window setOpaque:NO];
@@ -497,6 +514,7 @@ void *lanhopShieldOpen(double x, double y, double side) {
 	runOnMainThread(^{
 		@autoreleasepool {
 			opened = openOnMainThread(0, @[], @[], CGPointMake(x, y), side, YES);
+			[opened performSelector:@selector(expire) withObject:nil afterDelay:shieldLifetimeSeconds inModes:mainThreadModes()];
 		}
 	});
 	return opened;
@@ -570,6 +588,7 @@ int lanhopDropTakeTheMouseAt(void *drop, double x, double y) {
 bool lanhopDropClose(void *drop) {
 	LanhopDropSource *source = (LanhopDropSource *)drop;
 	return answerOnMainThread(0, ^int(void) {
+		[NSObject cancelPreviousPerformRequestsWithTarget:source selector:@selector(expire) object:nil];
 		source->closed = YES;
 		source->refusing = YES;
 		[source->window orderOut:nil];

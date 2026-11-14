@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	shieldLimit = time.Second
-	shieldPoll  = 20 * time.Millisecond
+	shieldLimit    = time.Second
+	shieldPoll     = 20 * time.Millisecond
+	shieldLifetime = 5 * time.Second
 )
 
 var (
@@ -30,8 +31,20 @@ type Shield struct {
 	err     error
 }
 
-func newShield(window shieldWindow) *Shield {
-	return &Shield{window: window, closed: newLatch()}
+func newShield(window shieldWindow, lifetime time.Duration) *Shield {
+	s := &Shield{window: window, closed: newLatch()}
+	go s.closeAfter(lifetime)
+	return s
+}
+
+func (s *Shield) closeAfter(lifetime time.Duration) {
+	timer := time.NewTimer(lifetime)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		s.Close()
+	case <-s.closed.done:
+	}
 }
 
 func (s *Shield) raise(ctx context.Context, cursor func() Point, limit, poll time.Duration) error {

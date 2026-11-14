@@ -124,17 +124,23 @@ func ShieldCursor(ctx context.Context) (*Shield, error) {
 }
 
 func shieldUnder(ctx context.Context, cursor func() Point) (*Shield, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !mainThreadIsServed() {
 		return nil, ErrNoMainThread
 	}
 	if err := startAppKit(); err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	window, err := openShieldWindow(cursor())
 	if err != nil {
 		return nil, err
 	}
-	shield := newShield(window)
+	shield := newShield(window, shieldLifetime)
 	if err := shield.raise(ctx, cursor, shieldLimit, shieldPoll); err != nil {
 		return nil, err
 	}
