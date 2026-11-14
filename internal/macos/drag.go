@@ -183,7 +183,7 @@ type dragEnder interface {
 	ButtonDown(number int) bool
 	Cursor() Point
 	PostKey(key KeyPress)
-	PostMouse(mouse MouseEvent)
+	PostMouseAtSessionTap(mouse MouseEvent)
 }
 
 var endingSourceDrag sync.Mutex
@@ -200,6 +200,6 @@ func endSourceDrag(screen dragEnder, canPost func() bool, pause func(time.Durati
 	screen.PostKey(KeyPress{Code: escapeKeyCode, Down: true})
 	screen.PostKey(KeyPress{Code: escapeKeyCode})
 	pause(escapeToRelease)
-	screen.PostMouse(MouseEvent{Action: MouseUp, At: screen.Cursor(), Button: leftMouseButton, Clicks: 1})
+	screen.PostMouseAtSessionTap(MouseEvent{Action: MouseUp, At: screen.Cursor(), Button: leftMouseButton, Clicks: 1})
 	return nil
 }

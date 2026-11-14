@@ -666,8 +666,8 @@ func (s *endingScreen) PostKey(key KeyPress) {
 	s.did = append(s.did, key)
 }
 
-func (s *endingScreen) PostMouse(mouse MouseEvent) {
-	s.did = append(s.did, mouse)
+func (s *endingScreen) PostMouseAtSessionTap(mouse MouseEvent) {
+	s.did = append(s.did, atSessionTap(mouse))
 }
 
 func (s *endingScreen) pause(gap time.Duration) {
@@ -679,16 +679,18 @@ func postingAllowed() bool {
 	return true
 }
 
+type atSessionTap MouseEvent
+
 func endingAt(at Point) []any {
 	return []any{
 		KeyPress{Code: 0x35, Down: true},
 		KeyPress{Code: 0x35},
 		20 * time.Millisecond,
-		MouseEvent{Action: MouseUp, At: at, Button: 0, Clicks: 1},
+		atSessionTap(MouseEvent{Action: MouseUp, At: at, Button: 0, Clicks: 1}),
 	}
 }
 
-func TestEndingASourceDragPostsEscapeThenALeftMouseUpWhereTheCursorIsAfterTheGap(t *testing.T) {
+func TestEndingASourceDragPostsEscapeThenALeftMouseUpAtTheSessionTapWhereTheCursorIsAfterTheGap(t *testing.T) {
 	screen := &endingScreen{held: true, cursor: Point{X: 501, Y: 165}, cursorLater: Point{X: 503, Y: 166}}
 
 	err := endSourceDrag(screen, postingAllowed, screen.pause)
@@ -743,10 +745,10 @@ func (s *sharedEndingScreen) PostKey(key KeyPress) {
 	s.did = append(s.did, key)
 }
 
-func (s *sharedEndingScreen) PostMouse(mouse MouseEvent) {
+func (s *sharedEndingScreen) PostMouseAtSessionTap(mouse MouseEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.did = append(s.did, mouse)
+	s.did = append(s.did, atSessionTap(mouse))
 }
 
 func (s *sharedEndingScreen) pause(gap time.Duration) {

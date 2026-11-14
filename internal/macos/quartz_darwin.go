@@ -83,6 +83,11 @@ func (Quartz) PostMouse(mouse MouseEvent) {
 		C.int64_t(mouse.Clicks), C.int64_t(mouse.DX), C.int64_t(mouse.DY), C.uint64_t(mouse.Flags))
 }
 
+func (Quartz) PostMouseAtSessionTap(mouse MouseEvent) {
+	C.lanhopPostMouseAtSession(nativeAction(mouse.Action), C.double(mouse.At.X), C.double(mouse.At.Y), C.int(mouse.Button),
+		C.int64_t(mouse.Clicks), C.int64_t(mouse.DX), C.int64_t(mouse.DY), C.uint64_t(mouse.Flags))
+}
+
 func (Quartz) PostScroll(scroll Scroll) {
 	C.lanhopPostScroll(C.int32_t(scroll.Vertical), C.int32_t(scroll.Horizontal), C.uint64_t(scroll.Flags))
 }
