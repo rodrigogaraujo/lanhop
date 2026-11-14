@@ -1,0 +1,55 @@
+x-machine: &machine
+  image: ${LANHOP_CONTAINERS_IMAGE:-lanhop-containers:test}
+  pull_policy: never
+  networks: [desk]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 256
+  mem_limit: 512m
+
+services:
+  pair:
+    <<: *machine
+    profiles: [pair]
+    entrypoint: ["pair", "-desk", "/desk", "-central", "central", "-sides", "l1,l2"]
+    volumes:
+      - central:/desk/central
+      - l1:/desk/l1
+      - l2:/desk/l2
+
+  central:
+    <<: *machine
+    hostname: central
+    command: ["share"]
+    environment:
+      LANHOP_CONFIG_DIR: /desk/central
+      LANHOP_TEST_INPUT: /tmp/lanhop-input
+    volumes:
+      - central:/desk/central
+
+  l1:
+    <<: *machine
+    hostname: l1
+    command: ["receive"]
+    environment:
+      LANHOP_CONFIG_DIR: /desk/l1
+    volumes:
+      - l1:/desk/l1
+
+  l2:
+    <<: *machine
+    hostname: l2
+    command: ["receive"]
+    environment:
+      LANHOP_CONFIG_DIR: /desk/l2
+    volumes:
+      - l2:/desk/l2
+
+networks:
+  desk:
+    internal: true
+
+volumes:
+  central: {}
+  l1: {}
+  l2: {}

@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+project=${LANHOP_CONTAINERS_PROJECT:-lanhop-containers}
+export LANHOP_CONTAINERS_IMAGE=${LANHOP_CONTAINERS_IMAGE:-$project:test}
+expect_drop=${LANHOP_CONTAINERS_EXPECT_DROP:-0}
+always_show_logs=${LANHOP_CONTAINERS_LOGS:-0}
+for switch in "LANHOP_CONTAINERS_EXPECT_DROP=$expect_drop" "LANHOP_CONTAINERS_LOGS=$always_show_logs"; do
+  case ${switch#*=} in
+    0 | 1) ;;
+    *)
+      echo "run: ${switch%%=*} must be 0 or 1, not \"${switch#*=}\"" >&2
+      exit 64
+      ;;
+  esac
+done
+waits_for="task 9 of spec 011, wiring the drops"
+compose=(docker compose --project-name "$project" --file test/containers/compose.yaml --profile pair)
+
+input=/tmp/lanhop-input
+file='/home/desk/files/report 2026.bin'
+dropped='/home/desk/dropped/report 2026.bin'
+source_window=(1500 300 300 500)
+target_window=(200 300 800 500)
+centre_x=959
+centre_y=539
+right_edge=1919
+tolerance=4
+push_reports_at_the_edge=80
+
+passed=()
+failed=()
+waiting=()
+detail=
+seen_x=
+seen_y=
+probe_failed=0
+original=
+
+tear_down() {
+  local status=$?
+  if [ "$status" -ne 0 ] || [ "${#failed[@]}" -gt 0 ] || [ "$always_show_logs" = 1 ]; then
+    show_logs
+  fi
+  "${compose[@]}" down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+  exit "$status"
+}
+trap tear_down EXIT
+trap 'exit 130' INT TERM
+
+show_logs() {
+  local machine log
+  for machine in central l1 l2; do
+    printf '\n----- %s: lanhop\n' "$machine"
+    "${compose[@]}" logs --no-color --no-log-prefix "$machine" 2>&1 | tail -n 200 || true
+    for log in source target xvfb; do
+      if on "$machine" test -s "/tmp/logs/$log.log" 2>/dev/null; then
+        printf -- '----- %s: %s\n' "$machine" "$log"
+        on "$machine" tail -n 200 "/tmp/logs/$log.log" || true
+      fi
+    done
+  done
+}
+
+on() {
+  timeout 20 "${compose[@]}" exec -T "$1" "${@:2}"
+}
+
+start_on() {
+  timeout 20 "${compose[@]}" exec -T --detach "$1" sh -c "$2"
+}
+
+report() {
+  printf '%s  %s\n' "$1" "$2"
+  if [ -n "$detail" ]; then
+    printf '      %s\n' "$detail"
+  fi
+  detail=
+}
+
+pass() {
+  passed+=("$1")
+  report PASS "$1"
+}
+
+fail() {
+  failed+=("$1")
+  report FAIL "$1"
+}
+
+required() {
+  local check=$1
+  shift
+  if "$@"; then pass "$check"; else fail "$check"; fi
+}
+
+after_wiring() {
+  local check=$1
+  shift
+  if "$@"; then
+    pass "$check"
+  elif [ "$expect_drop" = 1 ]; then
+    fail "$check"
+  else
+    waiting+=("$check")
+    report WAIT "$check (waits for $waits_for)"
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+      printf '::warning::%s waits for %s. The pull request that completes task 9 sets LANHOP_CONTAINERS_EXPECT_DROP=1 in this job, which makes it required.\n' "$check" "$waits_for"
+    fi
+  fi
+}
+
+eventually() {
+  local seconds=$1 deadline
+  shift
+  deadline=$((SECONDS + seconds))
+  until "$@"; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+side_connected() {
+  on "$1" lanhop status | grep -q '^connected: lanhop is connected to "central"'
+}
+
+central_shares_with_both() {
+  on central lanhop status | grep -q '^sharing: .*"l1" and "l2"'
+}
+
+desk_connected() {
+  side_connected l1 && side_connected l2 && central_shares_with_both
+}
+
+pointer_near() {
+  local at x y
+  if ! at=$(on "$1" xprobe pointer); then
+    detail="xprobe could not read the pointer of $1"
+    return 2
+  fi
+  read -r x y <<<"$at"
+  if ! [[ $x =~ ^-?[0-9]+$ && $y =~ ^-?[0-9]+$ ]]; then
+    detail="xprobe gave \"$at\" for the pointer of $1"
+    return 2
+  fi
+  seen_x=$x
+  seen_y=$y
+  detail="the pointer of $1 is at $x,$y, want $2,$3 within $tolerance pixels"
+  [ $((x - $2)) -le "$tolerance" ] && [ $(($2 - x)) -le "$tolerance" ] &&
+    [ $((y - $3)) -le "$tolerance" ] && [ $(($3 - y)) -le "$tolerance" ]
+}
+
+pointer_left_alone() {
+  pointer_near "$1" 100 100
+}
+
+cursor_crossed_to() {
+  local near=0
+  probe_failed=0
+  pointer_near "$1" 100 100 || near=$?
+  case $near in
+    0)
+      detail="the pointer of $1 is still at 100,100, where it was before the push"
+      return 1
+      ;;
+    1)
+      detail="the pointer of $1 is at $seen_x,$seen_y, and was at 100,100 before the push"
+      return 0
+      ;;
+  esac
+  probe_failed=1
+  return 1
+}
+
+log_says() {
+  on "$1" grep -qs -- "$3" "/tmp/logs/$2.log"
+}
+
+central_log_says() {
+  "${compose[@]}" logs --no-color --no-log-prefix central 2>&1 | grep -q -- "$1"
+}
+
+feed() {
+  on central sh -c "cat >$input"
+}
+
+keys() {
+  local key
+  for key in "$@"; do
+    printf '1 %s\n0 0 0\n' "$key"
+  done | feed
+}
+
+move() {
+  local reports=$1 dx=$2 dy=$3
+  on central sh -c "i=0
+while [ \$i -lt $reports ]; do
+  printf '2 0 $dx\n2 1 $dy\n0 0 0\n'
+  i=\$((i + 1))
+  sleep 0.015
+done >$input"
+}
+
+travel() {
+  local dx=$1 dy=$2 reports
+  reports=$(((${dx#-} > ${dy#-} ? ${dx#-} : ${dy#-}) / 10))
+  if [ "$reports" -gt 0 ]; then
+    move "$reports" $((dx / reports)) $((dy / reports))
+    dx=$((dx - reports * (dx / reports)))
+    dy=$((dy - reports * (dy / reports)))
+  fi
+  move 1 "$dx" "$dy"
+}
+
+sum_of() {
+  on "$1" sha256sum "$2" 2>/dev/null | cut -d ' ' -f 1
+}
+
+source_window_owns_the_drag() {
+  local window owner
+  window=$(on l1 sed -n 's/^drag-started window=\([0-9]*\)$/\1/p' /tmp/logs/source.log | tail -n 1)
+  owner=$(on l1 xprobe owner XdndSelection)
+  detail="XdndSelection of l1 is owned by window ${owner:-none}, the source window is ${window:-unknown}"
+  [ -n "$window" ] && [ "$owner" = "$window" ]
+}
+
+original_untouched() {
+  [ -n "$original" ] && [ "$(sum_of l1 "$file")" = "$original" ]
+}
+
+dropped_whole_on_l2() {
+  [ -n "$original" ] && [ "$(sum_of l2 "$dropped")" = "$original" ]
+}
+
+no_request_failed() {
+  local logs failures
+  if ! logs=$(on l1 cat /tmp/logs/source.log && on l2 cat /tmp/logs/target.log); then
+    detail="the logs of the XDND programs could not be read"
+    return 1
+  fi
+  failures=$(grep '^request-failed' <<<"$logs" || true)
+  detail=${failures//$'\n'/; }
+  [ -z "$failures" ]
+}
+
+lanhops_edge_window_took_the_drop_with_copy() {
+  local log window entered input_only override x width
+  if ! log=$(on l1 cat /tmp/logs/source.log); then
+    detail="the log of the XDND source could not be read"
+    return 1
+  fi
+  window=$(sed -n 's/^finished window=\([0-9]*\) accepted=true action=XdndActionCopy$/\1/p' <<<"$log" | tail -n 1)
+  if [ -z "$window" ]; then
+    detail="the source's drag did not finish with a copy that a window accepted"
+    return 1
+  fi
+  if grep -q '^deleted ' <<<"$log"; then
+    detail="the source deleted its file"
+    return 1
+  fi
+  entered=$(grep "^enter window=$window " <<<"$log" | tail -n 1)
+  read -r input_only override x width <<<"$(sed -n 's/.* input-only=\([a-z]*\) override-redirect=\([a-z]*\) x=\(-\{0,1\}[0-9]*\) y=-\{0,1\}[0-9]* width=\([0-9]*\) height=[0-9]*$/\1 \2 \3 \4/p' <<<"$entered")"
+  detail="window $window took the drop with copy; when the drag entered it: ${entered:-no description}"
+  [ "$input_only" = true ] && [ "$override" = true ] && [ "$width" -ge 2 ] &&
+    [ "$x" -le $((right_edge - 1)) ] && [ $((x + width)) -gt "$right_edge" ]
+}
+
+echo "Building $LANHOP_CONTAINERS_IMAGE with -tags containertest"
+docker build --tag "$LANHOP_CONTAINERS_IMAGE" --file test/containers/Dockerfile .
+"${compose[@]}" down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1 || true
+
+echo "Pairing central, l1 and l2 by writing their peers.json and the layout of the central"
+"${compose[@]}" run --rm --no-deps pair
+"${compose[@]}" up --detach central l1 l2
+
+required "l1 and l2 connect to the central, which shares with both" eventually 30 desk_connected
+if [ "${#failed[@]}" -gt 0 ]; then
+  exit 1
+fi
+
+on l1 sh -c "mkdir -p \"\$(dirname '$file')\" && head -c 1048576 /dev/urandom >'$file'"
+original=$(sum_of l1 "$file") || true
+required "l1 holds the file to drag" test -n "$original"
+start_on l1 "exec xdndsource -file '$file' -x ${source_window[0]} -y ${source_window[1]} -width ${source_window[2]} -height ${source_window[3]} >/tmp/logs/source.log 2>&1"
+start_on l2 "exec xdndtarget -out \"\$(dirname '$dropped')\" -x ${target_window[0]} -y ${target_window[1]} -width ${target_window[2]} -height ${target_window[3]} >/tmp/logs/target.log 2>&1"
+required "the XDND source starts on l1" eventually 10 log_says l1 source '^window='
+required "the XDND target starts on l2" eventually 10 log_says l2 target '^window='
+
+on l1 xprobe warp 100 100
+on l2 xprobe warp 100 100
+keys "29 1" "56 1" "3 1" "3 0" "56 0" "29 0"
+required "Ctrl+Alt+2 gives focus to l1, whose cursor arrives at its centre" eventually 5 pointer_near l1 "$centre_x" "$centre_y"
+required "the central's test input is taken away from the central" eventually 5 central_log_says 'test input: focus left this machine'
+required "l2's cursor is left alone" pointer_left_alone l2
+
+source_x=$((source_window[0] + source_window[2] / 2))
+travel $((source_x - centre_x)) 0
+required "the replay through XTEST moves l1's cursor over the source window" eventually 3 pointer_near l1 "$source_x" "$centre_y"
+
+keys "272 1"
+required "a press there starts the source's drag, which owns XdndSelection on l1" eventually 5 source_window_owns_the_drag
+
+move $(((right_edge - source_x) / 5 + push_reports_at_the_edge)) 5 0
+required "the push with button 1 held reaches l1's right edge" pointer_near l1 "$right_edge" "$centre_y"
+
+crossed=0
+crossing="the dragged file crosses from l1 to l2 with button 1 held"
+if eventually 3 cursor_crossed_to l2; then
+  crossed=1
+  pass "$crossing"
+  travel $((target_window[0] + target_window[2] / 2 - seen_x)) $((target_window[1] + target_window[3] / 2 - seen_y))
+elif [ "$probe_failed" = 1 ]; then
+  fail "$crossing"
+else
+  after_wiring "$crossing" false
+fi
+keys "272 0"
+
+required "the release through XTEST ends the source's drag on l1" eventually 10 log_says l1 source '^drag-ended$'
+required "the original file on l1 is still there, unchanged" original_untouched
+after_wiring "lanhop's edge window on l1 takes the source's drop with copy, so nothing moves" lanhops_edge_window_took_the_drop_with_copy
+if [ "$crossed" = 1 ]; then
+  after_wiring "the file dropped on l2 arrives whole, with the sha256 of the original" eventually 30 dropped_whole_on_l2
+else
+  after_wiring "the file dropped on l2 arrives whole, with the sha256 of the original" dropped_whole_on_l2
+fi
+
+required "the XDND source and target saw no request fail" no_request_failed
+required "the central is still connected to l1 and l2 after the drag" desk_connected
+
+printf '\n%d passed, %d failed, %d waiting for %s\n' "${#passed[@]}" "${#failed[@]}" "${#waiting[@]}" "$waits_for"
+if [ "${#failed[@]}" -gt 0 ]; then
+  exit 1
+fi
