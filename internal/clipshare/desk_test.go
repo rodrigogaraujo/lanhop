@@ -53,6 +53,7 @@ type fakeClipboard struct {
 	mark       int64
 	marksTaken int
 	reads      int
+	readsHeld  int
 	writes     []timedWrite
 	fileWrites []timedFileWrite
 	readGate   chan struct{}
@@ -92,6 +93,9 @@ func (f *fakeClipboard) holdMarksUntilReleased() (release func()) {
 func (f *fakeClipboard) Read() (string, error) {
 	f.mutex.Lock()
 	gate := f.readGate
+	if gate != nil {
+		f.readsHeld++
+	}
 	f.mutex.Unlock()
 	if gate != nil {
 		<-gate
@@ -153,6 +157,17 @@ func (f *fakeClipboard) timesRead() int {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 	return f.reads
+}
+
+func (f *fakeClipboard) timesHeld() int {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.readsHeld
+}
+
+func waitUntilAReadIsHeld(t *testing.T, name string, board *fakeClipboard) {
+	t.Helper()
+	eventually(t, name+" holding a read of its clipboard", func() bool { return board.timesHeld() > 0 })
 }
 
 func (f *fakeClipboard) holdReadsUntilReleased() (release func()) {

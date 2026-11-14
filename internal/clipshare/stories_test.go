@@ -326,6 +326,7 @@ func TestACopyMadeOnTheCentralWhileAnEarlierReadOfItWaitsMovesWhenFocusLeaves(t 
 	defer releaseTheReads()
 
 	d.focusOn(left.number)
+	waitUntilAReadIsHeld(t, "the central", d.clipboard)
 	d.focusOn(thisMachine)
 	d.focusOn(right.number)
 	right.clipboard.personCopies("from the right")
@@ -357,10 +358,12 @@ func TestACopyMadeOnASideMachineWhileAnEarlierReadOfItWaitsMovesWhenFocusLeaves(
 
 	d.focusOn(right.number)
 	d.focusOn(thisMachine)
+	waitUntilAReadIsHeld(t, "right", right.clipboard)
 	d.focusOn(right.number)
 	d.focusOn(thisMachine)
 	d.clipboard.personCopies("from the central")
 	d.focusOn(right.number)
+	eventually(t, "the central reading its copy", func() bool { return d.clipboard.timesRead() > 0 })
 	right.clipboard.personCopies("second on the right")
 	d.focusOn(thisMachine)
 	d.focusOn(right.number)
@@ -383,6 +386,7 @@ func TestACopyMadeOnTheCentralWhileItsReadRunsIsNotOverwritten(t *testing.T) {
 	defer releaseTheRead()
 
 	d.focusOn(right.number)
+	waitUntilAReadIsHeld(t, "the central", d.clipboard)
 	right.clipboard.personCopies("from the right")
 	d.focusOn(thisMachine)
 	d.waitUntilTheCentralHasTheAnswerOf(right)
@@ -409,6 +413,7 @@ func TestACopyMadeOnASideMachineWhileItsReadRunsIsNotOverwritten(t *testing.T) {
 
 	d.focusOn(right.number)
 	d.focusOn(thisMachine)
+	waitUntilAReadIsHeld(t, "right", right.clipboard)
 	d.clipboard.personCopies("from the central")
 	d.focusOn(right.number)
 	d.waitUntilTheSideHandledTheMovesOfFocus(right)
