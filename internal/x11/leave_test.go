@@ -36,6 +36,15 @@ func (s *steps) add(step string) {
 	s.taken = append(s.taken, step)
 }
 
+func (s *steps) expectEventually(t *testing.T, want ...string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !slices.Equal(s.all(), want); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("steps %q, want %q", s.all(), want)
+		}
+	}
+}
+
 func (s *steps) all() []string {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -133,9 +142,7 @@ func TestADragLeavesThroughTheCatcherTheNudgeTheAcceptanceAndThenTheRelease(t *t
 	if err != nil || !slices.Equal(paths, arrivedPaths) {
 		t.Errorf("endAtEdge = %q, %v, want the dragged paths", paths, err)
 	}
-	if got, want := s.all(), []string{"catch", "nudge -1,0", "nudge 1,0", "release", "close"}; !slices.Equal(got, want) {
-		t.Errorf("steps %q, want %q", got, want)
-	}
+	s.expectEventually(t, "catch", "nudge -1,0", "nudge 1,0", "release", "close")
 }
 
 func TestADragThatNeverReachesTheCatcherIsEscapedAndReleasedWithoutTheCatcher(t *testing.T) {
@@ -147,9 +154,7 @@ func TestADragThatNeverReachesTheCatcherIsEscapedAndReleasedWithoutTheCatcher(t 
 	if !errors.Is(err, ErrDragStayed) {
 		t.Errorf("endAtEdge = %v, want %v", err, ErrDragStayed)
 	}
-	if got, want := s.all(), []string{"catch", "nudge -1,0", "nudge 1,0", "escape", "release", "close"}; !slices.Equal(got, want) {
-		t.Errorf("steps %q, want %q", got, want)
-	}
+	s.expectEventually(t, "catch", "nudge -1,0", "nudge 1,0", "escape", "release", "close")
 }
 
 func TestADragThatWasAcceptedAndLeftTheCatcherIsNotReleasedOverIt(t *testing.T) {
@@ -163,9 +168,7 @@ func TestADragThatWasAcceptedAndLeftTheCatcherIsNotReleasedOverIt(t *testing.T) 
 	if !errors.Is(err, ErrDragStayed) {
 		t.Errorf("endAtEdge = %v, want %v", err, ErrDragStayed)
 	}
-	if got, want := s.all(), []string{"catch", "nudge -1,0", "nudge 1,0", "escape", "release", "close"}; !slices.Equal(got, want) {
-		t.Errorf("steps %q, want %q", got, want)
-	}
+	s.expectEventually(t, "catch", "nudge -1,0", "nudge 1,0", "escape", "release", "close")
 }
 
 func TestACatcherThatCannotOpenLeavesTheDragEscapedAndReleased(t *testing.T) {
@@ -307,9 +310,7 @@ func TestADragThatLeavesThisMachineIsDroppedOnTheEdgeWithCopyThroughTheVirtualMo
 	if got, want := s.all(), []string{"nudge -1,0", "nudge 1,0", "release"}; !slices.Equal(got, want) {
 		t.Errorf("steps %q, want %q", got, want)
 	}
-	if top := topWindowAt(t, edge, right, middle); top != atomNone {
-		t.Errorf("a window 0x%x is still at the edge", top)
-	}
+	expectTheEdgeClearedEventually(t, edge, right, middle)
 }
 
 func TestADragThatIsNoXdndDragIsEscapedAndReleasedAtTheEdge(t *testing.T) {
@@ -330,10 +331,22 @@ func TestADragThatIsNoXdndDragIsEscapedAndReleasedAtTheEdge(t *testing.T) {
 	if got, want := s.all(), []string{"nudge 1,0", "nudge -1,0", "escape", "release"}; !slices.Equal(got, want) {
 		t.Errorf("steps %q, want %q", got, want)
 	}
-	if top := topWindowAt(t, edge, 0, middle); top != atomNone {
-		t.Errorf("a window 0x%x is still at the edge", top)
-	}
+	expectTheEdgeClearedEventually(t, edge, 0, middle)
 	if !pointerIsFree(t, display) {
 		t.Error("the pointer is held after the drag stayed")
+	}
+}
+
+func expectTheEdgeClearedEventually(t *testing.T, edge *Drags, x, y int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		top := topWindowAt(t, edge, x, y)
+		if top == atomNone {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("a window 0x%x is still at the edge", top)
+			return
+		}
 	}
 }

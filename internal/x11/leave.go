@@ -109,16 +109,16 @@ func endAtEdge(ctx context.Context, catchAt func() (edgeCatcher, error), hand Dr
 	}
 	if err != nil {
 		stayed := stayWith(hand, fmt.Errorf("%w: %w", ErrDragStayed, err))
-		catch.Close()
+		go catch.Close()
 		return nil, stayed
 	}
 	if err := hand.Release(); err != nil {
-		catch.Close()
+		go catch.Close()
 		return nil, err
 	}
 	select {
 	case drop, delivered := <-catch.Dropped():
-		catch.Close()
+		go catch.Close()
 		if !delivered {
 			return nil, ErrClosed
 		}

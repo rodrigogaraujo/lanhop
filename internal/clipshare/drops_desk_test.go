@@ -401,9 +401,17 @@ func (h *handledFrames) handled(name string, frame event.Event) {
 func (h *handledFrames) dragEndsFrom(name string) int {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
-	ends := 0
+	ends, described := 0, false
 	for _, frame := range h.from[name] {
-		if files, _ := event.SplitDragFiles(frame.Value); frame.IsControl() && frame.Code == event.ControlDragFiles && files == 0 {
+		if !frame.IsControl() || frame.Code != event.ControlDragFiles {
+			continue
+		}
+		files, _ := event.SplitDragFiles(frame.Value)
+		switch {
+		case files > 0:
+			described = true
+		case described:
+			described = false
 			ends++
 		}
 	}
