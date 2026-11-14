@@ -276,6 +276,20 @@ func (r *Replay) button(button int, value int32) {
 	}
 }
 
+func (r *Replay) HoldButton(button int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, held := r.heldButtons[button]; !held {
+		r.heldButtons[button] = 1
+	}
+}
+
+func (r *Replay) ForgetButton(button int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.heldButtons, button)
+}
+
 func (r *Replay) clicksFor(button int, at Point) int {
 	now := r.now()
 	count := 1

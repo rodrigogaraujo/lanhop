@@ -15,7 +15,7 @@ Side machines open their connection to the central, and the central does not ope
 
 ## Decision
 
-**Features.** The value of Features is a set of bits, and a reader ignores the bits it does not know. Bit 0 is text (ADR 7). Bit 1 says that a machine takes and gives files. Only machines that set bit 1 on both ends take part. Bit 2 says that a machine can receive a dragged file: it is set only where lanhop can start a drag, on macOS or on Linux in an X11 session, and only while file sharing is on. Bits 3 to 7 are left for clipboard and file sharing, and bits 8 to 15 belong to spec 010.
+**Features.** The value of Features is a set of bits, and a reader ignores the bits it does not know. Bit 0 is text (ADR 7). Bit 1 says that a machine takes and gives files. Only machines that set bit 1 on both ends take part. Bit 2 says that a machine can receive a dragged file: it is set only where lanhop can start a drag, on macOS or on Linux in an X11 session, and only while file sharing is on. Bit 3 says that a central relays dragged files between side machines: a central sets it whenever file sharing is on, on every system, because relaying needs no drag of its own. Bits 4 to 7 are left for clipboard and file sharing, and bits 8 to 15 belong to spec 010.
 
 **Control codes 10 to 15**, all of type `0xFF00`:
 
@@ -69,6 +69,24 @@ Measured on Linux over TLS, without the race detector, with both connections beh
 So SC-002 holds behind both queues, where the fixed pace left keys 245 ms late at 50 Mbit/s, and the first 10 MiB of SC-001 arrive in about 1.1 s, which leaves time within the 2 s to list, check and rename. The 50 Mbit/s test takes about 19 s of the Linux CI. A Wi-Fi link, with its own jitter, is measured at the desk in task 7.
 
 **Side machine to side machine.** Through the central, which streams from one data connection to the other without waiting for whole files, and keeps a copy only when it has focus itself and will paste it.
+
+**Dragged files** (amendment, proposed with task 9). A drop moves on a data connection like a paste. Control codes 18 to 24, all of type `0xFF00`:
+
+| Code | Name | Where | Value |
+|---|---|---|---|
+| 18 | Drag files | Side machine to central, when a file drag starts or ends there | Bits 0 to 15: the number of files and folders, 0 when no file is dragged any more. Bits 16 to 23: the screen edge where the Dock of that machine sits, 0 for none, then left, right, top, bottom as 1 to 4 |
+| 19 | Drag files size | Right after a Drag files that is not 0 | The total size, in KiB, rounded up |
+| 20 | Open drop data | Central to side machine | As Open data, for a transfer that serves a drop |
+| 21 | Drop taken | Side machine to central | The transfer number of a drop that was taken on that machine |
+| 22 | Cancel drop | Central to side machine, only after the Open drop data of that transfer | The transfer number of a drop that the side machine ends unless it took it already |
+| 23 | Drag leaves | Central to the side machine a file drag started on, when that drag crosses away from it | 0. The side machine ends its source drag at once, without a drop, and releases the button itself, because the central does not replay the release of the button to it during the crossing |
+| 24 | Drag stayed | Side machine to central, after a 23 it could not carry out | 0. The source drag could not be ended without a drop, so the central cancels the drop on the neighbour |
+
+- A side machine sends 18, 19, 21 and 24 only while the central announces bit 2 or bit 3, and refuses a 20 from a central that announces neither. The central sends 20, 22 and 23 only to a side machine that announces bit 2, and ignores 18, 19, 21 and 24 from one that does not, whatever its own bit 2. It sends 23 only to the side machine that reported the drag with 18. A drag crosses into the central only when the central itself announces bit 2, so a Linux central relays drags between side machines and never receives one.
+- Every 18 carries the Dock edge of the side machine, with or without files. A side machine sends an 18 with no files and its Dock edge when the central starts to announce bit 2 or bit 3, and whenever its Dock moves, so the central keeps the Dock of each side machine.
+- lanhop itself ends the source drag at the first crossing, so the side machine reports 0 right after it. The central then keeps the description of a drag that already crossed until the drag ends at the central, by the release of the button, Escape or a move of focus, so that the drag can go on to a third machine or back. A side machine sends the files of its last drag for at most 2 minutes after that drag ended there, the longest lanhop holds an XDND drag on Linux.
+- A machine on 0.1.0 or 0.1.1 never sets bit 2 or bit 3, and it ignores control codes it does not know ([ADR 11](0011-signed-releases-and-side-machines-that-follow-the-central.md)). A machine that takes files but predates task 9 also ignores codes it does not know, and never sets bit 2 or bit 3. So no older machine receives these codes.
+- The content of a drop uses format 2: the header of format 1 with 2 in its first byte, then the number of top-level files and folders, 4 bytes, and for each its kind, 1 byte, the length of its name, 2 bytes, and its name. The entries follow as in format 1. The receiving side refuses a stream whose top-level entries are not those it announced, in the same order and of the same kind. The machine that receives a drop starts its drop session with these names, before any file arrives. A receiver of format 1 refuses format 2, and the other way round.
 
 ## Consequences
 

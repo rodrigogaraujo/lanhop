@@ -22,6 +22,13 @@ func TestControlEventsAreOutsideTheKernelTypeRange(t *testing.T) {
 		"file copy size": FileCopySize(1),
 		"open data":      OpenData(1, true),
 		"data stop":      DataStop(1),
+		"drag files":     DragFiles(1, 2),
+		"drag size":      DragFilesSize(1),
+		"open drop data": OpenDropData(1, true),
+		"drop taken":     DropTaken(1),
+		"cancel drop":    CancelDrop(1),
+		"drag leaves":    DragLeaves(),
+		"drag stayed":    DragStayed(),
 	} {
 		if !e.IsControl() {
 			t.Errorf("%s is not a control event", name)
@@ -78,7 +85,9 @@ func TestControlCodesAreDistinct(t *testing.T) {
 	seen := map[uint16]bool{}
 	for _, e := range []Event{
 		Hello(), Ping(), Enter(), Leave(), Features(0), Clipboard(1), ClipboardData(0), ClipboardAck(1), ClipboardUnchanged(),
-		DataHello(1), FileCopy(1), FileCopySize(1), OpenData(1, false), DataStop(1),
+		DataHello(1), FileCopy(1), FileCopySize(1), OpenData(1, false), DataStop(1), DataAck(1),
+		Update(1), Version(1),
+		DragFiles(1, 0), DragFilesSize(1), OpenDropData(1, false), DropTaken(1), CancelDrop(1), DragLeaves(), DragStayed(),
 	} {
 		if seen[e.Code] {
 			t.Errorf("control code %d is used twice", e.Code)
@@ -151,5 +160,70 @@ func TestOpenDataGivesBackTheTransferNumberAndTheWay(t *testing.T) {
 func TestTransferNumbersUseTheLow31Bits(t *testing.T) {
 	if TransferNumberMax != 1<<31-1 {
 		t.Errorf("TransferNumberMax = %d, want %d", TransferNumberMax, 1<<31-1)
+	}
+}
+
+func TestDragFramesKeepTheirControlCodes(t *testing.T) {
+	const control uint16 = 0xFF00
+	tests := []struct {
+		name string
+		got  Event
+		want Event
+	}{
+		{"drag files with no Dock edge", DragFiles(10000, 0), Event{Type: control, Code: 18, Value: 10000}},
+		{"drag files with the Dock at the bottom", DragFiles(10000, 4), Event{Type: control, Code: 18, Value: 4<<16 | 10000}},
+		{"no file drag any more", DragFiles(0, 0), Event{Type: control, Code: 18}},
+		{"drag files size of 4 GiB", DragFilesSize(4 << 20), Event{Type: control, Code: 19, Value: 4194304}},
+		{"open drop data, the central sends", OpenDropData(5, false), Event{Type: control, Code: 20, Value: 5}},
+		{"open drop data, the side machine sends", OpenDropData(5, true), Event{Type: control, Code: 20, Value: math.MinInt32 | 5}},
+		{"open drop data with the largest number", OpenDropData(math.MaxInt32, true), Event{Type: control, Code: 20, Value: -1}},
+		{"drop taken", DropTaken(7), Event{Type: control, Code: 21, Value: 7}},
+		{"cancel drop", CancelDrop(7), Event{Type: control, Code: 22, Value: 7}},
+		{"drag leaves", DragLeaves(), Event{Type: control, Code: 23}},
+		{"drag stayed", DragStayed(), Event{Type: control, Code: 24}},
+	}
+	for _, test := range tests {
+		if test.got != test.want {
+			t.Errorf("%s = %+v, want %+v", test.name, test.got, test.want)
+		}
+	}
+}
+
+func TestDragFramesStayBetweenCodes18And24(t *testing.T) {
+	for _, e := range []Event{DragFiles(1, 1), DragFilesSize(1), OpenDropData(1, true), DropTaken(1), CancelDrop(1), DragLeaves(), DragStayed()} {
+		if e.Code < 18 || e.Code > 24 {
+			t.Errorf("a drag frame uses control code %d, outside 18 to 24", e.Code)
+		}
+	}
+}
+
+func TestOpenDropDataSplitsLikeOpenData(t *testing.T) {
+	for _, transfer := range []int32{1, 5, 1 << 30, TransferNumberMax} {
+		for _, sideMachineSends := range []bool{false, true} {
+			gotTransfer, gotWay := SplitOpenData(OpenDropData(transfer, sideMachineSends).Value)
+			if gotTransfer != transfer || gotWay != sideMachineSends {
+				t.Errorf("OpenDropData(%d, %t) splits into %d, %t", transfer, sideMachineSends, gotTransfer, gotWay)
+			}
+		}
+	}
+}
+
+func TestTheNumberOfATakenOrCancelledDropStaysInTheLow31Bits(t *testing.T) {
+	if got := DropTaken(math.MinInt32 | 9).Value; got != 9 {
+		t.Errorf("DropTaken with bit 31 set carries %d, want 9", got)
+	}
+	if got := CancelDrop(math.MinInt32 | 9).Value; got != 9 {
+		t.Errorf("CancelDrop with bit 31 set carries %d, want 9", got)
+	}
+}
+
+func TestDragFilesGivesBackTheCountAndTheDockEdge(t *testing.T) {
+	for _, filesAndFolders := range []int32{0, 1, 9999, 10000} {
+		for _, dockEdge := range []int32{0, 1, 2, 3, 4} {
+			gotFiles, gotDock := SplitDragFiles(DragFiles(filesAndFolders, dockEdge).Value)
+			if gotFiles != filesAndFolders || gotDock != dockEdge {
+				t.Errorf("DragFiles(%d, %d) splits into %d, %d", filesAndFolders, dockEdge, gotFiles, gotDock)
+			}
+		}
 	}
 }

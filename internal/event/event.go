@@ -40,6 +40,14 @@ const (
 
 	ControlUpdate  uint16 = 16
 	ControlVersion uint16 = 17
+
+	ControlDragFiles     uint16 = 18
+	ControlDragFilesSize uint16 = 19
+	ControlOpenDropData  uint16 = 20
+	ControlDropTaken     uint16 = 21
+	ControlCancelDrop    uint16 = 22
+	ControlDragLeaves    uint16 = 23
+	ControlDragStayed    uint16 = 24
 )
 
 const FeatureClipboard int32 = 1 << 0
@@ -73,6 +81,7 @@ const (
 
 const (
 	KeyFirst uint16 = 1
+	KeyEsc   uint16 = 1
 	KeyEnter uint16 = 28
 	KeyA     uint16 = 30
 	KeyLast  uint16 = 248
@@ -168,6 +177,47 @@ func OpenData(transfer int32, sideMachineSends bool) Event {
 
 func SplitOpenData(value int32) (transfer int32, sideMachineSends bool) {
 	return value & TransferNumberMax, value&sideMachineSendsBit != 0
+}
+
+const (
+	dragFilesMask = 1<<16 - 1
+	dockEdgeShift = 16
+	dockEdgeMask  = 0xFF
+)
+
+func DragFiles(filesAndFolders, dockEdge int32) Event {
+	value := filesAndFolders&dragFilesMask | dockEdge&dockEdgeMask<<dockEdgeShift
+	return Event{Type: TypeControl, Code: ControlDragFiles, Value: value}
+}
+
+func SplitDragFiles(value int32) (filesAndFolders, dockEdge int32) {
+	return value & dragFilesMask, value >> dockEdgeShift & dockEdgeMask
+}
+
+func DragFilesSize(kibibytesRoundedUp int32) Event {
+	return Event{Type: TypeControl, Code: ControlDragFilesSize, Value: kibibytesRoundedUp}
+}
+
+func OpenDropData(transfer int32, sideMachineSends bool) Event {
+	opened := OpenData(transfer, sideMachineSends)
+	opened.Code = ControlOpenDropData
+	return opened
+}
+
+func DropTaken(transfer int32) Event {
+	return Event{Type: TypeControl, Code: ControlDropTaken, Value: transfer & TransferNumberMax}
+}
+
+func CancelDrop(transfer int32) Event {
+	return Event{Type: TypeControl, Code: ControlCancelDrop, Value: transfer & TransferNumberMax}
+}
+
+func DragLeaves() Event {
+	return Event{Type: TypeControl, Code: ControlDragLeaves}
+}
+
+func DragStayed() Event {
+	return Event{Type: TypeControl, Code: ControlDragStayed}
 }
 
 func DataStop(transfer int32) Event {

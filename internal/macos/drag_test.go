@@ -556,6 +556,7 @@ func TestAResetLetsTheSameFilesStartAgainAtTheirNextChange(t *testing.T) {
 	reads := board.readCount()
 
 	watch.Reset()
+	ended := nextDragEvent(t, watch)
 	waitForPolls(t, board, 5)
 	expectNoDragEvent(t, watch)
 	if got := board.readCount(); got != reads {
@@ -563,7 +564,7 @@ func TestAResetLetsTheSameFilesStartAgainAtTheirNextChange(t *testing.T) {
 	}
 	board.holdFiles("/tmp/report.pdf")
 
-	expectDragEvents(t, []DragEvent{first, nextDragEvent(t, watch)}, startedWith("/tmp/report.pdf"), startedWith("/tmp/report.pdf"))
+	expectDragEvents(t, []DragEvent{first, ended, nextDragEvent(t, watch)}, startedWith("/tmp/report.pdf"), dragEnd, startedWith("/tmp/report.pdf"))
 }
 
 type flickeringDrag struct {
@@ -872,4 +873,144 @@ func TestTwoEndsOfASourceDragDoNotInterleave(t *testing.T) {
 	if want := append(endingAt(at), endingAt(at)...); !slices.Equal(screen.posted(), want) {
 		t.Errorf("posted %+v, want %+v", screen.posted(), want)
 	}
+}
+
+type stalledDragBoard struct {
+	*dragBoard
+	stall   chan struct{}
+	stalled chan struct{}
+	once    sync.Once
+}
+
+func (b *stalledDragBoard) ReadFiles() ([]string, error) {
+	if b.readCount() == 1 {
+		b.once.Do(func() { close(b.stalled) })
+		<-b.stall
+	}
+	return b.dragBoard.ReadFiles()
+}
+
+func TestAResetReturnsAtOnceDuringASlowReadAndNothingReadBeforeItIsSent(t *testing.T) {
+	for round := range 20 {
+		board := &stalledDragBoard{dragBoard: newDragBoard(), stall: make(chan struct{}), stalled: make(chan struct{})}
+		watch, err := watchDrags(dragSource{board: board, leftHeld: board.leftHeld}, shortestDragPoll)
+		if err != nil {
+			t.Fatalf("watchDrags: %v", err)
+		}
+		board.press()
+		board.holdFiles("/tmp/report.pdf")
+		select {
+		case <-board.stalled:
+		case <-time.After(watchPatience):
+			t.Fatal("the watch never read the drag pasteboard a second time")
+		}
+		sent := make(chan DragEvent, 1)
+		go func() {
+			select {
+			case seen := <-watch.Events():
+				sent <- seen
+			case <-time.After(10 * quietWindow):
+			}
+		}()
+		time.Sleep(quietWindow / 4)
+
+		returned := make(chan struct{})
+		go func() {
+			defer close(returned)
+			watch.Reset()
+			watch.Reset()
+		}()
+		select {
+		case <-returned:
+		case <-time.After(quietWindow):
+			t.Fatalf("round %d: Reset waited for the read in progress", round)
+		}
+		close(board.stall)
+
+		select {
+		case seen := <-sent:
+			t.Fatalf("round %d: the watch sent %+v, read before the reset", round, seen)
+		case <-time.After(2 * quietWindow):
+		}
+		watch.Close()
+	}
+}
+
+func TestAResetEndsADragAlreadyToldAndOnlyThat(t *testing.T) {
+	board := newDragBoard()
+	watch := startWatch(t, board)
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	started := nextDragEvent(t, watch)
+
+	watch.Reset()
+	ended := nextDragEvent(t, watch)
+	watch.Reset()
+
+	expectDragEvents(t, []DragEvent{started, ended}, startedWith("/tmp/report.pdf"), dragEnd)
+	expectNoDragEvent(t, watch)
+}
+
+type replayedEndingScreen struct {
+	endingScreen
+}
+
+func (s *replayedEndingScreen) PostMouse(mouse MouseEvent) {
+	s.did = append(s.did, mouse)
+}
+
+func TestEndingTheDragOfTheReplayAlsoReleasesTheButtonAtTheHIDTapUnderTheShield(t *testing.T) {
+	shield := Point{X: 640, Y: 12}
+	hidUp := MouseEvent{Action: MouseUp, At: shield, Button: 0, Clicks: 1}
+	ended := endingAt(Point{X: 641, Y: 12})
+	cases := []struct {
+		name string
+		held bool
+		drag replayedDrag
+		want []any
+	}{
+		{"the button reads held, under the shield", true, replayedDrag{described: true, shielded: true, under: shield}, append(append(slices.Clone(ended), 150*time.Millisecond), hidUp)},
+		{"the button reads up although the replay pressed it, under the shield", false, replayedDrag{described: true, shielded: true, under: shield}, append(slices.Clone(ended), hidUp)},
+		{"no drag was described and the button reads up, under the shield", false, replayedDrag{shielded: true, under: shield}, []any{hidUp}},
+		{"the button reads held, with no shield", true, replayedDrag{described: true}, slices.Clone(ended)},
+		{"no drag was described and the button reads up, with no shield", false, replayedDrag{}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			screen := &replayedEndingScreen{endingScreen{held: c.held, cursor: Point{X: 641, Y: 12}, cursorLater: Point{X: 641, Y: 12}}}
+
+			if err := endReplayedSourceDrag(screen, postingAllowed, screen.pause, c.drag); err != nil {
+				t.Fatalf("endReplayedSourceDrag: %v", err)
+			}
+			if !slices.Equal(screen.did, c.want) {
+				t.Errorf("did %+v, want %+v", screen.did, c.want)
+			}
+		})
+	}
+}
+
+func TestNothingIsPostedToEndTheDragOfTheReplayWithoutThePermissionToPost(t *testing.T) {
+	screen := &replayedEndingScreen{endingScreen{held: true}}
+
+	err := endReplayedSourceDrag(screen, func() bool { return false }, screen.pause, replayedDrag{described: true, shielded: true})
+
+	if !errors.Is(err, ErrCannotEndDrag) || len(screen.did) != 0 {
+		t.Errorf("endReplayedSourceDrag = %v after %+v, want %v and nothing posted", err, screen.did, ErrCannotEndDrag)
+	}
+}
+
+func TestASecondResetKeepsTheEndOwedForADragAlreadyTold(t *testing.T) {
+	board := newDragBoard()
+	watch := startWatch(t, board)
+	board.press()
+	board.holdFiles("/tmp/report.pdf")
+	started := nextDragEvent(t, watch)
+
+	watch.Reset()
+	time.Sleep(quietWindow)
+	watch.Reset()
+	time.Sleep(quietWindow)
+
+	expectDragEvents(t, []DragEvent{started, nextDragEvent(t, watch)}, startedWith("/tmp/report.pdf"), dragEnd)
+	expectNoDragEvent(t, watch)
 }

@@ -19,20 +19,33 @@ type Destination interface {
 }
 
 func Send(ctx context.Context, conn Destination, paths []string) (Listing, error) {
+	return sendIn(ctx, conn, paths, formatVersion)
+}
+
+func SendDrop(ctx context.Context, conn Destination, paths []string) (Listing, error) {
+	return sendIn(ctx, conn, paths, dropFormat)
+}
+
+func sendIn(ctx context.Context, conn Destination, paths []string, format byte) (Listing, error) {
 	stopWriting := context.AfterFunc(ctx, func() { conn.SetWriteDeadline(time.Now()) })
 	defer stopWriting()
 	l := newLister(ctx.Err)
 	if err := l.list(paths); err != nil {
 		return l.listing, err
 	}
-	err := send(ctx, conn, l.entries, l.listing)
+	err := send(ctx, conn, l.entries, l.listing, format)
 	return l.listing, because(ctx, err)
 }
 
-func send(ctx context.Context, conn Destination, entries []entry, listing Listing) error {
+func send(ctx context.Context, conn Destination, entries []entry, listing Listing, format byte) error {
 	w := bufio.NewWriterSize(conn, streamBuffer)
-	if err := writeHeader(w, header{filesAndFolders: len(entries), bytes: listing.Copy.Bytes}); err != nil {
+	if err := writeHeader(w, format, header{filesAndFolders: len(entries), bytes: listing.Copy.Bytes}); err != nil {
 		return fmt.Errorf("filestream: writing the header: %w", err)
+	}
+	if format == dropFormat {
+		if err := writeTops(w, topsOf(entries)); err != nil {
+			return fmt.Errorf("filestream: writing the top-level files and folders: %w", err)
+		}
 	}
 	buffer := make([]byte, streamBuffer)
 	for _, e := range entries {

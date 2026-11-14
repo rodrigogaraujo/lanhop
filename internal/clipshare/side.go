@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
+	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
@@ -30,10 +33,28 @@ type Side struct {
 	transfers   map[int]*sideTransfer
 	moving      sync.WaitGroup
 	filesNotice filesNotice
+
+	centralDrags  bool
+	dragWatch     dragWatch
+	dragged       []string
+	dragDescribed bool
+	dragEnded     time.Time
+	remover       remover
+	drops         map[int]*dropRun
+	dragsOn       bool
+	describing    bool
+	onDescribing  func(describing bool)
+	dock          edge.Side
+	dockTold      edge.Side
 }
 
 func NewSide(config Config) *Side {
-	s := &Side{config: config.withDefaults(), inbox: newMailbox[func()](), transfers: make(map[int]*sideTransfer)}
+	s := &Side{
+		config:    config.withDefaults(),
+		inbox:     newMailbox[func()](),
+		transfers: make(map[int]*sideTransfer),
+		drops:     make(map[int]*dropRun),
+	}
 	s.keeper = newKeeper(s.config, func(reachable bool) {
 		s.inbox.put(func() { s.clipboardReachable(reachable) })
 	})
@@ -49,7 +70,7 @@ func (s *Side) Run(ctx context.Context) {
 	}()
 	defer func() { <-keeperStopped }()
 	s.reachable = <-reachedAtStart
-	s.on = s.kindsOn()
+	s.on, s.dragsOn = s.kindsOn(), s.config.dragsOn()
 	s.machine = clipboard.NewSide(s.on)
 	s.ctx = ctx
 	defer s.stopEverything()
@@ -84,6 +105,30 @@ func (s *Side) Lost() {
 	s.inbox.put(s.lost)
 }
 
+func (s *Side) DragSeen(paths []string, dock edge.Side) {
+	paths = slices.Clone(paths)
+	s.inbox.put(func() { s.dragSeen(paths, dock) })
+}
+
+func (s *Side) DragGone() {
+	s.inbox.put(s.dragGone)
+}
+
+func (s *Side) DragStayed() {
+	s.inbox.put(s.dragStayed)
+}
+
+func (s *Side) DockIs(dock edge.Side) {
+	s.inbox.put(func() { s.dockIs(dock) })
+}
+
+func (s *Side) OnDescribingDrags(changed func(describing bool)) {
+	s.inbox.put(func() {
+		s.onDescribing = changed
+		changed(s.describing)
+	})
+}
+
 func (s *Side) heardFrom(l *link, frame event.Event) {
 	if !frame.IsControl() {
 		return
@@ -91,7 +136,8 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 	switch frame.Code {
 	case event.ControlFeatures:
 		takes := clipboard.KindsIn(frame.Value)
-		s.inbox.put(func() { s.centralSays(l, takes) })
+		drags := carriesDrags(frame.Value)
+		s.inbox.put(func() { s.centralSays(l, takes, drags) })
 	case event.ControlClipboard, event.ControlClipboardData:
 		text, progress, err := l.take(frame)
 		if progress == clipboard.Arrived {
@@ -108,14 +154,22 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 	case event.ControlDataStop:
 		wire := int(frame.Value)
 		s.inbox.put(func() { s.dataStop(l, wire) })
+	case event.ControlOpenDropData:
+		wire, sideSends := event.SplitOpenData(frame.Value)
+		s.inbox.put(func() { s.openDropData(l, int(wire), sideSends) })
+	case event.ControlCancelDrop:
+		wire := int(frame.Value)
+		s.inbox.put(func() { s.centralCancelsDrop(l, wire) })
 	}
 }
 
 func (s *Side) connected(l *link) {
 	s.followTheSwitch()
 	s.current = l
-	s.centralTakes = 0
+	s.centralTakes, s.centralDrags = 0, false
+	s.forgetDraggedFiles()
 	s.do(s.machine.Connected())
+	s.noticeDescribing()
 }
 
 func (s *Side) lost() {
@@ -123,12 +177,17 @@ func (s *Side) lost() {
 		s.current.close()
 		s.current = nil
 	}
+	s.forgetDraggedFiles()
 	s.endEveryTransfer(errControlLost)
+	s.endEveryDrop()
+	s.noticeDescribing()
 }
 
 func (s *Side) stopEverything() {
 	s.lost()
 	waitAtMost(&s.moving, s.config.SilenceLimit)
+	waitAtMost(&s.dragWatch.counting, s.config.SilenceLimit)
+	s.remover.wait(s.config.SilenceLimit)
 }
 
 func (s *Side) focusArrives() {
@@ -150,11 +209,16 @@ func (s *Side) reachAgainIfLost() {
 	}
 }
 
-func (s *Side) centralSays(l *link, takes clipboard.Kinds) {
-	if l == s.current {
-		s.centralTakes = takes
-		s.do(s.machine.CentralSays(takes))
+func (s *Side) centralSays(l *link, takes clipboard.Kinds, drags bool) {
+	if l != s.current {
+		return
 	}
+	s.centralTakes, s.centralDrags = takes, drags
+	if !s.describesDrags() {
+		s.forgetDraggedFiles()
+	}
+	s.do(s.machine.CentralSays(takes))
+	s.noticeDescribing()
 }
 
 func (s *Side) copyFromCentral(l *link, text string) {
@@ -190,12 +254,18 @@ func (s *Side) kindsOn() clipboard.Kinds {
 }
 
 func (s *Side) followTheSwitch() {
-	on := s.kindsOn()
-	if on == s.on {
+	on, dragsOn := s.kindsOn(), s.config.dragsOn()
+	if on == s.on && dragsOn == s.dragsOn {
 		return
 	}
-	s.on = on
-	s.do(s.machine.Switch(on))
+	kindsChanged := on != s.on
+	s.on, s.dragsOn = on, dragsOn
+	if kindsChanged {
+		s.do(s.machine.Switch(on))
+	} else {
+		s.announce(s.config.announcing(on))
+	}
+	s.noticeDescribing()
 }
 
 func (s *Side) readDone(l *link, result readResult) {
@@ -249,14 +319,24 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 		case clipboard.Describe:
 			s.send(event.FileCopy(int32(action.FileCopy.FilesAndFolders)), event.FileCopySize(kibibytesRoundedUp(action.FileCopy.Bytes)))
 		case clipboard.SendFiles:
-			s.startTransfer(action.Transfer, false)
+			s.startTransfer(action.Transfer, false, action.Drop)
 		case clipboard.ReceiveFiles:
-			s.startTransfer(action.Transfer, true)
+			s.startTransfer(action.Transfer, true, action.Drop)
 		case clipboard.WriteFiles:
 			s.writeArrived(action.Transfer)
 		case clipboard.Stop:
 			s.send(event.DataStop(int32(action.Transfer)))
 			s.endTransfer(action.Transfer, errStoppedByThisSide)
+		case clipboard.StartDrop:
+			s.startDrop(action.Transfer)
+		case clipboard.FinishDrop:
+			s.finishDrop(action.Transfer)
+		case clipboard.CancelDrop:
+			s.cancelDrop(action.Transfer)
+		case clipboard.DropTaken:
+			if s.centralDrags {
+				s.send(event.DropTaken(int32(action.Transfer)))
+			}
 		}
 	}
 }

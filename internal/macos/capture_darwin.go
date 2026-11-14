@@ -17,13 +17,14 @@ const (
 )
 
 type Capture struct {
-	tap     *Tap
-	hold    *hold
-	state   sync.Mutex
-	closed  bool
-	events  chan event.Event
-	stop    chan struct{}
-	closing sync.Once
+	tap        *Tap
+	hold       *hold
+	translator *translator
+	state      sync.Mutex
+	closed     bool
+	events     chan event.Event
+	stop       chan struct{}
+	closing    sync.Once
 }
 
 func StartCapture(keys keymap.Translator, hotkey Flags) (*Capture, error) {
@@ -32,9 +33,10 @@ func StartCapture(keys keymap.Translator, hotkey Flags) (*Capture, error) {
 
 func startCapture(keys keymap.Translator, hotkey Flags, accepts func(Observation) bool) (*Capture, error) {
 	capture := &Capture{
-		hold:   &hold{holdingScreen: Quartz{}, accepts: accepts, hotkey: newHotkeyGuard(hotkey)},
-		events: make(chan event.Event),
-		stop:   make(chan struct{}),
+		hold:       &hold{holdingScreen: Quartz{}, accepts: accepts, hotkey: newHotkeyGuard(hotkey)},
+		translator: newTranslator(keys, Quartz{}),
+		events:     make(chan event.Event),
+		stop:       make(chan struct{}),
 	}
 	tap, err := startTap(seesInputFirst, capture.hold.keeps)
 	if err != nil {
@@ -46,7 +48,7 @@ func startCapture(keys keymap.Translator, hotkey Flags, accepts func(Observation
 		lostInput:    tap.Overflowed(),
 		stop:         capture.stop,
 		accepts:      accepts,
-		translator:   newTranslator(keys, Quartz{}),
+		translator:   capture.translator,
 		events:       capture.events,
 		handOffLimit: handOffLimit,
 		checkEvery:   permissionCheckTime,
@@ -76,6 +78,10 @@ func (c *Capture) GiveBack() error {
 	defer c.state.Unlock()
 	c.hold.letGo()
 	return nil
+}
+
+func (c *Capture) LeftHeldUntilRealUp() {
+	c.translator.leftHeldUntilRealUp()
 }
 
 func (c *Capture) Cursor() (x, y int, desktop edge.Bounds, known bool) {

@@ -3,10 +3,11 @@ package features
 import "sync/atomic"
 
 const (
-	Clipboard = 0
-	Files     = 1
-	Drag      = 2
-	Follows   = 8
+	Clipboard   = 0
+	Files       = 1
+	Drag        = 2
+	RelaysDrags = 3
+	Follows     = 8
 )
 
 type Set struct {

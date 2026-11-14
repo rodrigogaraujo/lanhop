@@ -24,6 +24,9 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
+      - name: Vet the build for the container test
+        if: runner.os == 'Linux'
+        run: go vet -tags containertest ./...
       - name: Test
         run: go test -race ./...
       - name: Time keys behind copies and files, without the race detector
@@ -31,6 +34,74 @@ jobs:
         run: |
           go test -count=1 -run 'TestKeysArriveAtMost50|TestKeysArriveMoreThan50' ./internal/transport
           go test -count=1 -run 'Keys|64KiB|10MiB' ./internal/clipshare
+      - name: Answer commands while the main thread waits for AppKit
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        run: |
+          program="$RUNNER_TEMP/lanhop"
+          answers="$RUNNER_TEMP/lanhop-answers"
+          export LANHOP_CONFIG_DIR="$RUNNER_TEMP/lanhop-config"
+          mkdir -p "$LANHOP_CONFIG_DIR" "$answers"
+          go build -o "$program" ./cmd/lanhop
+          "$program" version >"$answers/version"
+          test "$(cat "$answers/version")" = "lanhop dev"
+          "$program" help >"$answers/help"
+          grep -q "lanhop status" "$answers/help"
+          "$program" status >"$answers/status"
+          grep -q "^stopped:" "$answers/status"
+          "$program" peers >"$answers/peers"
+          grep -q "No machine is trusted yet" "$answers/peers"
+          code=0
+          "$program" teleport 2>"$answers/unknown" || code=$?
+          test "$code" -eq 2
+          grep -q 'unknown command "teleport"' "$answers/unknown"
+      - name: Stop lanhop share with SIGTERM while the main thread waits for AppKit
+        if: runner.os == 'macOS'
+        timeout-minutes: 3
+        run: |
+          program="$RUNNER_TEMP/lanhop"
+          answers="$RUNNER_TEMP/lanhop-share"
+          export LANHOP_CONFIG_DIR="$RUNNER_TEMP/lanhop-share-config"
+          mkdir -p "$LANHOP_CONFIG_DIR" "$answers"
+          "$program" share --listen 127.0.0.1:0 >"$answers/share" 2>&1 &
+          share=$!
+          watchdog=""
+          trap 'kill -KILL $share $watchdog 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            "$program" status >"$answers/status"
+            if ! grep -q "^stopped:" "$answers/status"; then
+              break
+            fi
+            sleep 0.5
+          done
+          cat "$answers/status"
+          if grep -q "^stopped:" "$answers/status"; then
+            echo "::error::lanhop share did not start"
+            cat "$answers/share"
+            exit 1
+          fi
+          kill -TERM "$share"
+          perl -e 'sleep 30; kill "KILL", $ARGV[0]' "$share" &
+          watchdog=$!
+          code=0
+          wait "$share" || code=$?
+          cat "$answers/share"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::lanhop share ended with exit code $code after SIGTERM, want 0"
+            exit 1
+          fi
+          "$program" status >"$answers/status"
+          cat "$answers/status"
+          test "$(cat "$answers/status")" = "stopped: lanhop is not running here."
+      - name: Test the input backends of the container test
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          go test -race -count=1 -v -tags containertest -run '^TestTheContainerTest' ./internal/x11 ./cmd/lanhop | tee containertest.log
+          if grep -e '--- SKIP' -e 'no tests to run' containertest.log; then
+            echo "::error::a test of the container test input was skipped, or a package ran none"
+            exit 1
+          fi
       - name: Test the macOS build without cgo
         if: runner.os == 'macOS'
         env:
@@ -38,7 +109,7 @@ jobs:
         run: go test ./cmd/lanhop
       - name: Check the installer and the release scripts
         if: runner.os == 'Linux'
-        run: shellcheck install.sh $(find scripts/release -maxdepth 1 -type f)
+        run: shellcheck install.sh $(find scripts/release -maxdepth 1 -type f) test/containers/run test/containers/machine
       - name: Test Linux input with uinput
         if: runner.os == 'Linux'
         shell: bash
@@ -52,6 +123,18 @@ jobs:
           fi
           go test -race -c -o lanhop.test ./cmd/lanhop
           sudo ./lanhop.test -test.v
+
+  linux-to-linux:
+    name: Linux to Linux in containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Drag a file from one side machine to another under a central, each in its own container
+        env:
+          LANHOP_CONTAINERS_LOGS: "1"
+          LANHOP_CONTAINERS_EXPECT_DROP: "1"
+        run: test/containers/run
 
   release-checks:
     name: Release checks refuse what they must (${{ matrix.os }})
@@ -113,6 +196,16 @@ jobs:
             echo "::error::check-build-tags took a program built with a build tag"
             exit 1
           fi
+      - name: Refuse a program built for the container test
+        if: runner.os == 'Linux'
+        run: |
+          go build -tags containertest -o "$RUNNER_TEMP/containertest" ./cmd/lanhop
+          if scripts/release/check-build-tags "$RUNNER_TEMP/containertest" 2>"$RUNNER_TEMP/containertest.refusal"; then
+            echo "::error::check-build-tags took a program built with -tags containertest"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/containertest.refusal"
+          grep -q -- '-tags=containertest' "$RUNNER_TEMP/containertest.refusal"
       - name: Make a small release for this system
         run: |
           mkdir -p "$WORK/release"
