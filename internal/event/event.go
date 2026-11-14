@@ -46,6 +46,7 @@ const (
 	ControlOpenDropData  uint16 = 20
 	ControlDropTaken     uint16 = 21
 	ControlCancelDrop    uint16 = 22
+	ControlDragLeaves    uint16 = 23
 )
 
 const FeatureClipboard int32 = 1 << 0
@@ -207,6 +208,10 @@ func DropTaken(transfer int32) Event {
 
 func CancelDrop(transfer int32) Event {
 	return Event{Type: TypeControl, Code: ControlCancelDrop, Value: transfer & TransferNumberMax}
+}
+
+func DragLeaves() Event {
+	return Event{Type: TypeControl, Code: ControlDragLeaves}
 }
 
 func DataStop(transfer int32) Event {

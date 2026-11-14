@@ -70,7 +70,7 @@ So SC-002 holds behind both queues, where the fixed pace left keys 245 ms late a
 
 **Side machine to side machine.** Through the central, which streams from one data connection to the other without waiting for whole files, and keeps a copy only when it has focus itself and will paste it.
 
-**Dragged files** (amendment, proposed with task 9). A drop moves on a data connection like a paste. Control codes 18 to 22, all of type `0xFF00`:
+**Dragged files** (amendment, proposed with task 9). A drop moves on a data connection like a paste. Control codes 18 to 23, all of type `0xFF00`:
 
 | Code | Name | Where | Value |
 |---|---|---|---|
@@ -79,8 +79,9 @@ So SC-002 holds behind both queues, where the fixed pace left keys 245 ms late a
 | 20 | Open drop data | Central to side machine | As Open data, for a transfer that serves a drop |
 | 21 | Drop taken | Side machine to central | The transfer number of a drop that was taken on that machine |
 | 22 | Cancel drop | Central to side machine, only after the Open drop data of that transfer | The transfer number of a drop that the side machine ends unless it took it already |
+| 23 | Drag leaves | Central to the side machine a file drag started on, when that drag crosses away from it | 0. The side machine ends its source drag at once, without a drop, and releases the button itself, because the central does not replay the release of the button to it during the crossing |
 
-- A side machine sends 18, 19 and 21 only while the central announces bit 2, and refuses a 20 from a central that does not. The central sends 20 and 22 only to a side machine that announces bit 2, and ignores 18 and 19 from one that does not.
+- A side machine sends 18, 19 and 21 only while the central announces bit 2, and refuses a 20 from a central that does not. The central sends 20, 22 and 23 only to a side machine that announces bit 2, and ignores 18 and 19 from one that does not. It sends 23 only to the side machine that reported the drag with 18.
 - A machine on 0.1.0 or 0.1.1 never sets bit 2, and it ignores control codes it does not know ([ADR 11](0011-signed-releases-and-side-machines-that-follow-the-central.md)). A machine that takes files but predates task 9 also ignores codes it does not know, and never sets bit 2. So no older machine receives these codes.
 - The content of a drop uses format 2: the header of format 1 with 2 in its first byte, then the number of top-level files and folders, 4 bytes, and for each its kind, 1 byte, the length of its name, 2 bytes, and its name. The entries follow as in format 1. The receiving side refuses a stream whose top-level entries are not those it announced, in the same order and of the same kind. The machine that receives a drop starts its drop session with these names, before any file arrives. A receiver of format 1 refuses format 2, and the other way round.
 
