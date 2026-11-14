@@ -217,17 +217,17 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 	if desk == nil || s.focusedIsANamesakeOfThisMachine() {
 		return nil
 	}
-	left := s.nameOfFocused()
-	neighbour, found := desk.Neighbour(left, onTheDesk(crossing.Side))
+	from := s.nameOfFocused()
+	neighbour, found := desk.Neighbour(from, onTheDesk(crossing.Side))
 	if !found {
 		return nil
 	}
+	arrival := acrossFrom(crossing)
 	if neighbour == s.edges.Name {
 		if crossing.Dragging && !s.dragMayEnter(neighbour, s.announcedHere()) {
 			return nil
 		}
-		s.tellDragCrossing(crossing, left, neighbour)
-		return s.comeBack(acrossFrom(crossing))
+		return s.crossOver(crossing.Dragging, from, neighbour, nil, func() error { return s.comeBack(arrival) })
 	}
 	receiver, connected := s.receiverNamed(neighbour)
 	if !connected || s.wouldLeaveAKeyHeldHere(crossing.Dragging) {
@@ -236,8 +236,7 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 	if crossing.Dragging && !s.dragMayEnter(neighbour, s.announced[receiver]) {
 		return nil
 	}
-	s.tellDragCrossing(crossing, left, neighbour)
-	return s.enter(receiver, acrossFrom(crossing))
+	return s.crossOver(crossing.Dragging, from, neighbour, receiver, func() error { return s.enter(receiver, arrival) })
 }
 
 func (s *Sharer) focusedIsANamesakeOfThisMachine() bool {

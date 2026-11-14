@@ -36,75 +36,185 @@ type BlockedDrag struct {
 	Block   DragBlock
 }
 
+type dragInProgress struct {
+	Drag
+	origin  Conn
+	holder  Conn
+	crossed bool
+}
+
+type announcement struct {
+	bits  int32
+	heard bool
+}
+
 func (s *Sharer) DragStarted(drag Drag) {
 	s.inbox.put(func() { s.dragStarted(drag) })
 }
 
-func (s *Sharer) DragEnded() {
+func (s *Sharer) DragCancelled() {
 	s.inbox.put(func() { s.drag = nil })
 }
 
-func (s *Sharer) OnDragCrossing(crossed func(DragCrossing)) {
-	s.onDragCrossing = crossed
+func (s *Sharer) SourceDragEnded(origin string) {
+	s.inbox.put(func() { s.sourceDragEnded(origin) })
+}
+
+func (s *Sharer) SetDock(machine string, dock edge.Side) {
+	s.inbox.put(func() { s.docks[machine] = dock })
+}
+
+func (s *Sharer) OnDragCrossing(crossing func(DragCrossing)) {
+	s.onDragCrossing = crossing
+}
+
+func (s *Sharer) OnDragEntered(entered func(DragCrossing)) {
+	s.onDragEntered = entered
 }
 
 func (s *Sharer) OnBlockedDrag(blocked func(BlockedDrag)) {
 	s.onBlockedDrag = blocked
 }
 
+func (s *Sharer) OnDragUnblocked(unblocked func(BlockedDrag)) {
+	s.onDragUnblocked = unblocked
+}
+
 func (s *Sharer) dragStarted(drag Drag) {
-	s.docks[drag.Origin] = drag.Dock
+	if drag.Dock != 0 {
+		s.docks[drag.Origin] = drag.Dock
+	}
 	if s.drag != nil || drag.Origin != s.nameOfFocused() || !slices.Contains(s.heldHere.Held(), event.ButtonLeft) {
 		return
 	}
-	s.drag = &drag
+	s.drag = &dragInProgress{Drag: drag, origin: s.focused, holder: s.focused}
 }
 
-func (s *Sharer) hear(conn Conn, frame event.Event) {
-	if frame.IsControl() && frame.Code == event.ControlFeatures {
-		announced := frame.Value
-		s.inbox.put(func() { s.sideAnnounced(conn, announced) })
+func (s *Sharer) sourceDragEnded(origin string) {
+	if s.drag != nil && !s.drag.crossed && s.drag.Origin == origin {
+		s.drag = nil
 	}
 }
 
-func (s *Sharer) sideAnnounced(conn Conn, announced int32) {
-	if _, known := s.announced[conn]; known {
-		s.announced[conn] = announced
+func (s *Sharer) dragHere() *dragInProgress {
+	if s.drag != nil && s.drag.holder != s.focused {
+		s.drag = nil
 	}
+	return s.drag
 }
 
-func (s *Sharer) announcedHere() int32 {
-	if s.edges.Features == nil {
-		return 0
+func (s *Sharer) forgetTheDragOf(conn Conn) {
+	if s.drag != nil && (s.drag.origin == conn || s.drag.holder == conn) {
+		s.drag = nil
 	}
-	return s.edges.Features.Value()
-}
-
-func says(announced int32, bit int) bool {
-	return announced&(1<<bit) != 0
 }
 
 func (s *Sharer) armForTheDrag(watcher *edge.Watcher) {
-	if s.drag == nil {
+	if s.dragHere() == nil || s.onDragCrossing == nil {
 		watcher.DragEnded()
 		return
 	}
 	watcher.DragStarted(s.docks[s.nameOfFocused()])
 }
 
-func (s *Sharer) dragMayEnter(machine string, announced int32) bool {
-	if s.focused == nil && s.edges.DragsStayHere {
+func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func() error) error {
+	if !dragging || s.dragHere() == nil || s.onDragCrossing == nil {
+		s.drag = nil
+		return move()
+	}
+	crossing := DragCrossing{Origin: s.drag.Origin, From: from, To: to, Files: s.drag.Files, Button: event.ButtonLeft}
+	s.onDragCrossing(crossing)
+	s.originEndsItsDrag = s.focused != nil && s.focused == s.drag.origin
+	err := move()
+	s.originEndsItsDrag = false
+	if err != nil || s.drag == nil || s.focused != onto {
+		s.drag = nil
+		return err
+	}
+	s.drag.holder, s.drag.crossed = onto, true
+	if s.onDragEntered != nil {
+		s.onDragEntered(crossing)
+	}
+	if to == s.drag.Origin {
+		s.drag = nil
+	}
+	return nil
+}
+
+func (s *Sharer) farewellReleases() []event.Event {
+	releases := s.heldOnFocused.ReleaseAll()
+	if !s.originEndsItsDrag {
+		return releases
+	}
+	return slices.DeleteFunc(releases, func(release event.Event) bool {
+		return release.Type == event.TypeKey && release.Code == event.ButtonLeft
+	})
+}
+
+func (s *Sharer) hear(conn Conn, frame event.Event) {
+	if frame.IsControl() && frame.Code == event.ControlFeatures {
+		bits := frame.Value
+		s.inbox.put(func() { s.sideAnnounced(conn, bits) })
+	}
+}
+
+func (s *Sharer) sideAnnounced(conn Conn, bits int32) {
+	if _, known := s.announced[conn]; !known {
+		return
+	}
+	s.announced[conn] = announcement{bits: bits, heard: true}
+	machine := conn.Peer().Name
+	for _, block := range []DragBlock{DragCannotReach, FilesOffThere} {
+		told := BlockedDrag{Machine: machine, Block: block}
+		if !s.toldBlocked[told] || blockFor(bits) == block {
+			continue
+		}
+		delete(s.toldBlocked, told)
+		if s.onDragUnblocked != nil {
+			s.onDragUnblocked(told)
+		}
+	}
+}
+
+func (s *Sharer) announcedHere() announcement {
+	if s.edges.Features == nil {
+		return announcement{heard: true}
+	}
+	return announcement{bits: s.edges.Features.Value(), heard: true}
+}
+
+func says(bits int32, bit int) bool {
+	return bits&(1<<bit) != 0
+}
+
+func blockFor(bits int32) DragBlock {
+	switch {
+	case says(bits, features.Drag):
+		return 0
+	case says(bits, features.Files):
+		return DragCannotReach
+	}
+	return FilesOffThere
+}
+
+func (s *Sharer) dragMayEnter(machine string, heard announcement) bool {
+	if s.drag == nil {
+		return false
+	}
+	if s.drag.origin == nil && s.edges.DragsStayHere {
 		s.tellBlocked(BlockedDrag{Machine: s.edges.Name, Block: DragCannotLeave})
 		return false
 	}
-	if says(announced, features.Drag) || s.drag != nil && machine == s.drag.Origin {
+	if machine == s.drag.Origin {
 		return true
 	}
-	block := DragCannotReach
-	if !says(announced, features.Files) {
-		block = FilesOffThere
+	block := blockFor(heard.bits)
+	if block == 0 {
+		return true
 	}
-	s.tellBlocked(BlockedDrag{Machine: machine, Block: block})
+	if heard.heard {
+		s.tellBlocked(BlockedDrag{Machine: machine, Block: block})
+	}
 	return false
 }
 
@@ -116,19 +226,6 @@ func (s *Sharer) tellBlocked(blocked BlockedDrag) {
 	if s.onBlockedDrag != nil {
 		s.onBlockedDrag(blocked)
 	}
-}
-
-func (s *Sharer) tellDragCrossing(crossing edge.Crossing, from, to string) {
-	if !crossing.Dragging || s.drag == nil || s.onDragCrossing == nil {
-		return
-	}
-	s.onDragCrossing(DragCrossing{
-		Origin: s.drag.Origin,
-		From:   from,
-		To:     to,
-		Files:  s.drag.Files,
-		Button: event.ButtonLeft,
-	})
 }
 
 func (s *Sharer) wouldLeaveAKeyHeldHere(dragging bool) bool {

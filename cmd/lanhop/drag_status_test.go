@@ -61,6 +61,26 @@ func TestTheDeskStatusKeepsEachMachineADraggedFileCannotReachOnce(t *testing.T) 
 	}
 }
 
+func TestTheDeskStatusForgetsAMachineOnceADraggedFileCanReachItAgain(t *testing.T) {
+	directory := useConfigDirectory(t)
+	report := newDeskStatus(openStatus(), time.Now, nil)
+	report.blockedDrag(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
+	report.blockedDrag(sharer.BlockedDrag{Machine: "tablet", Block: sharer.DragCannotReach})
+	report.blockedDrag(sharer.BlockedDrag{Machine: "tablet", Block: sharer.FilesOffThere})
+
+	report.unblockedDrag(sharer.BlockedDrag{Machine: "laptop", Block: sharer.DragCannotReach})
+	report.unblockedDrag(sharer.BlockedDrag{Machine: "tablet", Block: sharer.FilesOffThere})
+	report.unblockedDrag(sharer.BlockedDrag{Machine: "server", Block: sharer.FilesOffThere})
+
+	read, err := status.Read(directory)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !slices.Equal(read.DragCannotReach, []string{"tablet"}) || len(read.DragFilesOff) != 0 {
+		t.Errorf("status %+v, want only tablet out of reach of a dragged file", read)
+	}
+}
+
 func TestStatusOnTheCentralSaysWhatADraggedFileCannotDoAfterTheDesk(t *testing.T) {
 	directory := useConfigDirectory(t)
 	trustAlready(t, directory, trust.Peer{Name: "laptop", Fingerprint: someFingerprint(1)}, trust.Peer{Name: "tablet", Fingerprint: someFingerprint(2)})

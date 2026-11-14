@@ -170,28 +170,46 @@ func (d *deskStatus) seatsChanged(seats []follow.Seat) {
 	d.write()
 }
 
+func (d *deskStatus) machinesWhereADragIs(block sharer.DragBlock) *[]string {
+	switch block {
+	case sharer.DragCannotReach:
+		return &d.dragCannotReach
+	case sharer.FilesOffThere:
+		return &d.dragFilesOff
+	}
+	return nil
+}
+
 func (d *deskStatus) blockedDrag(blocked sharer.BlockedDrag) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
-	switch blocked.Block {
-	case sharer.DragCannotReach:
-		if slices.Contains(d.dragCannotReach, blocked.Machine) {
-			return
+	if blocked.Block == sharer.DragCannotLeave {
+		if !d.dragCannotLeave {
+			d.dragCannotLeave = true
+			d.write()
 		}
-		d.dragCannotReach = append(d.dragCannotReach, blocked.Machine)
-	case sharer.FilesOffThere:
-		if slices.Contains(d.dragFilesOff, blocked.Machine) {
-			return
-		}
-		d.dragFilesOff = append(d.dragFilesOff, blocked.Machine)
-	case sharer.DragCannotLeave:
-		if d.dragCannotLeave {
-			return
-		}
-		d.dragCannotLeave = true
-	default:
 		return
 	}
+	machines := d.machinesWhereADragIs(blocked.Block)
+	if machines == nil || slices.Contains(*machines, blocked.Machine) {
+		return
+	}
+	*machines = append(*machines, blocked.Machine)
+	d.write()
+}
+
+func (d *deskStatus) unblockedDrag(unblocked sharer.BlockedDrag) {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	machines := d.machinesWhereADragIs(unblocked.Block)
+	if machines == nil {
+		return
+	}
+	at := slices.Index(*machines, unblocked.Machine)
+	if at < 0 {
+		return
+	}
+	*machines = slices.Delete(*machines, at, at+1)
 	d.write()
 }
 
@@ -273,6 +291,7 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 	defer report.stop()
 	machine.OnReceivers(report.receivers)
 	machine.OnBlockedDrag(tellBlockedDrags(stdout, report))
+	machine.OnDragUnblocked(report.unblockedDrag)
 	defer shareTheClipboard(done, machine, directory, listener.AwaitData, announced, followerOfTheCentral(report.seatsChanged), stdout)()
 	go func() {
 		for {

@@ -127,12 +127,15 @@ type Sharer struct {
 	moved              movement
 	heldHere           keystate.Tracker
 	inbox              *inbox
-	announced          map[Conn]int32
+	announced          map[Conn]announcement
 	docks              map[string]edge.Side
-	drag               *Drag
+	drag               *dragInProgress
 	toldBlocked        map[BlockedDrag]bool
 	onDragCrossing     func(DragCrossing)
+	onDragEntered      func(DragCrossing)
 	onBlockedDrag      func(BlockedDrag)
+	onDragUnblocked    func(BlockedDrag)
+	originEndsItsDrag  bool
 }
 
 func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges EdgeSwitching) *Sharer {
@@ -152,7 +155,7 @@ func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges Edge
 		ownEdges:           edge.New(edges.Watch),
 		remoteEdges:        watcherOfRemoteDesktops(edges.Watch),
 		inbox:              newInbox(),
-		announced:          make(map[Conn]int32),
+		announced:          make(map[Conn]announcement),
 		docks:              make(map[string]edge.Side),
 		toldBlocked:        make(map[BlockedDrag]bool),
 	}
@@ -277,6 +280,7 @@ func (s *Sharer) switchTo(target int) error {
 	if !connected || receiver == s.focused {
 		return nil
 	}
+	s.drag = nil
 	return s.enter(receiver, atTheCentre)
 }
 
@@ -315,6 +319,7 @@ func (s *Sharer) focusOnSharer() error {
 	if s.focused == nil {
 		return nil
 	}
+	s.drag = nil
 	s.bringFocusBack()
 	return s.giveBack()
 }
@@ -333,7 +338,7 @@ func (s *Sharer) leaveFocused() {
 		return
 	}
 	farewell := s.unsent
-	if releases := s.heldOnFocused.ReleaseAll(); releases != nil {
+	if releases := s.farewellReleases(); releases != nil {
 		farewell = append(farewell, releases...)
 	} else if len(farewell) > 0 {
 		farewell = append(farewell, event.Sync())
@@ -356,7 +361,7 @@ func (s *Sharer) admit(conn Conn) error {
 	fingerprint := conn.Peer().Fingerprint
 	previous, reconnecting := s.receivers[fingerprint]
 	s.receivers[fingerprint] = conn
-	s.announced[conn] = 0
+	s.announced[conn] = announcement{}
 	s.receiverChanges++
 	go s.watch(conn, s.clipboard.Connected(conn))
 	if !reconnecting {
@@ -393,6 +398,7 @@ func (s *Sharer) drop(conn Conn) error {
 
 func (s *Sharer) giveInputBackThenClose(conn Conn) error {
 	delete(s.announced, conn)
+	s.forgetTheDragOf(conn)
 	s.clipboard.Lost(conn)
 	err := s.takeFocusFrom(conn)
 	conn.Close()
@@ -401,6 +407,7 @@ func (s *Sharer) giveInputBackThenClose(conn Conn) error {
 
 func (s *Sharer) forget(conn Conn) {
 	delete(s.announced, conn)
+	s.forgetTheDragOf(conn)
 	s.clipboard.Lost(conn)
 	delete(s.receivers, conn.Peer().Fingerprint)
 	s.receiverChanges++
@@ -411,6 +418,7 @@ func (s *Sharer) takeFocusFrom(conn Conn) error {
 	if s.focused != conn {
 		return nil
 	}
+	s.drag = nil
 	s.focused, s.unsent, s.heldOnFocused = nil, nil, keystate.Tracker{}
 	s.remoteCursor, s.moved = nil, movement{}
 	s.clipboard.FocusArrives(nil)
