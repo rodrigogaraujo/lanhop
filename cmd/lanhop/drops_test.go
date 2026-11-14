@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
 
@@ -319,5 +320,31 @@ func TestForwardedDragsEndWhenTheWatchEnds(t *testing.T) {
 		}
 	case <-time.After(testPatience):
 		t.Fatal("the drags did not end with the watch")
+	}
+}
+
+func TestDragsAreAllowedOnlyWithFilesMovingAndADropSession(t *testing.T) {
+	session := newXdndDrops(nil, nil, nil, &screen{})
+	cases := []struct {
+		name     string
+		switches copySwitches
+		drops    bool
+		want     bool
+	}{
+		{"files moving with a drop session", copySwitches{clipboard: true, files: true}, true, true},
+		{"files off", copySwitches{clipboard: true}, true, false},
+		{"the clipboard off", copySwitches{files: true}, true, false},
+		{"no drop session", copySwitches{clipboard: true, files: true}, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var drops clipshare.Drops
+			if c.drops {
+				drops = session
+			}
+			if got := dragsAllowed(c.switches, drops); got != c.want {
+				t.Errorf("dragsAllowed = %v, want %v", got, c.want)
+			}
+		})
 	}
 }

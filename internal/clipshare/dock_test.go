@@ -4,11 +4,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 )
 
 type describingChanges struct {
@@ -92,4 +95,35 @@ func TestTheSideMachineSaysWhenItCanDescribeItsDrags(t *testing.T) {
 	raw.announces(textAndFiles)
 
 	eventually(t, "the side machine stopping", func() bool { return slices.Equal(changes.seen(), []bool{false, true, false}) })
+}
+
+func TestTheDragBitFollowsTheDragsSwitchOfTheMachine(t *testing.T) {
+	dragBit := int32(1) << features.Drag
+	off := Config{Drops: &fakeDrops{}, DragsOn: func() bool { return false }}.withDefaults()
+	if got := off.announcing(clipboard.Text|clipboard.Files).Value() & dragBit; got != 0 {
+		t.Error("a machine whose drags are off announced the drag bit")
+	}
+	on := Config{Drops: &fakeDrops{}, DragsOn: func() bool { return true }}.withDefaults()
+	if got := on.announcing(clipboard.Text|clipboard.Files).Value() & dragBit; got == 0 {
+		t.Error("a machine whose drags are on did not announce the drag bit")
+	}
+}
+
+func TestASideMachineAnnouncesAgainWhenOnlyItsDragsSwitchMoves(t *testing.T) {
+	var dragsOn atomic.Bool
+	dragsOn.Store(true)
+	raw := newRawCentralWithASideWhere(t, func(config *Config) { config.DragsOn = dragsOn.Load })
+	changes := &describingChanges{}
+	raw.runtime.OnDescribingDrags(changes.changed)
+	raw.announces(textFilesAndDrags)
+	eventually(t, "the side machine describing drags", func() bool { return slices.Equal(changes.seen(), []bool{false, true}) })
+
+	dragsOn.Store(false)
+	raw.runtime.FocusArrives()
+
+	eventually(t, "the side machine announcing files without dragged files", func() bool {
+		features := raw.withCode(event.ControlFeatures)
+		return len(features) > 0 && features[len(features)-1].Value == textAndFiles
+	})
+	eventually(t, "the side machine stopping its drag descriptions", func() bool { return slices.Equal(changes.seen(), []bool{false, true, false}) })
 }

@@ -41,6 +41,7 @@ type Side struct {
 	dragEnded     time.Time
 	remover       remover
 	drops         map[int]*dropRun
+	dragsOn       bool
 	describing    bool
 	onDescribing  func(describing bool)
 	dock          edge.Side
@@ -69,7 +70,7 @@ func (s *Side) Run(ctx context.Context) {
 	}()
 	defer func() { <-keeperStopped }()
 	s.reachable = <-reachedAtStart
-	s.on = s.kindsOn()
+	s.on, s.dragsOn = s.kindsOn(), s.config.dragsOn()
 	s.machine = clipboard.NewSide(s.on)
 	s.ctx = ctx
 	defer s.stopEverything()
@@ -249,12 +250,17 @@ func (s *Side) kindsOn() clipboard.Kinds {
 }
 
 func (s *Side) followTheSwitch() {
-	on := s.kindsOn()
-	if on == s.on {
+	on, dragsOn := s.kindsOn(), s.config.dragsOn()
+	if on == s.on && dragsOn == s.dragsOn {
 		return
 	}
-	s.on = on
-	s.do(s.machine.Switch(on))
+	kindsChanged := on != s.on
+	s.on, s.dragsOn = on, dragsOn
+	if kindsChanged {
+		s.do(s.machine.Switch(on))
+	} else {
+		s.announce(s.config.announcing(on))
+	}
 	s.noticeDescribing()
 }
 

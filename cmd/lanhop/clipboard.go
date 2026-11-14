@@ -38,6 +38,10 @@ func (s copySwitches) filesMove() bool {
 	return s.clipboard && s.files
 }
 
+func dragsAllowed(switches copySwitches, drops clipshare.Drops) bool {
+	return drops != nil && switches.filesMove()
+}
+
 func (s copySwitches) clipboardState() string {
 	switch {
 	case !s.clipboard:
@@ -169,6 +173,7 @@ func sideOfThisMachine(done context.Context, directory string, announced *featur
 	}
 	config.DialData = dialData
 	config.Drops = drops
+	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), drops) }
 	side := clipshare.NewSide(config)
 	return side, inTurn(runUntilStopped(done, side.Run), release)
 }
