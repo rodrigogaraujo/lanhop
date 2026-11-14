@@ -152,19 +152,20 @@ func receive(args []string, stdout io.Writer) (err error) {
 		restarting.Store(true)
 		stopReceiving()
 	}, stdout)
-	toTheSharer := transport.Config{Identity: local}
-	clipboard, stopSharingTheClipboard := clipboardOfThisSide(receiving, directory, announced, dataConnectionsTo(sharer, toTheSharer), stdout)
+	config, stopSharingTheClipboard := receivingFrom(receiving, sharer, local, directory, announced, stdout)
 	defer stopSharingTheClipboard()
-	err = receiver.Run(receiving, receiver.Config{
-		Transport: toTheSharer,
-		Sharer:    sharer,
-		Replay:    replay,
-		Clipboard: receiver.Together(clipboard, follower),
-		OnConnect: report.connected,
-		OnFailure: report.failed,
-	})
+	config.Replay = replay
+	config.Clipboard = receiver.Together(config.Clipboard, follower)
+	config.OnConnect, config.OnFailure = report.connected, report.failed
+	err = receiver.Run(receiving, config)
 	if restarting.Load() {
 		return errRestartForTheUpdate
 	}
 	return err
+}
+
+func receivingFrom(done context.Context, sharer trust.Peer, local *identity.Identity, directory string, announced *features.Set, stdout io.Writer) (receiver.Config, func()) {
+	toTheSharer := transport.Config{Identity: local}
+	clipboard, stopSharingTheClipboard := clipboardOfThisSide(done, directory, announced, dataConnectionsTo(sharer, toTheSharer), stdout)
+	return receiver.Config{Transport: toTheSharer, Sharer: sharer, Clipboard: clipboard}, stopSharingTheClipboard
 }

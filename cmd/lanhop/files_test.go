@@ -21,7 +21,6 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
-	"github.com/rodrigogaraujo/lanhop/internal/transport"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
@@ -129,6 +128,19 @@ func arrivedEarlier(t *testing.T, arrivals, name string, ago time.Duration) stri
 	return arrived
 }
 
+func entriesIn(t *testing.T, directory string) []string {
+	t.Helper()
+	listed, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	names := make([]string, len(listed))
+	for i, entry := range listed {
+		names[i] = entry.Name()
+	}
+	return names
+}
+
 func gone(path string) bool {
 	_, err := os.Stat(path)
 	return errors.Is(err, fs.ErrNotExist)
@@ -140,19 +152,19 @@ func (replayNowhere) Emit(...event.Event) error { return nil }
 
 func (replayNowhere) Close() error { return nil }
 
-func receiveWithTheClipboardOfThisSide(t *testing.T, directory string, local *identity.Identity, sharer trust.Peer) *screen {
+func receiveThroughTheWiringOfReceive(t *testing.T, directory string, local *identity.Identity, sharer trust.Peer) *screen {
 	t.Helper()
 	log := &screen{}
 	receiving, stop := context.WithCancel(context.Background())
-	toTheSharer := transport.Config{Identity: local}
-	board, stopTheClipboard := clipboardOfThisSide(receiving, directory, new(features.Set), dataConnectionsTo(sharer, toTheSharer), log)
-	if board == nil {
+	config, stopTheClipboard := receivingFrom(receiving, sharer, local, directory, new(features.Set), log)
+	if config.Clipboard == nil {
 		stop()
 		t.Fatal("receive has no clipboard to share")
 	}
+	config.Replay = replayNowhere{}
 	finished := make(chan error, 1)
 	go func() {
-		finished <- receiver.Run(receiving, receiver.Config{Transport: toTheSharer, Sharer: sharer, Replay: replayNowhere{}, Clipboard: board})
+		finished <- receiver.Run(receiving, config)
 	}()
 	t.Cleanup(func() {
 		stop()
@@ -188,11 +200,20 @@ func TestTheFilesCommandSwitchesFilesOffAndOnWithAFileNextToTheClipboardSwitch(t
 	if contents, err := os.ReadFile(switchFile); err != nil || string(contents) != "off\n" {
 		t.Errorf("the switch file holds %q, %v, want off", contents, err)
 	}
+	if info, err := os.Stat(switchFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the switch file has mode %v, %v, want 0600", info.Mode().Perm(), err)
+	}
+	if entries := entriesIn(t, directory); !slices.Equal(entries, []string{filesSwitchFileName}) {
+		t.Errorf("the configuration directory holds %q, want only the switch file", entries)
+	}
 	if said := filesCommand(t); said != "off\n" {
 		t.Errorf("lanhop files printed %q after off, want off", said)
 	}
 	if said, _ := clipboardCommand(t); said != "on for text, off for files\n" {
 		t.Errorf("lanhop clipboard printed %q while files are off, want on for text, off for files", said)
+	}
+	if said, _ := clipboardCommand(t, "on"); !strings.Contains(said, "Copies of files stay off. Let them move too with: lanhop files on") {
+		t.Errorf("lanhop clipboard on printed %q while files are off, want it to point to lanhop files on", said)
 	}
 
 	said = filesCommand(t, "on")
@@ -255,7 +276,7 @@ func TestHelpNamesTheFilesCommand(t *testing.T) {
 	if code := run([]string{"help"}, nobodyTyping(), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
 	}
-	for _, mention := range []string{"lanhop files ", "lanhop files off", "lanhop files on", "files switch"} {
+	for _, mention := range []string{"lanhop files ", "lanhop files off", "lanhop files on", "files switch", "on for text, off for files"} {
 		if !strings.Contains(stdout.String(), mention) {
 			t.Errorf("help does not mention %q", mention)
 		}
@@ -352,27 +373,80 @@ func TestShareAnnouncesFilesOnlyWhileBothSwitchesAreOnAndItHasAFolderForThem(t *
 	}
 }
 
-func TestReceiveWhoseArrivalFolderCannotOpenSaysWhyAndKeepsItsClipboard(t *testing.T) {
+func TestFilesSwitchedOffSayNothingOfAMissingArrivalFolderUntilTheyAreSwitchedOn(t *testing.T) {
 	directory := useConfigDirectory(t)
+	local := identityIn(t, directory)
+	desk := identityIn(t, t.TempDir())
+	trustAlready(t, directory, trust.Peer{Name: "desk", Fingerprint: desk.Fingerprint})
+	filesCommand(t, "off")
 	arrivalFolderFails(t, arrival.ErrCannotQuarantine)
 	useTheClipboard(t, fileClipboardOfTheTest{&clipboardOfTheTest{}})
-	log := &screen{}
-
-	board, stop := clipboardOfThisSide(context.Background(), directory, new(features.Set), dataConnectionsTo(trust.Peer{}, transport.Config{}), log)
-	defer stop()
-
-	if board == nil {
-		t.Fatal("receive gave up its clipboard because the arrival folder cannot open")
+	share := startShare(t)
+	conn, err := dialShare(desk, local, share.address)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
 	}
-	log.waitUntilShown(t, "lanhop cannot open the folder for the files that arrive: "+arrival.ErrCannotQuarantine.Error()+"\n")
-	log.waitUntilShown(t, "File sharing is off on this machine, because lanhop has no folder to keep the files that arrive.\n")
+	defer conn.Close()
+	if got := received(t, conn, 1); got[0] != event.Features(event.FeatureClipboard) {
+		t.Fatalf("the paired machine first received %+v, want text only", got[0])
+	}
+	expectNotShown(t, share.output, "lanhop cannot open the folder", "File sharing is off")
+
+	filesCommand(t, "on")
+	share.input.pressesHotkeyUntilFocusLeaves(t, 2)
+
+	share.output.waitUntilShown(t, "lanhop cannot open the folder for the files that arrive: "+arrival.ErrCannotQuarantine.Error()+"\n")
+	share.output.waitUntilShown(t, "File sharing is off on this machine, because lanhop has no folder to keep the files that arrive.\n")
 }
 
-func TestShareAndReceiveRemoveTheFilesThatArrivedMoreThanADayAgoWhenTheyStart(t *testing.T) {
+func TestReceiveWhoseArrivalFolderCannotOpenSaysWhyOnceAndKeepsItsClipboard(t *testing.T) {
+	cases := []struct {
+		name    string
+		failure error
+		said    string
+	}{
+		{
+			name:    "a build that cannot quarantine",
+			failure: arrival.ErrCannotQuarantine,
+			said:    "lanhop cannot open the folder for the files that arrive: " + arrival.ErrCannotQuarantine.Error() + "\n",
+		},
+		{
+			name:    "a folder that another lanhop holds",
+			failure: fmt.Errorf("%w: /home/ana/.cache/lanhop/arrived/.lock", arrival.ErrFolderInUse),
+			said:    "Another lanhop on this machine is using the folder for files that arrive.\n",
+		},
+		{
+			name:    "an error with control characters",
+			failure: errors.New("arrival: a folder named \"x\x1b[2J\ny\""),
+			said:    "lanhop cannot open the folder for the files that arrive: arrival: a folder named \"x\\x1b[2J\\ny\"\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			directory := useConfigDirectory(t)
+			arrivalFolderFails(t, c.failure)
+			useTheClipboard(t, fileClipboardOfTheTest{&clipboardOfTheTest{}})
+			log := &screen{}
+
+			config, stop := receivingFrom(context.Background(), trust.Peer{}, identityIn(t, t.TempDir()), directory, new(features.Set), log)
+			defer stop()
+
+			if config.Clipboard == nil {
+				t.Fatal("receive gave up its clipboard because the arrival folder cannot open")
+			}
+			log.waitUntilShown(t, "File sharing is off on this machine, because lanhop has no folder to keep the files that arrive.\n")
+			if said := strings.Count(log.String(), c.said); said != 1 {
+				t.Errorf("the log said %q %d times, want once: %q", c.said, said, log.String())
+			}
+		})
+	}
+}
+
+func TestShareAndReceiveRemoveTheFilesThatArrivedMoreThanADayAgoOnceTheyStarted(t *testing.T) {
 	starts := map[string]func(t *testing.T){
 		"share": func(t *testing.T) { startShare(t) },
 		"receive": func(t *testing.T) {
-			_, stop := clipboardOfThisSide(context.Background(), t.TempDir(), new(features.Set), dataConnectionsTo(trust.Peer{}, transport.Config{}), &screen{})
+			_, stop := receivingFrom(context.Background(), trust.Peer{}, identityIn(t, t.TempDir()), t.TempDir(), new(features.Set), &screen{})
 			t.Cleanup(stop)
 		},
 	}
@@ -387,9 +461,7 @@ func TestShareAndReceiveRemoveTheFilesThatArrivedMoreThanADayAgoWhenTheyStart(t 
 
 			start(t)
 
-			if !gone(old) {
-				t.Errorf("the files that arrived two days ago are still in %s", old)
-			}
+			waitUntil(t, "the files that arrived two days ago to be removed", func() bool { return gone(old) })
 			if gone(recent) {
 				t.Errorf("the files that arrived an hour ago were removed from %s", recent)
 			}
@@ -397,31 +469,74 @@ func TestShareAndReceiveRemoveTheFilesThatArrivedMoreThanADayAgoWhenTheyStart(t 
 	}
 }
 
-func TestOldArrivalsAreRemovedAgainAtEachIntervalUntilTheLoopIsStopped(t *testing.T) {
-	arrivals := filepath.Join(t.TempDir(), "arrived")
+func removingOldArrivals(t *testing.T, arrivals string, every time.Duration) *screen {
+	t.Helper()
 	useArrivalFolders(t, arrivals)
 	folder, err := openArrivals()
 	if err != nil {
 		t.Fatalf("openArrivals: %v", err)
 	}
-	defer folder.Close()
 	log := &screen{}
 	stop := runUntilStopped(context.Background(), func(ctx context.Context) {
-		keepRemovingOldArrivals(ctx, folder, 10*time.Millisecond, log)
+		keepRemovingOldArrivals(ctx, folder, every, log)
 	})
+	t.Cleanup(func() {
+		stopped := make(chan struct{})
+		go func() {
+			stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(testPatience):
+			t.Error("the removal of old arrivals kept running after it was stopped")
+		}
+		folder.Close()
+	})
+	return log
+}
 
+func TestOldArrivalsAreRemovedAsSoonAsTheRemovalStarts(t *testing.T) {
+	arrivals := filepath.Join(t.TempDir(), "arrived")
 	old := arrivedEarlier(t, arrivals, "7-00112233445566cc", 48*time.Hour)
 
+	log := removingOldArrivals(t, arrivals, time.Hour)
+
 	waitUntil(t, "the files that arrived two days ago to be removed", func() bool { return gone(old) }, log)
-	stopped := make(chan struct{})
-	go func() {
-		stop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(testPatience):
-		t.Fatal("the removal of old arrivals kept running after it was stopped")
+}
+
+func TestOldArrivalsAreRemovedAgainAtEachInterval(t *testing.T) {
+	arrivals := filepath.Join(t.TempDir(), "arrived")
+	log := removingOldArrivals(t, arrivals, 10*time.Millisecond)
+
+	old := arrivedEarlier(t, arrivals, "8-00112233445566dd", 48*time.Hour)
+
+	waitUntil(t, "the files that arrived two days ago to be removed", func() bool { return gone(old) }, log)
+}
+
+func TestEachDistinctFailureToRemoveOldArrivalsIsLoggedOnce(t *testing.T) {
+	arrivals := filepath.Join(t.TempDir(), "arrived")
+	log := removingOldArrivals(t, arrivals, 5*time.Millisecond)
+	t.Cleanup(func() { os.Chmod(arrivals, 0o700) })
+	failure := func(mode string) string {
+		return "lanhop could not remove the files that arrived more than a day ago: " + arrival.ErrUnsafeDirectory.Error() + ": " + arrivals + " can be written by others, with mode " + mode + "\n"
+	}
+
+	if err := os.Chmod(arrivals, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	log.waitUntilShown(t, failure("-rwxrwxrwx"))
+	time.Sleep(50 * time.Millisecond)
+	if err := os.Chmod(arrivals, 0o770); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	log.waitUntilShown(t, failure("-rwxrwx---"))
+	time.Sleep(50 * time.Millisecond)
+
+	for _, mode := range []string{"-rwxrwxrwx", "-rwxrwx---"} {
+		if said := strings.Count(log.String(), failure(mode)); said != 1 {
+			t.Errorf("the failure with mode %s was logged %d times, want once: %q", mode, said, log.String())
+		}
 	}
 }
 
@@ -437,7 +552,7 @@ func TestAFileCopiedOnTheMachineThatSharesArrivesWholeOnTheReceivingMachineThatG
 	useClipboardsInTurn(t, fileClipboardOfTheTest{sharing}, fileClipboardOfTheTest{receiving})
 	share := startShare(t)
 	waitUntil(t, "share to open its clipboard", func() bool { return sharing.timesMarked() >= 1 }, share.output)
-	deskLog := receiveWithTheClipboardOfThisSide(t, deskDirectory, desk, trust.Peer{Name: "sharer", Fingerprint: local.Fingerprint, Address: share.address})
+	deskLog := receiveThroughTheWiringOfReceive(t, deskDirectory, desk, trust.Peer{Name: "sharer", Fingerprint: local.Fingerprint, Address: share.address})
 	waitUntil(t, "the desk to hear that share takes copies", func() bool { return receiving.timesMarked() >= 2 }, share.output, deskLog)
 	waitUntil(t, "share to take a fresh mark for the desk", func() bool { return sharing.timesMarked() >= 2 }, share.output, deskLog)
 	report := filepath.Join(t.TempDir(), "report of march.txt")

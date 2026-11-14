@@ -33,8 +33,9 @@ Installs lanhop for the current user. Nothing is installed as root.
   $install_command -s -- --uninstall
 
 Options:
-  --uninstall   stop lanhop and remove its service, its binary and, on macOS,
-                lanhop.app. The key of this machine and its trusted machines are kept
+  --uninstall   stop lanhop and remove its service, its binary, the files that
+                arrived from other machines and, on macOS, lanhop.app. The key of
+                this machine and its trusted machines are kept
   --help        show this text
 
 Environment:
@@ -188,10 +189,12 @@ settle_paths() {
       app_directory=$HOME/Applications
     fi
     config_directory="$HOME/Library/Application Support/lanhop"
+    arrival_directory=$HOME/Library/Caches/lanhop/arrived
     agent_path=$HOME/Library/LaunchAgents/$agent_label.plist
     log_path=$HOME/Library/Logs/lanhop.log
   else
     config_directory=${XDG_CONFIG_HOME:-$HOME/.config}/lanhop
+    arrival_directory=${XDG_CACHE_HOME:-$HOME/.cache}/lanhop/arrived
     unit_path=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit_name
     rule_record=${XDG_STATE_HOME:-$HOME/.local/state}/lanhop/udev-rule-installed
   fi
@@ -1076,6 +1079,18 @@ remove_apps() {
   done
 }
 
+remove_arrivals() {
+  if [ ! -e "$arrival_directory" ] && [ ! -L "$arrival_directory" ]; then
+    return 0
+  fi
+  if rm -rf "$arrival_directory"; then
+    rmdir "$(dirname "$arrival_directory")" 2>/dev/null || true
+    say "Removed $arrival_directory, with the files that arrived from other machines"
+  else
+    problem "could not remove $arrival_directory, which holds the files that arrived from other machines"
+  fi
+}
+
 uninstall_lanhop() {
   if [ "$os" = darwin ]; then
     remove_agent
@@ -1085,6 +1100,7 @@ uninstall_lanhop() {
     remove_udev_rule
   fi
   rm -f "$config_directory/status" "$config_directory/status.lock"
+  remove_arrivals
   if [ -e "$binary" ] || [ -L "$binary" ]; then
     rm -f "$binary"
     say "Removed $binary"

@@ -69,7 +69,7 @@ To remove lanhop:
 curl -fsSL https://raw.githubusercontent.com/rodrigogaraujo/lanhop/main/install.sh | sh -s -- --uninstall
 ```
 
-It stops lanhop and removes the service, the binary, `lanhop.app` on macOS and, after asking, the udev rule that the installer wrote. It keeps the key of the machine and its trusted machines, and says where they are. If you installed with `LANHOP_INSTALL_DIR`, give it again.
+It stops lanhop and removes the service, the binary, the [folder of files that arrived](#copy-and-paste) from other machines, `lanhop.app` on macOS and, after asking, the udev rule that the installer wrote. It keeps the key of the machine and its trusted machines, and says where they are. If you installed with `LANHOP_INSTALL_DIR`, give it again.
 
 Each release also has the archives themselves, one per system and architecture, with `SHA256SUMS`. The macOS archives hold `lanhop.app`, which is not signed with an Apple developer certificate: [Setting up lanhop on macOS](docs/setup-macos.md#the-macos-app-is-not-signed-by-apple) says what that means when you download one with a browser.
 
@@ -118,11 +118,22 @@ lanhop update
 
 ## Copy and paste
 
-> Built on `main`, not in a release yet. This has passed only automated tests.
+> Built on `main`, not in a release yet. This has passed only automated tests. Still open:
+>
+> - Nobody has tried it at the desk yet.
+> - On macOS, the machine you just left may ask for a permission before lanhop reads a copy there, or before it reads files in protected folders: Desktop, Documents, Downloads, iCloud Drive and external volumes.
+> - Whether Finder pastes the files that lanhop puts on the clipboard is still to be measured.
 
-Copy on one machine, move focus to another, and paste there. Copies of text and copies of files move this way, over the encrypted connection between paired machines.
+Copy on one machine, move focus to another, and paste there. Copies of text and copies of files move this way between paired machines. Text travels on the encrypted connection that carries the keyboard and mouse, and files on a second encrypted connection next to it.
 
-- **Where files land.** Files that arrive wait in a folder of lanhop, `~/.cache/lanhop/arrived` on Linux and `~/Library/Caches/lanhop/arrived` on macOS, and a paste copies them from there. lanhop removes them a day after they arrived, and keeps the folder under 8 GiB by removing the oldest first.
+- **Where files land.** Files that arrive wait in a folder of lanhop, and a paste copies them from there:
+
+  | System | Folder |
+  |---|---|
+  | Linux | `$XDG_CACHE_HOME/lanhop/arrived`, or `~/.cache/lanhop/arrived` when `XDG_CACHE_HOME` is not set |
+  | macOS | `~/Library/Caches/lanhop/arrived` |
+
+  While lanhop runs, it removes files about a day after they arrived. It keeps the folder under 8 GiB by removing the oldest first. Uninstalling lanhop removes the folder.
 - **Switching copies off.** Each machine has two switches, both on after a new install:
 
   | Command | What it does |

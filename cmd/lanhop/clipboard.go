@@ -54,7 +54,7 @@ func (s copySwitches) afterTheClipboardSwitch() string {
 	case !s.clipboard:
 		return "Copies of text and files no longer move to or from this machine. " + followedAtTheNextFocus
 	case !s.files:
-		return "Copies of text move to and from this machine, and copies of files stay off. " + followedAtTheNextFocus
+		return "Copies of text move to and from this machine. " + followedAtTheNextFocus + " Copies of files stay off. Let them move too with: lanhop files on"
 	}
 	return "Copies of text and files move to and from this machine. " + followedAtTheNextFocus
 }
@@ -106,7 +106,23 @@ func flipSwitch(directory, fileName, word string) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(switchedOff+"\n"), 0o600)
+	return writeAtOnce(path, []byte(switchedOff+"\n"))
+}
+
+func writeAtOnce(path string, contents []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = temporary.Write(contents)
+	err = errors.Join(err, temporary.Close())
+	if err == nil {
+		err = os.Rename(temporary.Name(), path)
+	}
+	if err != nil {
+		os.Remove(temporary.Name())
+	}
+	return err
 }
 
 func switchFileSaysOn(path string) bool {
@@ -124,11 +140,11 @@ func clipboardConfigIn(done context.Context, directory string, announced *featur
 	if openClipboard == nil {
 		return clipshare.Config{}, func() {}, false
 	}
-	arrivals, release := keepArrivals(done, stdout)
+	arrivals, whyNoArrivals, release := keepArrivals(done, stdout)
 	return clipshare.Config{
 		Open:       openClipboard,
 		SwitchedOn: func() bool { return copySwitchesIn(directory).clipboard },
-		FilesOn:    func() bool { return copySwitchesIn(directory).filesMove() },
+		FilesOn:    filesOnIn(directory, whyNoArrivals, stdout),
 		Arrivals:   arrivals,
 		Log:        stdout,
 		Features:   announced,

@@ -28,9 +28,10 @@ Usage:
   lanhop forget NAME     stop trusting a machine
   lanhop layout          show where the layout file is and how lanhop understands it
   lanhop layout --edit   arrange the machines on the desk by dragging them, in a browser
-  lanhop clipboard       say whether copies of text move between this machine and the others: on or off
+  lanhop clipboard       say whether copies move between this machine and the others: on, off,
+                         or "on for text, off for files"
   lanhop clipboard off   keep copies of text and files from leaving or reaching this machine
-  lanhop clipboard on    let copies of text move again, as after a new install
+  lanhop clipboard on    let copies of text and files move again, files only while lanhop files is on
   lanhop files           say whether copies of files move between this machine and the others: on or off
   lanhop files off       keep copies of files from leaving or reaching this machine, while text still moves
   lanhop files on        let copies of files move again, as after a new install
