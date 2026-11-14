@@ -27,6 +27,7 @@ func TestControlEventsAreOutsideTheKernelTypeRange(t *testing.T) {
 		"open drop data": OpenDropData(1, true),
 		"drop taken":     DropTaken(1),
 		"cancel drop":    CancelDrop(1),
+		"drag leaves":    DragLeaves(),
 	} {
 		if !e.IsControl() {
 			t.Errorf("%s is not a control event", name)
@@ -85,7 +86,7 @@ func TestControlCodesAreDistinct(t *testing.T) {
 		Hello(), Ping(), Enter(), Leave(), Features(0), Clipboard(1), ClipboardData(0), ClipboardAck(1), ClipboardUnchanged(),
 		DataHello(1), FileCopy(1), FileCopySize(1), OpenData(1, false), DataStop(1), DataAck(1),
 		Update(1), Version(1),
-		DragFiles(1, 0), DragFilesSize(1), OpenDropData(1, false), DropTaken(1), CancelDrop(1),
+		DragFiles(1, 0), DragFilesSize(1), OpenDropData(1, false), DropTaken(1), CancelDrop(1), DragLeaves(),
 	} {
 		if seen[e.Code] {
 			t.Errorf("control code %d is used twice", e.Code)
@@ -177,6 +178,7 @@ func TestDragFramesKeepTheirControlCodes(t *testing.T) {
 		{"open drop data with the largest number", OpenDropData(math.MaxInt32, true), Event{Type: control, Code: 20, Value: -1}},
 		{"drop taken", DropTaken(7), Event{Type: control, Code: 21, Value: 7}},
 		{"cancel drop", CancelDrop(7), Event{Type: control, Code: 22, Value: 7}},
+		{"drag leaves", DragLeaves(), Event{Type: control, Code: 23}},
 	}
 	for _, test := range tests {
 		if test.got != test.want {
@@ -185,10 +187,10 @@ func TestDragFramesKeepTheirControlCodes(t *testing.T) {
 	}
 }
 
-func TestDragFramesStayBetweenCodes18And22(t *testing.T) {
-	for _, e := range []Event{DragFiles(1, 1), DragFilesSize(1), OpenDropData(1, true), DropTaken(1), CancelDrop(1)} {
-		if e.Code < 18 || e.Code > 22 {
-			t.Errorf("a drag frame uses control code %d, outside 18 to 22", e.Code)
+func TestDragFramesStayBetweenCodes18And23(t *testing.T) {
+	for _, e := range []Event{DragFiles(1, 1), DragFilesSize(1), OpenDropData(1, true), DropTaken(1), CancelDrop(1), DragLeaves()} {
+		if e.Code < 18 || e.Code > 23 {
+			t.Errorf("a drag frame uses control code %d, outside 18 to 23", e.Code)
 		}
 	}
 }
