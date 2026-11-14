@@ -560,6 +560,9 @@ func (b *Clipboard) textTarget(offered []uint32) (uint32, bool) {
 var errTargetRefused = errors.New("x11: the owner of the clipboard refused that format")
 
 func (b *Clipboard) convert(target uint32, limit int, until time.Time) ([]byte, error) {
+	if !time.Now().Before(until) {
+		return nil, ErrNoAnswer
+	}
 	drain(b.notifies)
 	if err := b.c.send(newRequest(opDeleteProperty, 0).u32(b.window).u32(b.atoms.ownProperty).done()); err != nil {
 		return nil, err

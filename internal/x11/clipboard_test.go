@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -350,6 +351,28 @@ func TestAnOwnerThatNeverAnswersIsReportedInsteadOfAwaited(t *testing.T) {
 	}
 	if waited := time.Since(start); waited > time.Second {
 		t.Errorf("Read waited %v", waited)
+	}
+}
+
+func TestAReadWhoseTimeHasRunOutAsksTheOwnerForNothing(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	var asked atomic.Int32
+	ownedByAnotherProgram(t, display, reader, func(_ *conn, event []byte) {
+		if event[0]&0x7f == eventSelectionRequest {
+			asked.Add(1)
+		}
+	})
+	reader.wholeRead = 0
+
+	_, err := reader.Read()
+
+	if !errors.Is(err, ErrNoAnswer) {
+		t.Errorf("Read: error = %v, want %v", err, ErrNoAnswer)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := asked.Load(); got != 0 {
+		t.Errorf("the owner was asked for %d conversions after the read had run out of time", got)
 	}
 }
 
