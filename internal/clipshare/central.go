@@ -76,6 +76,7 @@ type Central struct {
 	sideDragStayed  func(origin string)
 	sideDock        func(origin string, dock edge.Side)
 	ownDragCounted  func(files int)
+	ownDragGone     func()
 }
 
 func NewCentral(config Config) *Central {

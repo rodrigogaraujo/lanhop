@@ -166,3 +166,35 @@ func TestTheCentralTellsItsOwnDragOnlyOnceItsFilesAreCounted(t *testing.T) {
 		t.Error("the central did not keep the drag it told")
 	}
 }
+
+func TestTheEndOfTheCentralsOwnDragIsToldFromItsLoopAfterItsCount(t *testing.T) {
+	d := newDropDesk(t)
+	told := make(chan string, 8)
+	askCentral(t, d.runtime, func() bool {
+		d.runtime.OnOwnDragCounted(func(int) { told <- "counted" })
+		d.runtime.OnOwnDragGone(func() { told <- "gone" })
+		return true
+	})
+	file := writeFile(t, filepath.Join(t.TempDir(), "a.txt"), []byte("a"))
+
+	d.runtime.DragSeen([]string{file})
+	if got := nextTold(t, told); got != "counted" {
+		t.Fatalf("first told %q, want the count", got)
+	}
+	d.runtime.DragGone()
+
+	if got := nextTold(t, told); got != "gone" {
+		t.Errorf("then told %q, want the end", got)
+	}
+}
+
+func nextTold(t *testing.T, told <-chan string) string {
+	t.Helper()
+	select {
+	case got := <-told:
+		return got
+	case <-time.After(testPatience):
+		t.Fatal("the central told nothing")
+		return ""
+	}
+}

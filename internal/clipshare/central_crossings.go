@@ -6,6 +6,10 @@ func (c *Central) OnOwnDragCounted(counted func(files int)) {
 	c.ownDragCounted = counted
 }
 
+func (c *Central) OnOwnDragGone(gone func()) {
+	c.ownDragGone = gone
+}
+
 func (c *Central) DragLeaves(origin string) error {
 	select {
 	case <-c.started:

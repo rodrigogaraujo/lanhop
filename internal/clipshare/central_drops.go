@@ -41,6 +41,9 @@ func (c *Central) dragGone() {
 	if !c.ownDragCrossed {
 		c.forgetOwnDrag()
 	}
+	if c.ownDragGone != nil {
+		c.ownDragGone()
+	}
 }
 
 func (c *Central) dragOver() {
