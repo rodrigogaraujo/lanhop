@@ -372,6 +372,26 @@ func TestASideMachineSendsOnlyTheFilesOfARecentDragItDescribed(t *testing.T) {
 	case <-time.After(testPatience):
 		t.Fatal("the side machine sent nothing for a drag that just ended")
 	}
+	if askSide(t, raw.runtime, func() bool { return raw.runtime.dragEnded.IsZero() }) {
+		t.Error("the end of the drag did not start the clock of its files")
+	}
+
+	askSide(t, raw.runtime, func() bool {
+		raw.runtime.dragEnded = raw.runtime.dragEnded.Add(-draggedFilesKeptFor)
+		return true
+	})
+	streamed := make(chan error, 1)
+	stale := raw.opensDropData(true, func(data *transport.DataConn) {
+		streamed <- filestream.ReceiveDrop(raw.ctx, data, dropArrivalsInto(t))
+	})
+	eventually(t, "the side machine refusing to send the files of a drag that ended too long ago", func() bool {
+		return slices.Contains(raw.withCode(event.ControlDataStop), event.DataStop(stale))
+	})
+	select {
+	case err := <-streamed:
+		t.Errorf("the side machine streamed the files of a drag that ended %s ago: %v", draggedFilesKeptFor, err)
+	default:
+	}
 
 	raw.runtime.DragSeen([]string{filepath.Join(t.TempDir(), "missing.txt")}, 0)
 	raw.log.waitFor(t, "The file drag on this machine cannot cross")

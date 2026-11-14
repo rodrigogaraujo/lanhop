@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,6 +260,42 @@ func TestEscapeAfterTheFilesArrivedOnASideMachineRemovesThem(t *testing.T) {
 	d.expectNoDropsLeft(left, right)
 }
 
+func TestEscapeWhileTheDropStillTakesItsFilesCancelsAndRemovesThemOnlyAfterward(t *testing.T) {
+	d := newDropDesk(t, "left", "right")
+	left, right := d.sideJoins("left"), d.sideJoins("right")
+	d.waitUntilTakingDrops(left, right)
+	released := make(chan struct{})
+	var releasing sync.Once
+	letArrivedReturn := func() { releasing.Do(func() { close(released) }) }
+	t.Cleanup(letArrivedReturn)
+	right.drops.holdArrivedUntil(released)
+	small := writeFile(t, filepath.Join(t.TempDir(), "held.txt"), []byte("held"))
+
+	d.dragCrosses(left, right, small)
+	session := waitForADrop(t, "right", right.drops)
+	waitUntilHanded(t, "right", session)
+	d.expectNoTransfersLeft(left, right)
+	d.runtime.DragCancelled()
+	d.expectNoDropsLeft(left, right)
+	time.Sleep(settling)
+	if session.wasCancelled() {
+		t.Error("the drop was cancelled while it still took its files")
+	}
+	if len(arrivalsLeftIn(t, right.arrivalDir)) == 0 {
+		t.Error("the files were removed while the drop still took them")
+	}
+	letArrivedReturn()
+
+	waitUntilCancelled(t, "right", session)
+	expectNothingLeftIn(t, "right", right.arrivalDir)
+	if calls := session.callsInOrder(); !slices.Equal(calls, []string{"Arrived", "Cancel"}) {
+		t.Errorf("the drop saw %q, want Arrived to return before Cancel", calls)
+	}
+	if gone := session.pathsGoneBeforeArrivedReturned(); len(gone) > 0 {
+		t.Errorf("%q were removed before Arrived returned", gone)
+	}
+}
+
 func TestADropRefusedAfterItsFilesArrivedLeavesNothing(t *testing.T) {
 	for _, target := range []string{"right", "the central"} {
 		t.Run("on "+target, func(t *testing.T) {
@@ -345,9 +382,12 @@ func (d *deskUnderTest) originReportsItsDragGone(origin *sideUnderTest) {
 		askCentral(d.t, d.runtime, func() bool { return true })
 		return
 	}
+	endsBefore := d.handled.dragEndsFrom(origin.name)
 	origin.runtime.DragGone()
-	handledEverythingQueued(d.t, origin.runtime)
-	time.Sleep(settling)
+	eventually(d.t, "the central handling the end of the drag on "+origin.name, func() bool {
+		return d.handled.dragEndsFrom(origin.name) > endsBefore
+	})
+	askCentral(d.t, d.runtime, func() bool { return true })
 }
 
 func expectNoDragEndTold(t *testing.T, d *deskUnderTest) {
@@ -420,7 +460,7 @@ func TestADragGoesOnToAThirdMachineAfterItsOriginReportedItGone(t *testing.T) {
 	}
 }
 
-func TestADragBackToItsOriginAfterItReportedItGoneCancelsTheDropAndCanCrossAgain(t *testing.T) {
+func TestFocusBackOnTheOriginCancelsTheDropOfADragReportedGoneAndDragCrossedStartsANewOne(t *testing.T) {
 	d := newDropDesk(t, "left", "right")
 	left, right := d.sideJoins("left"), d.sideJoins("right")
 	d.waitUntilTakingDrops(left, right)
