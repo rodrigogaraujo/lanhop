@@ -207,3 +207,35 @@ jobs:
             echo "::error::check-app-requirement took an app signed ad hoc"
             exit 1
           fi
+      - name: Check apps through the Security framework, as lanhop update does
+        if: runner.os == 'macOS'
+        run: |
+          apps="$WORK/signed-apps"
+          mkdir -p "$apps"
+          cp -R "$WORK/lanhop-darwin-arm64/lanhop.app" "$apps/project.app"
+          cp "$WORK/certificate/leaf" "$apps/project.leaf"
+          cp "$WORK/other-certificate/leaf" "$apps/other.leaf"
+          cp -R "$WORK/ad-hoc.app" "$apps/ad-hoc.app"
+          cp -R "$WORK/ad-hoc.app" "$apps/other.app"
+          scripts/release/sign-apps "$WORK/other-certificate/certificate.p12" "$WORK/other-certificate/password" "$apps/other.app"
+          cp -R "$WORK/ad-hoc.app" "$apps/other-identifier.app"
+          scripts/release/sign-apps --identifier com.example.other "$WORK/certificate/certificate.p12" "$WORK/certificate/password" "$apps/other-identifier.app"
+          cp -R "$apps/project.app" "$apps/tampered.app"
+          plutil -replace CFBundleShortVersionString -string 9.9.9 "$apps/tampered.app/Contents/Info.plist"
+          cp -R "$apps/project.app" "$apps/changed-program.app"
+          program="$apps/changed-program.app/Contents/MacOS/lanhop"
+          for byte in '\001' '\002'; do
+            printf "$byte" | dd of="$program" bs=1 seek=16384 count=1 conv=notrunc 2>/dev/null
+            if ! cmp -s "$program" "$apps/project.app/Contents/MacOS/lanhop"; then
+              break
+            fi
+          done
+          if cmp -s "$program" "$apps/project.app/Contents/MacOS/lanhop"; then
+            echo "::error::the program of changed-program.app did not change"
+            exit 1
+          fi
+          cp -R "$apps/project.app" "$apps/extra-file.app"
+          mkdir -p "$apps/extra-file.app/Contents/Resources"
+          printf 'not sealed\n' >"$apps/extra-file.app/Contents/Resources/extra"
+          LANHOP_TEST_SIGNED_APPS="$apps" go test -count=1 -v -run 'TestTheSecurityFrameworkChecksTheRequirement' ./internal/update | tee "$WORK/app-check.log"
+          grep -q -- '--- PASS: TestTheSecurityFrameworkChecksTheRequirement' "$WORK/app-check.log"

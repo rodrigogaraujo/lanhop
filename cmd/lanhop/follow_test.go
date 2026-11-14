@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,9 +47,10 @@ func TestUpdatesSwitchesOffAndOnAgain(t *testing.T) {
 
 func TestOnlyALanhopStartedByItsServiceWithAKeyAndUpdatesOnFollows(t *testing.T) {
 	directory := useConfigDirectory(t)
-	keys := projectReleaseKeys
-	t.Cleanup(func() { projectReleaseKeys = keys })
+	keys, check := projectReleaseKeys, checkNewApp
+	t.Cleanup(func() { projectReleaseKeys, checkNewApp = keys, check })
 	follows := followsTheCentral(directory)
+	checkNewApp = func(string) error { return nil }
 
 	projectReleaseKeys = []ed25519.PublicKey{make(ed25519.PublicKey, ed25519.PublicKeySize)}
 	t.Setenv(serviceVariable, "1")
@@ -72,6 +74,11 @@ func TestOnlyALanhopStartedByItsServiceWithAKeyAndUpdatesOnFollows(t *testing.T)
 	projectReleaseKeys = nil
 	if follows() {
 		t.Errorf("a lanhop without a release key follows")
+	}
+	projectReleaseKeys = []ed25519.PublicKey{make(ed25519.PublicKey, ed25519.PublicKeySize)}
+	checkNewApp = nil
+	if follows() != (runtime.GOOS != "darwin") {
+		t.Errorf("without a check of a new app, a lanhop on %s follows: %t", runtime.GOOS, follows())
 	}
 }
 

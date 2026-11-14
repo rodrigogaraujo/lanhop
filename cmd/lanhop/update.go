@@ -37,7 +37,7 @@ var (
 	answerPatience     = 10 * time.Second
 	projectReleaseKeys = update.ProjectKeys()
 	releasesAddress    = update.ProjectReleases
-	checkNewApp        func(app string) error
+	checkNewApp        = update.ProjectAppCheck()
 	firstProgramString = regexp.MustCompile(`(?s)<key>ProgramArguments</key>\s*<array>\s*<string>([^<]+)</string>`)
 )
 

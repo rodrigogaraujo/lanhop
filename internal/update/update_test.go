@@ -440,6 +440,29 @@ func TestAnAppIsRefusedWhenItsSignatureCannotBeChecked(t *testing.T) {
 	expectUntouched(t, target)
 }
 
+func TestAnAppThatFailsItsCheckIsRefusedAndNothingIsLeft(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("lanhop.app is replaced only on macOS")
+	}
+	github, source := serving(t)
+	refusal := errors.New("not signed with a certificate of the project")
+	checked := ""
+	source.CheckApp = func(app string) error {
+		checked = app
+		return refusal
+	}
+	github.publish(t, publication{version: newer})
+	target := installedProgram(t)
+	if _, err := source.Prepare(context.Background(), target, newer, false); !errors.Is(err, refusal) {
+		t.Fatalf("Prepare with an app that fails its check = %v, want that refusal", err)
+	}
+	staged := filepath.Join(filepath.Dir(target.Program), stagingPattern, target.archiveRoot(), "lanhop.app")
+	if matched, err := filepath.Match(staged, checked); err != nil || !matched {
+		t.Errorf("the check looked at %q, want the new lanhop.app in the staging folder, %s", checked, staged)
+	}
+	expectUntouched(t, target)
+}
+
 func TestLatestIsTheReleaseThatGitHubSendsTo(t *testing.T) {
 	github, source := serving(t)
 	github.latest = "v0.1.3"
