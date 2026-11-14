@@ -101,7 +101,7 @@ func readEntryStart(r *bufio.Reader, bytesLeft int64) (entryStart, error) {
 		return entryStart{}, fmt.Errorf("filestream: reading an entry: %w", unexpected(err))
 	}
 	nameBytes := int(binary.BigEndian.Uint16(length[:]))
-	if nameBytes > pathBytesLimit {
+	if nameBytes >= pathBytesLimit {
 		return entryStart{}, fmt.Errorf("%w: a path of %d bytes", ErrPathTooLong, nameBytes)
 	}
 	name := make([]byte, nameBytes)

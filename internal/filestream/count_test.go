@@ -223,3 +223,17 @@ func TestLinksInsideAFolderDoNotCountTowardTheLimitOfEntries(t *testing.T) {
 		t.Errorf("listing a folder with a file and 5 links under a limit of 2 = %+v, %v, want 2 entries and 5 skipped", l.listing, err)
 	}
 }
+
+func TestTheListingRefusesAFullPathAtTheLimitThatSendingCouldNotOpen(t *testing.T) {
+	root := realTempDir(t)
+	short := writeFile(t, filepath.Join(root, "report", "a.txt"), "a")
+	long := writeFile(t, filepath.Join(root, "report", "much-longer-name.txt"), "b")
+	l := newLister(func() error { return nil })
+	l.pathLimit = len(short) + 1
+
+	err := l.list([]string{filepath.Join(root, "report")})
+
+	if !errors.Is(err, ErrPathTooLong) {
+		t.Errorf("listing a tree holding %s under a limit of %d bytes = %v, want ErrPathTooLong", long, l.pathLimit, err)
+	}
+}

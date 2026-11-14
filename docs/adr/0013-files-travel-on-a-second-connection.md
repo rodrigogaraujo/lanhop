@@ -41,7 +41,7 @@ Side machines open their connection to the central, and the central does not ope
 **The format of the content** (amendment, proposed with task 6b). Numbers are big-endian.
 
 - A header of 13 bytes opens the stream: the format, 1; the number of files and folders, 4 bytes, from 1 to 10 000; and the total size of the files, 8 bytes, at most 4 GiB. The receiving side checks the room for the copy against this total (FR-013), not against the description of the leave.
-- Each file and folder follows in depth-first order, so a folder comes before what it holds: its kind, 1 byte, 1 for a file and 2 for a folder; the length of its path, 2 bytes, at most 4096; the path, relative, in UTF-8, with `/` between names and no empty name, `.` or `..`; and its size, 8 bytes, 0 for a folder. A file then carries its content and the SHA-256 of that content, 32 bytes.
+- Each file and folder follows in depth-first order, so a folder comes before what it holds: its kind, 1 byte, 1 for a file and 2 for a folder; the length of its path, 2 bytes, under 4096; the path, relative, in UTF-8, with `/` between names and no empty name, `.` or `..`; and its size, 8 bytes, 0 for a folder. A file then carries its content and the SHA-256 of that content, 32 bytes.
 - A byte 0 ends the copy.
 - The receiving side refuses a stream that breaks any of these rules, holds more or fewer files, folders or bytes than its header says, or puts a path under a folder it has not just opened, and removes what arrived of it. It also removes a whole copy when it cannot send the Data ack that says every file arrived, so that both sides agree the copy did not arrive.
 

@@ -28,7 +28,7 @@ var (
 	ErrNoName        = errors.New("filestream: a path of the file copy has no name of its own")
 	ErrSameName      = errors.New("filestream: two files or folders of the copy have the same name")
 	ErrNameNotUTF8   = errors.New("filestream: a file name is not UTF-8")
-	ErrPathTooLong   = errors.New("filestream: a path inside the copy is longer than 4096 bytes")
+	ErrPathTooLong   = errors.New("filestream: a path of the copy is 4096 bytes or longer")
 	ErrChanged       = errors.New("filestream: a file of the copy changed or went away before it was sent")
 )
 
@@ -50,6 +50,7 @@ type lister struct {
 	listing      Listing
 	entriesLimit int
 	bytesLimit   int64
+	pathLimit    int
 }
 
 type counted struct {
@@ -65,6 +66,7 @@ func Count(paths []string, deadline time.Time) (Listing, error) {
 		return nil
 	})
 	done := make(chan counted, 1)
+	paths = slices.Clone(paths)
 	go func() {
 		err := l.list(paths)
 		done <- counted{listing: l.listing, err: err}
@@ -88,6 +90,7 @@ func newLister(stop func() error) *lister {
 		stop:         stop,
 		entriesLimit: clipboard.FilesAndFoldersLimit,
 		bytesLimit:   clipboard.FileCopyLimit,
+		pathLimit:    pathBytesLimit,
 	}
 }
 
@@ -174,6 +177,9 @@ func (l *lister) add(file *os.File, path, name string, info fs.FileInfo) error {
 	if err := sendableName(name); err != nil {
 		return fmt.Errorf("%w: %s", err, path)
 	}
+	if len(path) >= l.pathLimit {
+		return fmt.Errorf("%w: %.80s…", ErrPathTooLong, path)
+	}
 	if !info.Mode().IsRegular() && !info.IsDir() {
 		return fmt.Errorf("%w: %s", ErrChanged, path)
 	}
@@ -258,7 +264,7 @@ func sendableName(name string) error {
 	if !utf8.ValidString(name) {
 		return ErrNameNotUTF8
 	}
-	if len(name) > pathBytesLimit {
+	if len(name) >= pathBytesLimit {
 		return ErrPathTooLong
 	}
 	return nil
