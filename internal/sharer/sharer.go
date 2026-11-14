@@ -133,6 +133,7 @@ type Sharer struct {
 	toldBlocked        map[BlockedDrag]bool
 	onDragCrossing     func(DragCrossing)
 	onDragEntered      func(DragCrossing)
+	onDragEnded        func(Drag)
 	onBlockedDrag      func(BlockedDrag)
 	onDragUnblocked    func(BlockedDrag)
 	originEndsItsDrag  bool
@@ -280,7 +281,7 @@ func (s *Sharer) switchTo(target int) error {
 	if !connected || receiver == s.focused {
 		return nil
 	}
-	s.drag = nil
+	s.endDrag()
 	return s.enter(receiver, atTheCentre)
 }
 
@@ -319,7 +320,7 @@ func (s *Sharer) focusOnSharer() error {
 	if s.focused == nil {
 		return nil
 	}
-	s.drag = nil
+	s.endDrag()
 	s.bringFocusBack()
 	return s.giveBack()
 }
@@ -418,7 +419,7 @@ func (s *Sharer) takeFocusFrom(conn Conn) error {
 	if s.focused != conn {
 		return nil
 	}
-	s.drag = nil
+	s.endDrag()
 	s.focused, s.unsent, s.heldOnFocused = nil, nil, keystate.Tracker{}
 	s.remoteCursor, s.moved = nil, movement{}
 	s.clipboard.FocusArrives(nil)

@@ -53,7 +53,7 @@ func (s *Sharer) DragStarted(drag Drag) {
 }
 
 func (s *Sharer) DragCancelled() {
-	s.inbox.put(func() { s.drag = nil })
+	s.inbox.put(s.endDrag)
 }
 
 func (s *Sharer) SourceDragEnded(origin string) {
@@ -70,6 +70,10 @@ func (s *Sharer) OnDragCrossing(crossing func(DragCrossing)) {
 
 func (s *Sharer) OnDragEntered(entered func(DragCrossing)) {
 	s.onDragEntered = entered
+}
+
+func (s *Sharer) OnDragEnded(ended func(Drag)) {
+	s.onDragEnded = ended
 }
 
 func (s *Sharer) OnBlockedDrag(blocked func(BlockedDrag)) {
@@ -90,22 +94,33 @@ func (s *Sharer) dragStarted(drag Drag) {
 	s.drag = &dragInProgress{Drag: drag, origin: s.focused, holder: s.focused}
 }
 
+func (s *Sharer) endDrag() {
+	ended := s.drag
+	if ended == nil {
+		return
+	}
+	s.drag = nil
+	if s.onDragEnded != nil {
+		s.onDragEnded(ended.Drag)
+	}
+}
+
 func (s *Sharer) sourceDragEnded(origin string) {
 	if s.drag != nil && !s.drag.crossed && s.drag.Origin == origin {
-		s.drag = nil
+		s.endDrag()
 	}
 }
 
 func (s *Sharer) dragHere() *dragInProgress {
 	if s.drag != nil && s.drag.holder != s.focused {
-		s.drag = nil
+		s.endDrag()
 	}
 	return s.drag
 }
 
 func (s *Sharer) forgetTheDragOf(conn Conn) {
 	if s.drag != nil && (s.drag.origin == conn || s.drag.holder == conn) {
-		s.drag = nil
+		s.endDrag()
 	}
 }
 
@@ -119,7 +134,7 @@ func (s *Sharer) armForTheDrag(watcher *edge.Watcher) {
 
 func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func() error) error {
 	if !dragging || s.dragHere() == nil || s.onDragCrossing == nil {
-		s.drag = nil
+		s.endDrag()
 		return move()
 	}
 	crossing := DragCrossing{Origin: s.drag.Origin, From: from, To: to, Files: s.drag.Files, Button: event.ButtonLeft}
@@ -128,7 +143,7 @@ func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func(
 	err := move()
 	s.originEndsItsDrag = false
 	if err != nil || s.drag == nil || s.focused != onto {
-		s.drag = nil
+		s.endDrag()
 		return err
 	}
 	s.drag.holder, s.drag.crossed = onto, true
@@ -136,7 +151,7 @@ func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func(
 		s.onDragEntered(crossing)
 	}
 	if to == s.drag.Origin {
-		s.drag = nil
+		s.endDrag()
 	}
 	return nil
 }
