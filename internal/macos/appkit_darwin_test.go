@@ -49,7 +49,13 @@ func openTheDropWindowThenQuit() int {
 		fmt.Println("no display")
 		return 1
 	}
-	home := Point{X: math.Round(displays[0].X + displays[0].Width/2), Y: math.Round(displays[0].Y + displays[0].Height/2)}
+	main := displays[0]
+	home := Point{X: math.Round(main.X + main.Width/3), Y: math.Round(main.Y + main.Height/4)}
+	elsewhere := Point{X: math.Round(main.X + main.Width*2/3), Y: math.Round(main.Y + main.Height*3/5)}
+	shielded := Point{X: math.Round(main.X + main.Width/5), Y: math.Round(main.Y + main.Height*4/5)}
+	if code := shieldWithoutTakingTheFocus(shielded); code != 0 {
+		return code
+	}
 	window, err := openDropWindow(0, []PromisedFile{{Name: "report.pdf"}}, home)
 	if err != nil {
 		fmt.Println(err)
@@ -59,13 +65,36 @@ func openTheDropWindowThenQuit() int {
 	for deadline := time.Now().Add(5 * time.Second); state != windowReady && time.Now().Before(deadline); state = window.state() {
 		time.Sleep(20 * time.Millisecond)
 	}
-	taken, _ := window.takeTheMouseAt(home)
-	err = window.close()
-	fmt.Printf("window at %+v: state %d, takes the mouse there %v, close %v\n", home, state, taken, err)
+	taken, tries := false, 0
+	for deadline := time.Now().Add(2 * time.Second); !taken && err == nil && time.Now().Before(deadline); tries++ {
+		if tries > 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+		taken, err = window.takeTheMouseAt(elsewhere)
+	}
+	if err == nil {
+		err = window.close()
+	}
+	fmt.Printf("window opened at %+v: state %d; moved to %+v: takes the mouse there %v after %d tries; close %v\n", home, state, elsewhere, taken, tries, err)
 	if state != windowReady || !taken || err != nil {
 		return 1
 	}
 	return quitThroughTheShutdownOfLanhop()
+}
+
+func shieldWithoutTakingTheFocus(at Point) int {
+	shield, err := shieldUnder(context.Background(), func() Point { return at })
+	if err != nil {
+		fmt.Println("shield:", err)
+		return 1
+	}
+	active := appIsActive()
+	err = shield.Close()
+	fmt.Printf("shield at %+v took the mouse; lanhop active %v; close %v\n", at, active, err)
+	if active || err != nil {
+		return 1
+	}
+	return 0
 }
 
 func quitThroughTheShutdownOfLanhop() int {

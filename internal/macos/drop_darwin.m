@@ -28,6 +28,7 @@ static const NSInteger concurrentWrites = 4;
 static const CGFloat nearlyClear = 0.01;
 static const NSTimeInterval abandonAfterSeconds = 10;
 static const NSTimeInterval quitBackstopSeconds = 15;
+static const int hungShutdownExitCode = 1;
 static const double mainThreadLimitSeconds = 2;
 
 static atomic_bool exitAsked;
@@ -75,7 +76,7 @@ static void performOnMainThread(void (^work)(void)) {
 }
 
 - (void)answerTheQuit {
-	[NSApp replyToApplicationShouldTerminate:YES];
+	lanhopExitNow(hungShutdownExitCode);
 }
 
 @end
@@ -202,19 +203,23 @@ static void giveBackActivation(NSRunningApplication *previous) {
 	[previous activateWithOptions:0];
 }
 
-static BOOL onScreen(CGWindowID own) {
+static int placement(CGWindowID own, CGPoint at) {
 	CFArrayRef listed = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, own);
 	if (listed == NULL) {
-		return NO;
+		return LANHOP_DROP_WINDOW_NOT_SHOWN;
 	}
-	BOOL shown = NO;
+	int state = LANHOP_DROP_WINDOW_NOT_SHOWN;
 	for (NSDictionary *info in (NSArray *)listed) {
-		if ([[info objectForKey:(id)kCGWindowNumber] unsignedIntValue] == own) {
-			shown = [[info objectForKey:(id)kCGWindowIsOnscreen] boolValue];
+		if ([[info objectForKey:(id)kCGWindowNumber] unsignedIntValue] != own || ![[info objectForKey:(id)kCGWindowIsOnscreen] boolValue]) {
+			continue;
 		}
+		CGRect bounds;
+		CFDictionaryRef bounding = (CFDictionaryRef)[info objectForKey:(id)kCGWindowBounds];
+		BOOL around = bounding != NULL && CGRectMakeWithDictionaryRepresentation(bounding, &bounds) && CGRectContainsPoint(bounds, at);
+		state = around ? LANHOP_DROP_WINDOW_READY : LANHOP_DROP_WINDOW_MISSES_THE_CURSOR;
 	}
 	CFRelease(listed);
-	return shown;
+	return state;
 }
 
 static NSPoint onTheScreens(CGPoint at) {
@@ -248,6 +253,7 @@ static NSPoint onTheScreens(CGPoint at) {
 	BOOL flushed;
 	BOOL abandoned;
 	BOOL refusing;
+	BOOL shield;
 }
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin;
 - (void)closeWindow;
@@ -337,7 +343,7 @@ static NSPoint onTheScreens(CGPoint at) {
 }
 
 - (void)beginWithEvent:(NSEvent *)event fromView:(NSView *)origin {
-	if (asked || closed) {
+	if (asked || closed || shield) {
 		return;
 	}
 	asked = YES;
@@ -424,7 +430,7 @@ static NSPoint onTheScreens(CGPoint at) {
 
 @end
 
-static LanhopDropSource *openOnMainThread(uint64_t dropID, NSArray<NSString *> *names, NSArray<NSString *> *givenKinds, CGPoint home, CGFloat side) {
+static LanhopDropSource *openOnMainThread(uint64_t dropID, NSArray<NSString *> *names, NSArray<NSString *> *givenKinds, CGPoint home, CGFloat side, BOOL shield) {
 	NSScreen *primary = [[NSScreen screens] firstObject];
 	if (primary == nil) {
 		return nil;
@@ -438,9 +444,12 @@ static LanhopDropSource *openOnMainThread(uint64_t dropID, NSArray<NSString *> *
 	source->names = [names copy];
 	source->kinds = [kinds copy];
 	source->home = home;
-	source->writes = [[NSOperationQueue alloc] init];
-	[source->writes setMaxConcurrentOperationCount:concurrentWrites];
-	source->frontBefore = [[[NSWorkspace sharedWorkspace] frontmostApplication] retain];
+	source->shield = shield;
+	if (!shield) {
+		source->writes = [[NSOperationQueue alloc] init];
+		[source->writes setMaxConcurrentOperationCount:concurrentWrites];
+		source->frontBefore = [[[NSWorkspace sharedWorkspace] frontmostApplication] retain];
+	}
 
 	NSRect frame = NSMakeRect(home.x - side / 2, NSMaxY([primary frame]) - home.y - side / 2, side, side);
 	NSWindow *window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
@@ -457,10 +466,12 @@ static LanhopDropSource *openOnMainThread(uint64_t dropID, NSArray<NSString *> *
 	source->window = window;
 	source->view = view;
 	[window orderFrontRegardless];
-	if (@available(macOS 14.0, *)) {
-		[NSApp activate];
-	} else {
-		[NSApp activateIgnoringOtherApps:YES];
+	if (!shield) {
+		if (@available(macOS 14.0, *)) {
+			[NSApp activate];
+		} else {
+			[NSApp activateIgnoringOtherApps:YES];
+		}
 	}
 	source->windowNumber = (CGWindowID)[window windowNumber];
 	return source;
@@ -475,9 +486,19 @@ void *lanhopDropOpen(uint64_t dropID, const char *names, int64_t namesLength, co
 			return NULL;
 		}
 		runOnMainThread(^{
-			opened = openOnMainThread(dropID, nameList, kindList, CGPointMake(x, y), side);
+			opened = openOnMainThread(dropID, nameList, kindList, CGPointMake(x, y), side, NO);
 		});
 	}
+	return opened;
+}
+
+void *lanhopShieldOpen(double x, double y, double side) {
+	__block LanhopDropSource *opened = nil;
+	runOnMainThread(^{
+		@autoreleasepool {
+			opened = openOnMainThread(0, @[], @[], CGPointMake(x, y), side, YES);
+		}
+	});
 	return opened;
 }
 
@@ -493,8 +514,12 @@ static int stateOf(LanhopDropSource *source) {
 		[source->window displayIfNeeded];
 		source->flushed = YES;
 	}
-	if (source->windowNumber == 0 || !onScreen(source->windowNumber)) {
+	if (source->windowNumber == 0) {
 		return LANHOP_DROP_WINDOW_NOT_SHOWN;
+	}
+	int placed = placement(source->windowNumber, source->home);
+	if (placed != LANHOP_DROP_WINDOW_READY) {
+		return placed;
 	}
 	NSInteger taking = windowTakingTheMouseAt(source->home);
 	if (taking == [source->window windowNumber]) {
@@ -511,7 +536,9 @@ static int moveUnder(LanhopDropSource *source, CGPoint at) {
 	NSRect frame = [source->window frame];
 	[source->window setFrameOrigin:NSMakePoint(cursor.x - NSWidth(frame) / 2, cursor.y - NSHeight(frame) / 2)];
 	[source->window displayIfNeeded];
-	return windowTakingTheMouseAt(at) == [source->window windowNumber] ? LANHOP_DROP_TAKES_THE_MOUSE : LANHOP_DROP_MISSES_THE_MOUSE;
+	BOOL placed = placement(source->windowNumber, at) == LANHOP_DROP_WINDOW_READY;
+	BOOL taken = windowTakingTheMouseAt(at) == [source->window windowNumber];
+	return placed && taken ? LANHOP_DROP_TAKES_THE_MOUSE : LANHOP_DROP_MISSES_THE_MOUSE;
 }
 
 int lanhopDropWindowState(void *drop) {
@@ -554,5 +581,11 @@ bool lanhopDropClose(void *drop) {
 		lanhopDropSessionOver(source->dropID);
 		[source release];
 		return 1;
+	}) == 1;
+}
+
+bool lanhopAppIsActive(void) {
+	return answerOnMainThread(0, ^int(void) {
+		return [NSApp isActive] ? 1 : 0;
 	}) == 1;
 }
