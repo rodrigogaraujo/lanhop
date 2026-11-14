@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /tmp/logs
+Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp >/tmp/logs/xvfb.log 2>&1 &
+
+socket="/tmp/.X11-unix/X${DISPLAY#:}"
+tries=0
+until [ -S "$socket" ]; do
+  tries=$((tries + 1))
+  if [ "$tries" -gt 100 ]; then
+    echo "machine: Xvfb did not start on $DISPLAY" >&2
+    cat /tmp/logs/xvfb.log >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+exec lanhop "$@"
