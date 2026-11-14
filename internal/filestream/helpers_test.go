@@ -146,6 +146,15 @@ func (f *folderOfArrivals) state() (finished, gaveUp bool) {
 	return f.finished, f.gaveUp
 }
 
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func writeFile(t *testing.T, path, content string) string {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

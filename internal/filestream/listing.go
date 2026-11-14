@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -16,9 +17,8 @@ import (
 )
 
 const (
-	pathBytesLimit   = 4096
-	folderReadBatch  = 256
-	entriesInAFolder = clipboard.FilesAndFoldersLimit + 1
+	pathBytesLimit  = 4096
+	folderReadBatch = 256
 )
 
 var (
@@ -45,13 +45,16 @@ type entry struct {
 }
 
 type lister struct {
-	stop          func() error
-	checkOpening  bool
-	entries       []entry
-	listing       Listing
-	entriesLimit  int
-	bytesLimit    int64
-	folderEntries int
+	stop         func() error
+	entries      []entry
+	listing      Listing
+	entriesLimit int
+	bytesLimit   int64
+}
+
+type counted struct {
+	listing Listing
+	err     error
 }
 
 func Count(paths []string, deadline time.Time) (Listing, error) {
@@ -61,17 +64,30 @@ func Count(paths []string, deadline time.Time) (Listing, error) {
 		}
 		return nil
 	})
-	l.checkOpening = true
-	err := l.list(paths)
-	return l.listing, err
+	done := make(chan counted, 1)
+	go func() {
+		err := l.list(paths)
+		done <- counted{listing: l.listing, err: err}
+	}()
+	if deadline.IsZero() {
+		result := <-done
+		return result.listing, result.err
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.listing, result.err
+	case <-timer.C:
+		return Listing{}, ErrTooSlowToList
+	}
 }
 
 func newLister(stop func() error) *lister {
 	return &lister{
-		stop:          stop,
-		entriesLimit:  clipboard.FilesAndFoldersLimit,
-		bytesLimit:    clipboard.FileCopyLimit,
-		folderEntries: entriesInAFolder,
+		stop:         stop,
+		entriesLimit: clipboard.FilesAndFoldersLimit,
+		bytesLimit:   clipboard.FileCopyLimit,
 	}
 }
 
@@ -81,38 +97,85 @@ func (l *lister) list(paths []string) error {
 	}
 	names := map[string]bool{}
 	for _, path := range paths {
-		if !filepath.IsAbs(path) {
-			return fmt.Errorf("%w: %q", ErrNotAbsolute, path)
+		top, err := resolvedOnTheWay(path)
+		if err != nil {
+			return err
 		}
-		cleaned := filepath.Clean(path)
-		name := filepath.Base(cleaned)
-		if name == string(filepath.Separator) || name == "." || name == ".." {
-			return fmt.Errorf("%w: %q", ErrNoName, path)
-		}
+		name := filepath.Base(top)
 		if names[name] {
 			return fmt.Errorf("%w: %q", ErrSameName, name)
 		}
 		names[name] = true
-		info, err := os.Lstat(cleaned)
-		if err != nil {
-			return fmt.Errorf("filestream: %w", err)
-		}
-		if !info.Mode().IsRegular() && !info.IsDir() {
-			return fmt.Errorf("%w: %s", ErrNotSendable, cleaned)
-		}
-		if err := l.add(cleaned, name, info); err != nil {
+		if err := l.addTop(top, name); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (l *lister) add(path, name string, info fs.FileInfo) error {
+func resolvedOnTheWay(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%w: %q", ErrNotAbsolute, path)
+	}
+	trimmed := strings.TrimRight(path, string(filepath.Separator))
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: %q", ErrNoName, path)
+	}
+	last := trimmed[strings.LastIndexByte(trimmed, filepath.Separator)+1:]
+	var resolved string
+	if last == "." || last == ".." {
+		folder, err := filepath.EvalSymlinks(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("filestream: %w", err)
+		}
+		resolved = folder
+	} else {
+		folder, err := filepath.EvalSymlinks(trimmed[:len(trimmed)-len(last)])
+		if err != nil {
+			return "", fmt.Errorf("filestream: %w", err)
+		}
+		resolved = filepath.Join(folder, last)
+	}
+	if name := filepath.Base(resolved); name == string(filepath.Separator) || name == "." || name == ".." {
+		return "", fmt.Errorf("%w: %q", ErrNoName, path)
+	}
+	return resolved, nil
+}
+
+func (l *lister) addTop(top, name string) error {
+	listed, err := os.Lstat(top)
+	if err != nil {
+		return fmt.Errorf("filestream: %w", err)
+	}
+	if !listed.Mode().IsRegular() && !listed.IsDir() {
+		return fmt.Errorf("%w: %s", ErrNotSendable, top)
+	}
+	file, err := openWithoutFollowing(top)
+	if err != nil {
+		return openingFailed(top, err)
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return fmt.Errorf("filestream: %w", err)
+	}
+	if !os.SameFile(listed, opened) {
+		file.Close()
+		return fmt.Errorf("%w: %s", ErrChanged, top)
+	}
+	return l.add(file, top, name, opened)
+}
+
+func (l *lister) add(file *os.File, path, name string, info fs.FileInfo) error {
+	defer file.Close()
 	if err := l.stop(); err != nil {
 		return err
 	}
 	if err := sendableName(name); err != nil {
 		return fmt.Errorf("%w: %s", err, path)
+	}
+	if !info.Mode().IsRegular() && !info.IsDir() {
+		return fmt.Errorf("%w: %s", ErrChanged, path)
 	}
 	l.listing.Copy.FilesAndFolders++
 	if l.listing.Copy.FilesAndFolders > l.entriesLimit {
@@ -120,83 +183,65 @@ func (l *lister) add(path, name string, info fs.FileInfo) error {
 	}
 	l.entries = append(l.entries, entry{path: path, name: name, folder: info.IsDir(), info: info})
 	if !info.IsDir() {
-		l.listing.Copy.Bytes += info.Size()
-		if l.listing.Copy.Bytes > l.bytesLimit {
+		if info.Size() > l.bytesLimit-l.listing.Copy.Bytes {
 			return fmt.Errorf("%w: more than %d bytes", clipboard.ErrFilesTooLarge, l.bytesLimit)
 		}
-		if l.checkOpening {
-			return checkOpening(entry{path: path, name: name, info: info})
-		}
+		l.listing.Copy.Bytes += info.Size()
 		return nil
 	}
-	children, err := l.readFolder(path, info)
+	children, err := l.readFolder(file, path)
 	if err != nil {
 		return err
 	}
 	for _, child := range children {
-		childInfo, err := child.Info()
+		childPath := filepath.Join(path, child)
+		childFile, err := openInside(file, path, child)
 		if err != nil {
+			return openingFailed(childPath, err)
+		}
+		childInfo, err := childFile.Stat()
+		if err != nil {
+			childFile.Close()
 			return fmt.Errorf("filestream: %w", err)
 		}
-		if !childInfo.Mode().IsRegular() && !childInfo.IsDir() {
-			l.listing.Skipped++
-			continue
-		}
-		if err := l.add(filepath.Join(path, child.Name()), name+"/"+child.Name(), childInfo); err != nil {
+		if err := l.add(childFile, childPath, name+"/"+child, childInfo); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (l *lister) readFolder(path string, listed fs.FileInfo) ([]fs.DirEntry, error) {
-	folder, err := openWithoutFollowing(path)
-	if err != nil {
-		return nil, openingFailed(path, err)
-	}
-	defer folder.Close()
-	opened, err := folder.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("filestream: %w", err)
-	}
-	if !opened.IsDir() || !os.SameFile(listed, opened) {
-		return nil, fmt.Errorf("%w: %s", ErrChanged, path)
-	}
-	var children []fs.DirEntry
+func (l *lister) readFolder(folder *os.File, path string) ([]string, error) {
+	room := l.entriesLimit - l.listing.Copy.FilesAndFolders
+	var children []string
 	for {
 		if err := l.stop(); err != nil {
 			return nil, err
 		}
 		batch, err := folder.ReadDir(folderReadBatch)
-		children = append(children, batch...)
-		if len(children) > l.folderEntries {
-			return nil, fmt.Errorf("%w: more than %d in %s", clipboard.ErrTooManyFiles, l.entriesLimit, path)
+		for _, child := range batch {
+			if kind := child.Type(); kind.IsRegular() || kind.IsDir() {
+				children = append(children, child.Name())
+			} else {
+				l.listing.Skipped++
+			}
 		}
-		if errors.Is(err, io.EOF) {
+		if len(children) > room {
+			return nil, fmt.Errorf("%w: more than %d", clipboard.ErrTooManyFiles, l.entriesLimit)
+		}
+		if errors.Is(err, io.EOF) || (err == nil && len(batch) == 0) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("filestream: %w", err)
-		}
-		if len(batch) == 0 {
-			break
+			return nil, fmt.Errorf("filestream: reading %s: %w", path, err)
 		}
 	}
-	slices.SortFunc(children, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	slices.Sort(children)
 	return children, nil
 }
 
-func checkOpening(e entry) error {
-	file, err := openWithoutFollowing(e.path)
-	if err != nil {
-		return openingFailed(e.path, err)
-	}
-	defer file.Close()
-	return stillAsListed(file, e)
-}
-
 func openingFailed(path string, err error) error {
-	if errors.Is(err, fs.ErrNotExist) || openedALink(err) {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || openedALink(err) {
 		return fmt.Errorf("%w: %s", ErrChanged, path)
 	}
 	return fmt.Errorf("filestream: %w", err)

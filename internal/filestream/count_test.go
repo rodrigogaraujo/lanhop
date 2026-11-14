@@ -13,7 +13,7 @@ import (
 )
 
 func TestCountGivesTheFilesAndFoldersOfATreeAndTheirBytes(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "report", "summary.txt"), "12345")
 	writeFile(t, filepath.Join(root, "report", "charts", "march.svg"), "1234567890")
 	if err := os.Mkdir(filepath.Join(root, "report", "empty"), 0o700); err != nil {
@@ -33,7 +33,7 @@ func TestCountGivesTheFilesAndFoldersOfATreeAndTheirBytes(t *testing.T) {
 }
 
 func TestCountSkipsLinksInsideFoldersAndNeverFollowsThem(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	secret := writeFile(t, filepath.Join(root, "secret", "id_ed25519"), "private key")
 	writeFile(t, filepath.Join(root, "project", "main.go"), "package main")
 	if err := os.Symlink(filepath.Dir(secret), filepath.Join(root, "project", "keys")); err != nil {
@@ -55,7 +55,7 @@ func TestCountSkipsLinksInsideFoldersAndNeverFollowsThem(t *testing.T) {
 }
 
 func TestACopyOfALinkIsNotSendable(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	target := writeFile(t, filepath.Join(root, "notes.txt"), "notes")
 	link := filepath.Join(root, "link-to-notes")
 	if err := os.Symlink(target, link); err != nil {
@@ -70,7 +70,7 @@ func TestACopyOfALinkIsNotSendable(t *testing.T) {
 }
 
 func TestCountRefusesPathsItCannotNameOnTheOtherMachine(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	first := writeFile(t, filepath.Join(root, "a", "notes.txt"), "a")
 	second := writeFile(t, filepath.Join(root, "b", "notes.txt"), "b")
 	for _, c := range []struct {
@@ -91,7 +91,7 @@ func TestCountRefusesPathsItCannotNameOnTheOtherMachine(t *testing.T) {
 }
 
 func TestCountTakesTheNameOfAPathAfterCleaningIt(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "report", "summary.txt"), "12345")
 
 	listing, err := Count([]string{filepath.Join(root, "report") + "/./"}, time.Time{})
@@ -102,7 +102,7 @@ func TestCountTakesTheNameOfAPathAfterCleaningIt(t *testing.T) {
 }
 
 func TestCountStopsWhenTheTimeOfAnAnswerIsOver(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "report", "summary.txt"), "12345")
 
 	_, err := Count([]string{filepath.Join(root, "report")}, time.Now().Add(-time.Millisecond))
@@ -113,7 +113,7 @@ func TestCountStopsWhenTheTimeOfAnAnswerIsOver(t *testing.T) {
 }
 
 func TestCountRefusesMoreThan10000FilesAndFolders(t *testing.T) {
-	folder := filepath.Join(t.TempDir(), "many")
+	folder := filepath.Join(realTempDir(t), "many")
 	if err := os.Mkdir(folder, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestCountRefusesMoreThan10000FilesAndFolders(t *testing.T) {
 }
 
 func TestCountRefusesMoreThan4GiBWithoutReadingAByte(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	var paths []string
 	for _, name := range []string{"first.img", "second.img"} {
 		path := filepath.Join(root, name)
@@ -157,7 +157,7 @@ func TestCountNamesAFileItCannotOpen(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root opens a file without permission")
 	}
-	root := t.TempDir()
+	root := realTempDir(t)
 	locked := writeFile(t, filepath.Join(root, "report", "locked.txt"), "x")
 	if err := os.Chmod(locked, 0); err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestCountNamesAFileItCannotOpen(t *testing.T) {
 }
 
 func TestCountRefusesANameThatIsNotUTF8(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	folder := filepath.Join(root, "report")
 	if err := os.Mkdir(folder, 0o700); err != nil {
 		t.Fatal(err)
@@ -184,5 +184,42 @@ func TestCountRefusesANameThatIsNotUTF8(t *testing.T) {
 
 	if !errors.Is(err, ErrNameNotUTF8) {
 		t.Errorf("Count of a name in Latin-1 = %v, want ErrNameNotUTF8", err)
+	}
+}
+
+func TestCountResolvesTwoDotsThroughALinkAsTheSystemDoes(t *testing.T) {
+	root := realTempDir(t)
+	writeFile(t, filepath.Join(root, "data", "notes"), "notes behind the link")
+	writeFile(t, filepath.Join(root, "notes"), "other notes")
+	if err := os.Mkdir(filepath.Join(root, "data", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "data", "x"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := Count([]string{filepath.Join(root, "link") + "/../notes"}, time.Time{})
+
+	if err != nil || listing.Copy.Bytes != int64(len("notes behind the link")) {
+		t.Errorf("Count of link/../notes = %+v, %v, want the notes next to the target of the link", listing, err)
+	}
+}
+
+func TestLinksInsideAFolderDoNotCountTowardTheLimitOfEntries(t *testing.T) {
+	root := realTempDir(t)
+	folder := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(folder, "main.go"), "package main")
+	for i := range 5 {
+		if err := os.Symlink(filepath.Join(folder, "main.go"), filepath.Join(folder, fmt.Sprintf("link%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l := newLister(func() error { return nil })
+	l.entriesLimit = 2
+
+	err := l.list([]string{folder})
+
+	if err != nil || l.listing.Skipped != 5 || l.listing.Copy.FilesAndFolders != 2 {
+		t.Errorf("listing a folder with a file and 5 links under a limit of 2 = %+v, %v, want 2 entries and 5 skipped", l.listing, err)
 	}
 }

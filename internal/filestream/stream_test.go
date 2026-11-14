@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,7 +36,7 @@ func randomContent(t *testing.T, size int) string {
 }
 
 func TestATreeOfFilesArrivesWholeOverTLS(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	large := randomContent(t, 300<<10)
 	writeFile(t, filepath.Join(root, "report", "summary.txt"), "the summary")
 	writeFile(t, filepath.Join(root, "report", "charts", "march.bin"), large)
@@ -86,7 +87,7 @@ func TestATreeOfFilesArrivesWholeOverTLS(t *testing.T) {
 }
 
 func TestLinksInsideAFolderStayBehindAndAreCounted(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	secret := writeFile(t, filepath.Join(root, "secret", "id_ed25519"), "private key")
 	writeFile(t, filepath.Join(root, "project", "main.go"), "package main")
 	if err := os.Symlink(filepath.Dir(secret), filepath.Join(root, "project", "keys")); err != nil {
@@ -96,7 +97,9 @@ func TestLinksInsideAFolderStayBehindAndAreCounted(t *testing.T) {
 	arrivals := newFolderOfArrivals(t)
 
 	done := receiveInBackground(receiving, arrivals)
-	listing, err := Send(context.Background(), sending, []string{filepath.Join(root, "project")})
+	ctx, cancel := context.WithTimeout(context.Background(), patience)
+	defer cancel()
+	listing, err := Send(ctx, sending, []string{filepath.Join(root, "project")})
 
 	if err != nil || listing.Skipped != 1 {
 		t.Fatalf("Send = %+v, %v, want 1 skipped", listing, err)
@@ -122,7 +125,7 @@ func (c *changingOnFirstWrite) Write(data []byte) (int, error) {
 }
 
 func TestAFileThatChangesWhileItIsSentStopsTheTransferAndNothingStays(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	growing := writeFile(t, filepath.Join(root, "report", "log.txt"), randomContent(t, 200<<10))
 	writeFile(t, filepath.Join(root, "report", "notes.txt"), "notes")
 	sending, receiving := dataConnections(t)
@@ -138,7 +141,9 @@ func TestAFileThatChangesWhileItIsSentStopsTheTransferAndNothingStays(t *testing
 	}}
 
 	done := receiveInBackground(receiving, arrivals)
-	_, err := Send(context.Background(), conn, []string{filepath.Join(root, "report")})
+	ctx, cancel := context.WithTimeout(context.Background(), patience)
+	defer cancel()
+	_, err := Send(ctx, conn, []string{filepath.Join(root, "report")})
 	sending.Close()
 
 	if !errors.Is(err, ErrChanged) {
@@ -156,46 +161,109 @@ func TestAFileThatChangesWhileItIsSentStopsTheTransferAndNothingStays(t *testing
 }
 
 func TestAFileListedThenChangedIsNotSent(t *testing.T) {
-	root := t.TempDir()
-	path := writeFile(t, filepath.Join(root, "notes.txt"), "notes")
-	other := writeFile(t, filepath.Join(root, "other.txt"), "other")
-	cases := map[string]func(t *testing.T){
-		"grown": func(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(t *testing.T, path, other string)
+	}{
+		{"grown", func(t *testing.T, path, _ string) {
 			writeFile(t, path, "notes and more")
-		},
-		"replaced by a file of the same size and time": func(t *testing.T) {
+		}},
+		{"rewritten at the same size", func(t *testing.T, path, _ string) {
+			listed, _ := os.Stat(path)
+			writeFile(t, path, "NOTES")
+			later := listed.ModTime().Add(time.Second)
+			os.Chtimes(path, later, later)
+		}},
+		{"replaced by a file of the same size and time", func(t *testing.T, path, _ string) {
 			listed, _ := os.Stat(path)
 			replacement := writeFile(t, path+".new", "NOTES")
 			os.Chtimes(replacement, listed.ModTime(), listed.ModTime())
 			if err := os.Rename(replacement, path); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"replaced by a link": func(t *testing.T) {
+		}},
+		{"replaced by a link", func(t *testing.T, path, other string) {
 			os.Remove(path)
 			if err := os.Symlink(other, path); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"removed": func(t *testing.T) {
+		}},
+		{"removed", func(t *testing.T, path, _ string) {
 			os.Remove(path)
-		},
+		}},
 	}
-	for name, change := range cases {
-		t.Run(name, func(t *testing.T) {
-			writeFile(t, path, "notes")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := realTempDir(t)
+			path := writeFile(t, filepath.Join(root, "notes.txt"), "notes")
+			other := writeFile(t, filepath.Join(root, "other.txt"), "other")
 			listed, err := os.Lstat(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			change(t)
+			if _, err := sendFile(&bytes.Buffer{}, entry{path: path, name: "notes.txt", info: listed}, make([]byte, streamBuffer)); err != nil {
+				t.Fatalf("sending the file before it changed: %v", err)
+			}
+			c.change(t, path, other)
 
 			_, err = sendFile(&bytes.Buffer{}, entry{path: path, name: "notes.txt", info: listed}, make([]byte, streamBuffer))
 
 			if !errors.Is(err, ErrChanged) {
-				t.Errorf("sending a file listed and then %s = %v, want ErrChanged", name, err)
+				t.Errorf("sending a file listed and then %s = %v, want ErrChanged", c.name, err)
 			}
 		})
+	}
+}
+
+func TestAFileIsOpenedInsideTheFolderAlreadyOpenWhenItsPathNowGoesThroughALink(t *testing.T) {
+	root := realTempDir(t)
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(project, "key"), "project key")
+	secret := filepath.Join(root, "secret")
+	writeFile(t, filepath.Join(secret, "key"), "secret key")
+	folder, err := openWithoutFollowing(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer folder.Close()
+	if err := os.Rename(project, filepath.Join(root, "moved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, project); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := openInside(folder, project, "key")
+
+	if err != nil {
+		if !openedALink(err) {
+			t.Errorf("opening a file of a folder now replaced by a link = %v, want a refused link or the file of the folder already open", err)
+		}
+		return
+	}
+	defer file.Close()
+	content, _ := io.ReadAll(file)
+	if string(content) != "project key" {
+		t.Errorf("opening a file of a folder now replaced by a link read %q, want the file of the folder already open", content)
+	}
+}
+
+func TestReceiveRemovesTheCopyWhenItCannotSayThatEveryFileArrived(t *testing.T) {
+	stream := new(streamBuilder).header(1, 3).file("a.txt", "abc").end()
+	arrivals := newFolderOfArrivals(t)
+	source := &streamInMemory{Reader: bytes.NewReader(stream.Bytes()), tellFails: errors.New("connection reset")}
+
+	err := Receive(context.Background(), source, arrivals)
+
+	if err == nil {
+		t.Fatal("Receive succeeded though the other machine never heard that every file arrived")
+	}
+	finished, gaveUp := arrivals.state()
+	if !finished || !gaveUp {
+		t.Errorf("the arrival folder finished %t and gave up %t, want both, so that both machines agree the copy did not arrive", finished, gaveUp)
+	}
+	if got := treeOf(t, arrivals.root); len(got) != 0 {
+		t.Errorf("the arrival folder holds %s, want nothing", describe(got))
 	}
 }
 
@@ -228,7 +296,7 @@ func TestAConnectionLostInTheMiddleOfAFileLeavesNothingBehind(t *testing.T) {
 }
 
 func TestSendFailsWhenTheOtherMachineHangsUpBeforeEveryFileArrived(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "notes.txt"), "notes")
 	sending, receiving := dataConnections(t)
 	go func() {

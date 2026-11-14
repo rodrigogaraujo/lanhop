@@ -13,12 +13,16 @@ import (
 
 type streamInMemory struct {
 	*bytes.Reader
-	told bool
+	told      bool
+	tellFails error
 }
 
-func (s *streamInMemory) SetReadDeadline(time.Time) error { return nil }
+func (s *streamInMemory) SetDeadline(time.Time) error { return nil }
 
 func (s *streamInMemory) TellAllArrived() error {
+	if s.tellFails != nil {
+		return s.tellFails
+	}
 	s.told = true
 	return nil
 }

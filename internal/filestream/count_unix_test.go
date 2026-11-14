@@ -11,7 +11,7 @@ import (
 )
 
 func TestCountSkipsAPipeInsideAFolderAndRefusesACopyOfOne(t *testing.T) {
-	root := t.TempDir()
+	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "project", "main.go"), "package main")
 	pipe := filepath.Join(root, "project", "pipe")
 	if err := syscall.Mkfifo(pipe, 0o600); err != nil {

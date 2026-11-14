@@ -16,7 +16,7 @@ var ErrDigest = errors.New("filestream: a file arrived with another SHA-256 than
 
 type Source interface {
 	io.Reader
-	SetReadDeadline(deadline time.Time) error
+	SetDeadline(deadline time.Time) error
 	TellAllArrived() error
 }
 
@@ -34,7 +34,7 @@ type IncomingFile interface {
 }
 
 func Receive(ctx context.Context, conn Source, into Arrivals) (err error) {
-	stopReading := context.AfterFunc(ctx, func() { conn.SetReadDeadline(time.Now()) })
+	stopReading := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
 	defer stopReading()
 	defer func() {
 		if err != nil {

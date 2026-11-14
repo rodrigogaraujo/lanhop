@@ -8,9 +8,7 @@ import (
 	"syscall"
 )
 
-func openWithoutFollowing(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-}
+const readingWithoutFollowing = os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
 
 func openedALink(err error) bool {
 	return errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.EMLINK)
