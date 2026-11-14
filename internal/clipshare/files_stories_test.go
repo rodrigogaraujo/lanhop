@@ -256,7 +256,7 @@ func TestNamesThatWouldLeaveTheArrivalFolderAreRefusedEndToEnd(t *testing.T) {
 	d := newFileDesk(t, "rogue")
 	around := filepath.Dir(d.arrivalDir)
 	names := []string{"../escaped.txt", filepath.Join(around, "absolute.txt"), "inside/../../escaped.txt"}
-	d.rogueSendsFilesNamed("rogue", names...)
+	d.rogueJoins("rogue", &rogueSide{sends: sendsUnderNames(names...)})
 	d.waitUntilTheCentralSeesTakingPart("rogue")
 
 	for _, name := range names {
@@ -363,4 +363,27 @@ func TestFilesThatArriveAfterThePersonCopiedSomethingElseAreNotPutOnTheClipboard
 	expectNothingLeftIn(t, "right", right.arrivalDir)
 	d.focusOn(thisMachine)
 	waitUntilItHolds(t, "the central", d.clipboard, "copied on the right while the files travelled")
+}
+
+func TestASideMachineWhoseFilesAreSwitchedOffWhileFocusIsElsewhereSendsNothingMore(t *testing.T) {
+	d := newFileDesk(t, "left", "right")
+	left, right := d.sideJoins("left"), d.sideJoins("right")
+	d.waitUntilSharingFiles(left, right)
+	d.focusOn(left.number)
+	secret := writeFile(t, filepath.Join(t.TempDir(), "secret.txt"), []byte("only for the right"))
+	left.clipboard.personCopiesFiles(secret)
+	d.focusOn(right.number)
+	waitUntilFilesWritten(t, "right", right.clipboard, 1)
+
+	left.filesOn.Store(false)
+	d.focusOn(thisMachine)
+
+	why := "asked for the file copy of this machine, and it is not sent, because file sharing is off on this machine"
+	eventually(t, "the left saying why or the central getting the files", func() bool {
+		return strings.Contains(left.log.String(), why) || len(d.clipboard.filesWritten()) > 0
+	})
+	time.Sleep(settling)
+	expectNoFilesWritten(t, "the central, after files were switched off on the left", d.clipboard)
+	left.log.waitFor(t, why)
+	expectNothingLeftIn(t, "the central", d.arrivalDir)
 }

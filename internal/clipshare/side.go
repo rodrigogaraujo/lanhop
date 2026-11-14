@@ -167,11 +167,15 @@ func (s *Side) openData(l *link, wire int, sideSends bool) {
 	if l != s.current {
 		return
 	}
-	if sideSends {
-		s.do(s.machine.CentralWantsFiles(wire))
+	s.followTheSwitch()
+	if !sideSends {
+		s.do(s.machine.CentralSendsFiles(wire))
 		return
 	}
-	s.do(s.machine.CentralSendsFiles(wire))
+	if !s.on.Has(clipboard.Files) {
+		fmt.Fprintln(s.config.Log, "The machine with the keyboard asked for the file copy of this machine, and it is not sent, because file sharing is off on this machine.")
+	}
+	s.do(s.machine.CentralWantsFiles(wire))
 }
 
 func (s *Side) clipboardReachable(reachable bool) {
@@ -205,14 +209,14 @@ func (s *Side) readDone(l *link, result readResult) {
 	if !result.holdsFiles {
 		actions, err := s.machine.ReadGave(result.text, result.err)
 		if err != nil {
-			fmt.Fprintf(s.config.Log, "The copy on this machine is not shared: %v\n", err)
+			fmt.Fprintf(s.config.Log, "The copy on this machine is not shared: %s\n", forTheLog(err))
 		}
 		s.do(actions)
 		return
 	}
 	actions, err := s.machine.ReadGaveFiles(result.files, result.err)
 	if err != nil {
-		fmt.Fprintf(s.config.Log, "The file copy on this machine is not sent: %v\n", err)
+		fmt.Fprintf(s.config.Log, "The file copy on this machine is not sent: %s\n", forTheLog(err))
 	} else {
 		s.described = result.paths
 		noteLeftOut(s.config.Log, result.skipped)

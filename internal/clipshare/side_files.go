@@ -13,6 +13,7 @@ import (
 
 type sideTransfer struct {
 	wire      int
+	link      *link
 	receiving bool
 	paths     []string
 	arrival   *arrival.Arrival
@@ -26,7 +27,7 @@ type sideTransfer struct {
 }
 
 func (s *Side) startTransfer(wire int, receiving bool) {
-	t := &sideTransfer{wire: wire, receiving: receiving}
+	t := &sideTransfer{wire: wire, link: s.current, receiving: receiving}
 	if !receiving {
 		t.paths = s.described
 	}
@@ -37,6 +38,9 @@ func (s *Side) startTransfer(wire int, receiving bool) {
 	go func() {
 		defer s.moving.Done()
 		err := s.carry(t)
+		if err != nil && context.Cause(t.ctx) == nil && t.link != nil {
+			t.link.sendFrame(event.DataStop(int32(t.wire)))
+		}
 		t.close(nil)
 		s.inbox.put(func() { s.transferDone(t, err) })
 	}()
@@ -69,8 +73,7 @@ func (s *Side) transferDone(t *sideTransfer, err error) {
 	if err != nil || !t.receiving {
 		delete(s.transfers, t.wire)
 		if err != nil {
-			fmt.Fprintf(s.config.Log, "%s stopped: %v\n", t.describe(), err)
-			s.send(event.DataStop(int32(t.wire)))
+			fmt.Fprintf(s.config.Log, "%s stopped: %s\n", t.describe(), forTheLog(whyItStopped(err)))
 		}
 		s.machine.TransferEnded(t.wire)
 		return
@@ -129,7 +132,7 @@ func (t *sideTransfer) close(cause error) {
 	defer t.mutex.Unlock()
 	t.closed = true
 	if t.conn != nil {
-		t.conn.Close()
+		closeInTheBackground(t.conn)
 	}
 }
 
@@ -137,6 +140,13 @@ func (t *sideTransfer) leaveNothing() {
 	if t.arrival != nil {
 		t.arrival.GiveUp()
 	}
+}
+
+func whyItStopped(err error) error {
+	if endedByTheOtherEnd(err) {
+		return errEndedByTheCentral
+	}
+	return err
 }
 
 func (t *sideTransfer) describe() string {

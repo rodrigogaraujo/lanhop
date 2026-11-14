@@ -309,23 +309,24 @@ type sideUnderTest struct {
 }
 
 type deskUnderTest struct {
-	t          *testing.T
-	identity   *identity.Identity
-	peers      []trust.Peer
-	sides      map[string]*sideUnderTest
-	clipboard  *fakeClipboard
-	switchedOn atomic.Bool
-	filesOn    atomic.Bool
-	files      bool
-	arrivals   *arrival.Folder
-	arrivalDir string
-	pace       *transport.Pace
-	log        *logBook
-	capture    *fakeCapture
-	runtime    *Central
-	address    string
-	mutex      sync.Mutex
-	connected  []string
+	t           *testing.T
+	identity    *identity.Identity
+	peers       []trust.Peer
+	sides       map[string]*sideUnderTest
+	clipboard   *fakeClipboard
+	switchedOn  atomic.Bool
+	filesOn     atomic.Bool
+	files       bool
+	dataSilence time.Duration
+	arrivals    *arrival.Folder
+	arrivalDir  string
+	pace        *transport.Pace
+	log         *logBook
+	capture     *fakeCapture
+	runtime     *Central
+	address     string
+	mutex       sync.Mutex
+	connected   []string
 }
 
 type deskSetup struct {
@@ -333,6 +334,7 @@ type deskSetup struct {
 	open           func() (Clipboard, error)
 	files          bool
 	bytesPerSecond int
+	dataSilence    time.Duration
 }
 
 func newDesk(t *testing.T, sideNames ...string) *deskUnderTest {
@@ -349,13 +351,14 @@ func newDeskWithAClipboard(t *testing.T, board *fakeClipboard, open func() (Clip
 func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderTest {
 	t.Helper()
 	d := &deskUnderTest{
-		t:         t,
-		identity:  newIdentity(t),
-		sides:     make(map[string]*sideUnderTest),
-		clipboard: setup.board,
-		files:     setup.files,
-		log:       &logBook{},
-		capture:   &fakeCapture{events: make(chan event.Event)},
+		t:           t,
+		identity:    newIdentity(t),
+		sides:       make(map[string]*sideUnderTest),
+		clipboard:   setup.board,
+		files:       setup.files,
+		dataSilence: setup.dataSilence,
+		log:         &logBook{},
+		capture:     &fakeCapture{events: make(chan event.Event)},
 	}
 	d.switchedOn.Store(true)
 	if setup.files {
@@ -398,7 +401,7 @@ func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderT
 		Watch: edge.DefaultSettings(),
 	})
 	machine.OnReceivers(d.noteConnected)
-	config := Config{Open: setup.open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: d.log}
+	config := Config{Open: setup.open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, DataSilenceLimit: setup.dataSilence, Log: d.log}
 	if setup.files {
 		config.FilesOn = d.filesOn.Load
 		config.Arrivals = d.arrivals
@@ -474,7 +477,7 @@ func (d *deskUnderTest) clipboardOpener(board *fakeClipboard) func() (Clipboard,
 
 func (d *deskUnderTest) startSide(side *sideUnderTest, address string, open func() (Clipboard, error)) {
 	d.t.Helper()
-	config := Config{Open: open, SwitchedOn: side.switchedOn.Load, SilenceLimit: testSilenceLimit, Log: side.log}
+	config := Config{Open: open, SwitchedOn: side.switchedOn.Load, SilenceLimit: testSilenceLimit, DataSilenceLimit: d.dataSilence, Log: side.log}
 	if d.files {
 		config.FilesOn = side.filesOn.Load
 		config.Arrivals = side.arrivals

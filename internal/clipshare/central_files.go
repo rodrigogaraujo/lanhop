@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/rodrigogaraujo/lanhop/internal/arrival"
@@ -31,7 +32,7 @@ type centralTransfer struct {
 	ended    bool
 	stopSaid bool
 	halves   []dataHalf
-	conns    []*transport.DataConn
+	conns    []io.Closer
 }
 
 func (c *Central) start(t *centralTransfer) {
@@ -44,6 +45,9 @@ func (c *Central) start(t *centralTransfer) {
 	go func() {
 		defer c.moving.Done()
 		err := c.carry(t)
+		if err != nil {
+			t.sayStop()
+		}
 		t.close(nil)
 		c.tell(func() { c.transferDone(t, err) })
 	}()
@@ -104,7 +108,7 @@ func (c *Central) transferDone(t *centralTransfer, err error) {
 	if err != nil {
 		delete(c.transfers, t.id)
 		t.sayStop()
-		fmt.Fprintf(c.config.Log, "%s stopped: %v\n", t.describe(), t.because(err))
+		fmt.Fprintf(c.config.Log, "%s stopped: %s\n", t.describe(), forTheLog(t.because(err)))
 		c.desk.TransferEnded(t.id)
 		return
 	}
@@ -212,9 +216,7 @@ func (t *centralTransfer) close(cause error) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	t.ended = true
-	for _, conn := range t.conns {
-		conn.Close()
-	}
+	closeInTheBackground(t.conns...)
 }
 
 func (t *centralTransfer) leaveNothing() {

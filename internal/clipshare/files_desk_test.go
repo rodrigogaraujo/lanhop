@@ -361,24 +361,20 @@ func (p *cuttableProxy) cut() {
 }
 
 type rogueSide struct {
-	conn    *transport.Conn
-	dialing transport.Config
-	central trust.Peer
-	mutex   sync.Mutex
-	names   []string
+	conn     *transport.Conn
+	dialing  transport.Config
+	central  trust.Peer
+	sends    func(ctx context.Context, conn *transport.DataConn)
+	receives func(ctx context.Context, conn *transport.DataConn)
 }
 
-func (d *deskUnderTest) rogueSendsFilesNamed(name string, names ...string) *rogueSide {
+func (d *deskUnderTest) rogueJoins(name string, rogue *rogueSide) *rogueSide {
 	d.t.Helper()
 	side := d.sides[name]
-	dialing := transportFor(side.identity)
-	dialing.DataPace = transport.NewPace(0)
-	rogue := &rogueSide{
-		conn:    d.dialAs(name),
-		dialing: dialing,
-		central: trust.Peer{Name: "desk", Fingerprint: d.identity.Fingerprint, Address: d.address},
-		names:   names,
-	}
+	rogue.dialing = transportFor(side.identity)
+	rogue.dialing.DataPace = transport.NewPace(0)
+	rogue.central = trust.Peer{Name: "desk", Fingerprint: d.identity.Fingerprint, Address: d.address}
+	rogue.conn = d.dialAs(name)
 	if err := rogue.conn.Send(event.Features(textAndFiles)); err != nil {
 		d.t.Fatalf("Send: %v", err)
 	}
@@ -399,25 +395,19 @@ func (r *rogueSide) answer() {
 				return
 			}
 		case frame.IsControl() && frame.Code == event.ControlOpenData:
-			if wire, sideSends := event.SplitOpenData(frame.Value); sideSends {
-				go r.sendUnder(wire, r.nextName())
+			wire, sideSends := event.SplitOpenData(frame.Value)
+			behaviour := r.receives
+			if sideSends {
+				behaviour = r.sends
+			}
+			if behaviour != nil {
+				go r.onData(wire, behaviour)
 			}
 		}
 	}
 }
 
-func (r *rogueSide) nextName() string {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	if len(r.names) == 0 {
-		return "nothing more"
-	}
-	name := r.names[0]
-	r.names = r.names[1:]
-	return name
-}
-
-func (r *rogueSide) sendUnder(wire int32, name string) {
+func (r *rogueSide) onData(wire int32, behaviour func(ctx context.Context, conn *transport.DataConn)) {
 	ctx, cancel := context.WithTimeout(context.Background(), testPatience)
 	defer cancel()
 	conn, err := transport.DialData(ctx, r.dialing, r.central, wire)
@@ -425,21 +415,71 @@ func (r *rogueSide) sendUnder(wire int32, name string) {
 		return
 	}
 	defer conn.Close()
-	content := []byte("escaped")
-	digest := sha256.Sum256(content)
+	behaviour(ctx, conn)
+}
+
+func streamStart(name string, size int) []byte {
 	var stream bytes.Buffer
 	stream.WriteByte(1)
 	stream.Write(binary.BigEndian.AppendUint32(nil, 1))
-	stream.Write(binary.BigEndian.AppendUint64(nil, uint64(len(content))))
+	stream.Write(binary.BigEndian.AppendUint64(nil, uint64(size)))
 	stream.WriteByte(1)
 	stream.Write(binary.BigEndian.AppendUint16(nil, uint16(len(name))))
 	stream.WriteString(name)
-	stream.Write(binary.BigEndian.AppendUint64(nil, uint64(len(content))))
-	stream.Write(content)
-	stream.Write(digest[:])
-	stream.WriteByte(0)
-	if _, err := conn.Write(stream.Bytes()); err != nil {
-		return
+	stream.Write(binary.BigEndian.AppendUint64(nil, uint64(size)))
+	return stream.Bytes()
+}
+
+func oneFileStream(name string, content []byte) []byte {
+	digest := sha256.Sum256(content)
+	return slices.Concat(streamStart(name, len(content)), content, digest[:], []byte{0})
+}
+
+func sendsUnderNames(names ...string) func(ctx context.Context, conn *transport.DataConn) {
+	var mutex sync.Mutex
+	return func(ctx context.Context, conn *transport.DataConn) {
+		mutex.Lock()
+		name := "nothing more"
+		if len(names) > 0 {
+			name, names = names[0], names[1:]
+		}
+		mutex.Unlock()
+		if _, err := conn.Write(oneFileStream(name, []byte("escaped"))); err != nil {
+			return
+		}
+		conn.AwaitAllArrived(ctx)
 	}
-	conn.AwaitAllArrived(ctx)
+}
+
+func sendsAndClosesRightAfterItsLastByte(content string) func(ctx context.Context, conn *transport.DataConn) {
+	return func(ctx context.Context, conn *transport.DataConn) {
+		conn.Write(oneFileStream("rogue.txt", []byte(content)))
+	}
+}
+
+func trickles(claimed int, every time.Duration) func(ctx context.Context, conn *transport.DataConn) {
+	return func(ctx context.Context, conn *transport.DataConn) {
+		if _, err := conn.Write(streamStart("slow.bin", claimed)); err != nil {
+			return
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(every):
+			}
+			if _, err := conn.Write([]byte{0}); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func receivesAndNeverSaysEveryFileArrived(ctx context.Context, conn *transport.DataConn) {
+	buffer := make([]byte, 64<<10)
+	for {
+		if _, err := conn.Read(buffer); err != nil {
+			return
+		}
+	}
 }

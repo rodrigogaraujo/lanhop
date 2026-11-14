@@ -356,7 +356,7 @@ func (c *Central) fileCopyFrom(l *link, files clipboard.FileCopy) {
 	}
 	actions, err := c.desk.FileCopyFrom(l, files)
 	if err != nil {
-		fmt.Fprintf(c.config.Log, "A file copy from %s is not taken: %v\n", l.name, err)
+		fmt.Fprintf(c.config.Log, "A file copy from %s is not taken: %s\n", l.name, forTheLog(err))
 	}
 	c.do(actions)
 }
@@ -410,14 +410,14 @@ func (c *Central) readDone(result readResult) {
 	if !result.holdsFiles {
 		actions, err := c.desk.ReadGave(result.text, result.err)
 		if err != nil {
-			fmt.Fprintf(c.config.Log, "The copy on this machine is not shared: %v\n", err)
+			fmt.Fprintf(c.config.Log, "The copy on this machine is not shared: %s\n", forTheLog(err))
 		}
 		c.do(actions)
 		return
 	}
 	actions, err := c.desk.ReadGaveFiles(result.files, result.err)
 	if err != nil {
-		fmt.Fprintf(c.config.Log, "The file copy on this machine is not sent: %v\n", err)
+		fmt.Fprintf(c.config.Log, "The file copy on this machine is not sent: %s\n", forTheLog(err))
 	} else {
 		c.ownFiles = result.paths
 		noteLeftOut(c.config.Log, result.skipped)

@@ -302,7 +302,7 @@ func (k *keeper) writeFilesNow(files arrived) {
 	}
 	mark, err := board.WriteFiles(files.Paths())
 	if err != nil {
-		fmt.Fprintf(k.log, "Files arrived, and lanhop could not put them on the clipboard: %v\n", err)
+		fmt.Fprintf(k.log, "Files arrived, and lanhop could not put them on the clipboard: %s\n", forTheLog(err))
 		files.GiveUp()
 		return
 	}
