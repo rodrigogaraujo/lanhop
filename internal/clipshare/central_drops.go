@@ -31,6 +31,9 @@ func (c *Central) dragCounted(count dragCount) {
 		return
 	}
 	c.dragging, c.drag, c.dragged = true, count.files, count.paths
+	if c.ownDragCounted != nil {
+		c.ownDragCounted(count.files.FilesAndFolders)
+	}
 }
 
 func (c *Central) dragGone() {

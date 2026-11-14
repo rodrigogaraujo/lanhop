@@ -2,6 +2,7 @@ package clipshare
 
 import (
 	"errors"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -130,4 +131,38 @@ func TestADragThatLeftItsSideMachineStaysCrossableAfterThatMachineEndsItsSourceD
 	})
 	raw.dragEnds(t)
 	eventually(t, "the central forgetting the third drag, which never left", func() bool { return !d.seesADragOn(rawSide) })
+}
+
+func TestTheCentralTellsItsOwnDragOnlyOnceItsFilesAreCounted(t *testing.T) {
+	d := newDropDesk(t)
+	counted := make(chan int, 4)
+	askCentral(t, d.runtime, func() bool {
+		d.runtime.OnOwnDragCounted(func(files int) { counted <- files })
+		return true
+	})
+	source := t.TempDir()
+	first := writeFile(t, filepath.Join(source, "a.txt"), []byte("a"))
+	second := writeFile(t, filepath.Join(source, "b.txt"), []byte("b"))
+
+	d.runtime.DragSeen([]string{filepath.Join(source, "missing.txt")})
+	askCentral(t, d.runtime, func() bool { return true })
+	time.Sleep(settling)
+	select {
+	case files := <-counted:
+		t.Fatalf("a drag whose files could not be counted was told with %d files", files)
+	default:
+	}
+
+	d.runtime.DragSeen([]string{first, second})
+	select {
+	case files := <-counted:
+		if files != 2 {
+			t.Errorf("the drag was told with %d files, want 2", files)
+		}
+	case <-time.After(testPatience):
+		t.Fatal("the counted drag was never told")
+	}
+	if !d.seesADragOn(onTheCentral) {
+		t.Error("the central did not keep the drag it told")
+	}
 }

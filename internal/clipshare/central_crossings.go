@@ -2,6 +2,10 @@ package clipshare
 
 import "github.com/rodrigogaraujo/lanhop/internal/event"
 
+func (c *Central) OnOwnDragCounted(counted func(files int)) {
+	c.ownDragCounted = counted
+}
+
 func (c *Central) DragLeaves(origin string) error {
 	select {
 	case <-c.started:
