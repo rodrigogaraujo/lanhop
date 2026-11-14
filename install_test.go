@@ -42,6 +42,7 @@ const (
 	usageWithoutTheEditor = "lanhop layout          show where the layout file is"
 	usageWithTheStatus    = "lanhop status          say what lanhop is doing on this machine"
 	usageWithTheJoin      = "lanhop join ADDRESS CODE"
+	usageWithTheUpdate    = "lanhop update          move this machine to the latest release of lanhop, and restart its service"
 
 	joinTheInputGroup   = "sudo usermod -aG input ana"
 	writeTheUdevRule    = `printf '%s\n' 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee {root}/etc/udev/rules.d/60-lanhop.rules`
@@ -1181,6 +1182,29 @@ func TestAMachineWithoutTheEditorIsToldWhereTheLayoutFileIs(t *testing.T) {
 		output := m.mustRun()
 		expectSame(t, "runs of lanhop", published.lanhopWasRunWith(), configured("version", "help", "layout"))
 		expectMention(t, output, "by hand", "The layout file is /desk/layout")
+	})
+}
+
+func TestTheLastLineSaysHowToUpdateWhenTheInstalledLanhopCan(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		for _, c := range []struct {
+			usage string
+			says  bool
+		}{
+			{usageWithTheEditor + "\n" + usageWithTheStatus, false},
+			{usageWithTheEditor + "\n" + usageWithTheStatus + "\n" + usageWithTheUpdate, true},
+		} {
+			published := newReleases(t)
+			published.usage = c.usage
+			published.publish(latestRelease, "1.0.0")
+			m := newMachine(t, shell, "Linux", "x86_64", published)
+			m.typing("y")
+			output := m.mustRun()
+			expectMention(t, output, "To remove lanhop:")
+			if says := strings.Contains(output, "To update lanhop: lanhop update"); says != c.says {
+				t.Errorf("with the usage %q, the installer says how to update: %t, want %t\n%s", c.usage, says, c.says, output)
+			}
+		}
 	})
 }
 
