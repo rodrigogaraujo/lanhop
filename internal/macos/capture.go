@@ -2,6 +2,7 @@ package macos
 
 import (
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/event"
@@ -71,11 +72,13 @@ type Hardware interface {
 }
 
 type translator struct {
+	mutex         sync.Mutex
 	keys          keymap.Translator
 	hardware      Hardware
 	heldModifiers map[uint16]bool
 	heldKeys      map[uint16]bool
 	heldButtons   map[int]bool
+	leftEndedHere bool
 	scrolledUp    float64
 	scrolledRight float64
 }
@@ -90,7 +93,15 @@ func newTranslator(keys keymap.Translator, hardware Hardware) *translator {
 	}
 }
 
+func (t *translator) leftHeldUntilRealUp() {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.leftEndedHere = t.heldButtons[leftMouseButton]
+}
+
 func (t *translator) translate(seen Observation) []event.Event {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
 	if seen.Type == TypeTapDisabled {
 		return t.releaseAll()
 	}
@@ -161,6 +172,9 @@ func (t *translator) releaseWhatTheHardwareLetGo() []event.Event {
 		}
 	}
 	for _, button := range sortedHeld(t.heldButtons) {
+		if button == leftMouseButton && t.leftEndedHere {
+			continue
+		}
 		if !t.hardware.ButtonDown(button) {
 			events = append(events, t.buttonUp(button)...)
 		}
@@ -242,6 +256,9 @@ func (t *translator) buttonUp(number int) []event.Event {
 		return nil
 	}
 	delete(t.heldButtons, number)
+	if number == leftMouseButton {
+		t.leftEndedHere = false
+	}
 	return []event.Event{event.Key(event.ButtonFirst+uint16(number), event.KeyReleased), event.Sync()}
 }
 
