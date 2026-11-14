@@ -92,7 +92,7 @@ Files that arrive take room on the disk of the machine they go to, and some mach
 - **FR-007**: Machines on older versions MUST keep working with keyboard, mouse and text, and MUST NOT be sent files.
 - **FR-008**: A dragged file MUST cross an edge only while the system reports a drag of files. Holding a button for anything else MUST keep blocking crossings (FR-008 of spec 002).
 - **FR-009**: Files left in the arrival folder MUST be removed after a day.
-- **FR-010**: On each system, lanhop MUST say in its log, once, when it cannot share files there and why. When a dragged file cannot reach a neighbour, the central MUST also say so in `lanhop status`. lanhop shows nothing on the screen for it.
+- **FR-010**: On each system, lanhop MUST say in its log, once, when it cannot share files there and why. When a dragged file cannot reach a neighbour, or cannot leave a Linux machine that is the central (ADR 15), the central MUST also say so in `lanhop status`. lanhop shows nothing on the screen for it.
 - **FR-011**: A file path that arrives MUST stay inside the arrival folder: lanhop MUST refuse absolute paths, `..` and links, and MUST NOT follow links when it creates files.
 - **FR-012**: When a copy offers both files and text, the files MUST win. A machine that takes text but not files MUST NOT get the names or paths of the files as text.
 - **FR-013**: lanhop MUST keep the arrival folder under a total size it allows itself, removing the oldest files first, and MUST NOT start a transfer that does not fit.

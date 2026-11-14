@@ -818,6 +818,10 @@ knows_its_status() {
   grep -q 'lanhop status' "$binary" 2>/dev/null
 }
 
+knows_how_to_update() {
+  grep -q 'lanhop update' "$binary" 2>/dev/null
+}
+
 current_status() {
   line=$(lanhop_as_the_service_runs_it status 2>/dev/null || true)
   if [ -z "$line" ]; then
@@ -1007,6 +1011,9 @@ install_lanhop() {
   fi
   say ""
   say "To remove lanhop: $install_command -s -- --uninstall"
+  if knows_how_to_update; then
+    say "To update lanhop: lanhop update"
+  fi
   check_service
 }
 

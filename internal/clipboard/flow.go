@@ -19,6 +19,10 @@ const (
 	ReceiveFiles
 	WriteFiles
 	Stop
+	StartDrop
+	FinishDrop
+	CancelDrop
+	DropTaken
 )
 
 func (d Do) String() string {
@@ -51,6 +55,14 @@ func (d Do) String() string {
 		return "write files"
 	case Stop:
 		return "stop"
+	case StartDrop:
+		return "start drop"
+	case FinishDrop:
+		return "finish drop"
+	case CancelDrop:
+		return "cancel drop"
+	case DropTaken:
+		return "drop taken"
 	}
 	return "nothing"
 }
@@ -62,14 +74,41 @@ type Action[M comparable] struct {
 	FileCopy FileCopy
 	Transfer int
 	Takes    Kinds
+	Drop     bool
 }
 
 type ToCentral struct{}
 
 type sideMachine struct {
 	takes Kinds
+	drops bool
 	holds int
 	sent  int
+}
+
+type Place[M comparable] struct {
+	Side    M
+	OnASide bool
+}
+
+func OnSide[M comparable](side M) Place[M] {
+	return Place[M]{Side: side, OnASide: true}
+}
+
+func (p Place[M]) normal() Place[M] {
+	if p.OnASide {
+		return p
+	}
+	return Place[M]{}
+}
+
+type drop[M comparable] struct {
+	id         int
+	from       Place[M]
+	to         Place[M]
+	taken      bool
+	arrived    bool
+	cancelling bool
 }
 
 type owed struct {
@@ -125,6 +164,8 @@ type Desk[M comparable] struct {
 	moving         *transfer[M]
 	transfers      int
 	endedThisVisit int
+	drops          []*drop[M]
+	centralDrops   bool
 }
 
 func NewDesk[M comparable](on Kinds) *Desk[M] {
@@ -221,6 +262,7 @@ func (d *Desk[M]) FocusOn(side M) []Action[M] {
 		d.readsDue = append(d.readsDue, d.leaves)
 		actions = append(actions, Action[M]{Do: Read})
 	}
+	actions = append(actions, d.dragLeft(d.focusedPlace())...)
 	d.awaitTheSideThatLostFocus()
 	d.focused, d.focusOnSide = side, true
 	d.endedThisVisit = 0
@@ -232,11 +274,12 @@ func (d *Desk[M]) FocusOnCentral() []Action[M] {
 		return nil
 	}
 	d.leaves++
+	actions := d.dragLeft(d.focusedPlace())
 	d.awaitTheSideThatLostFocus()
 	var nobody M
 	d.focused, d.focusOnSide = nobody, false
 	d.endedThisVisit = 0
-	return d.deliverToFocused()
+	return append(actions, d.deliverToFocused()...)
 }
 
 func (d *Desk[M]) ReadUnchanged() []Action[M] {
@@ -283,6 +326,9 @@ func (d *Desk[M]) FileCopyFrom(side M, files FileCopy) ([]Action[M], error) {
 }
 
 func (d *Desk[M]) FilesArrived(transfer int) []Action[M] {
+	if dropped := d.dropNumbered(transfer); dropped != nil {
+		return d.dropArrived(dropped)
+	}
 	moving := d.moving
 	if moving == nil || moving.id != transfer {
 		return nil
@@ -469,7 +515,7 @@ func (d *Desk[M]) withdraw() {
 }
 
 func (d *Desk[M]) deliverToFocused() []Action[M] {
-	actions := d.stopTransferNoLongerWanted()
+	actions := append(d.stopTransferNoLongerWanted(), d.stopDropsNoLongerWanted()...)
 	if d.on == 0 || !d.hasCopy || len(d.readsDue) > 0 || d.answersStillDue() {
 		return actions
 	}
@@ -531,6 +577,188 @@ func (d *Desk[M]) stillWanted(moving transfer[M]) bool {
 	return moving.to == d.focused && connected && d.shares(machine).Has(Files)
 }
 
+func (d *Desk[M]) SaysDrops(side M, takes bool) []Action[M] {
+	machine, connected := d.sides[side]
+	if !connected {
+		return nil
+	}
+	machine.drops = takes
+	return d.stopDropsNoLongerWanted()
+}
+
+func (d *Desk[M]) CentralTakesDrops(takes bool) []Action[M] {
+	d.centralDrops = takes
+	return d.stopDropsNoLongerWanted()
+}
+
+func (d *Desk[M]) DragCrossed(from, to Place[M], files FileCopy) ([]Action[M], error) {
+	from, to = from.normal(), to.normal()
+	if err := sendableFiles(files); err != nil {
+		return nil, err
+	}
+	if from == to {
+		return nil, ErrDragBackToItsSource
+	}
+	if !d.on.Has(Files) || !d.placeSharesFiles(from) || !d.placeSharesFiles(to) {
+		return nil, ErrFilesNotShared
+	}
+	if !d.takesDrops(to) {
+		return nil, ErrDropsNotTaken
+	}
+	var actions []Action[M]
+	for _, waiting := range slices.Clone(d.drops) {
+		if !waiting.taken {
+			actions = append(actions, d.cancelNotTaken(waiting)...)
+		}
+	}
+	d.transfers++
+	d.drops = append(d.drops, &drop[M]{id: d.transfers, from: from, to: to})
+	if from.OnASide {
+		actions = append(actions, Action[M]{Do: Fetch, To: from.Side, Transfer: d.transfers, Drop: true})
+	}
+	if to.OnASide {
+		return append(actions, Action[M]{Do: Deliver, To: to.Side, Transfer: d.transfers, FileCopy: files, Drop: true}), nil
+	}
+	return append(actions, Action[M]{Do: StartDrop, Transfer: d.transfers, FileCopy: files}), nil
+}
+
+func (d *Desk[M]) DropTaken(transfer int) []Action[M] {
+	dropped := d.dropNumbered(transfer)
+	if dropped == nil {
+		return nil
+	}
+	dropped.taken, dropped.cancelling = true, false
+	if dropped.arrived {
+		d.removeDrop(dropped)
+	}
+	return nil
+}
+
+func (d *Desk[M]) DropRefused(transfer int) []Action[M] {
+	dropped := d.dropNumbered(transfer)
+	if dropped == nil {
+		return nil
+	}
+	return d.endDrop(dropped, false)
+}
+
+func (d *Desk[M]) DragCancelled(transfer int) []Action[M] {
+	dropped := d.dropNumbered(transfer)
+	if dropped == nil || dropped.taken {
+		return nil
+	}
+	return d.cancelNotTaken(dropped)
+}
+
+func (d *Desk[M]) DropStopped(transfer int) []Action[M] {
+	dropped := d.dropNumbered(transfer)
+	if dropped == nil {
+		return nil
+	}
+	d.removeDrop(dropped)
+	if dropped.to.OnASide {
+		return nil
+	}
+	return []Action[M]{{Do: CancelDrop, Transfer: transfer}}
+}
+
+func (d *Desk[M]) focusedPlace() Place[M] {
+	return Place[M]{Side: d.focused, OnASide: d.focusOnSide}
+}
+
+func (d *Desk[M]) placeSharesFiles(place Place[M]) bool {
+	if !place.OnASide {
+		return true
+	}
+	machine, connected := d.sides[place.Side]
+	return connected && d.shares(machine).Has(Files)
+}
+
+func (d *Desk[M]) dragLeft(place Place[M]) []Action[M] {
+	var actions []Action[M]
+	for _, dropped := range slices.Clone(d.drops) {
+		if !dropped.taken && dropped.to == place {
+			actions = append(actions, d.cancelNotTaken(dropped)...)
+		}
+	}
+	return actions
+}
+
+func (d *Desk[M]) cancelNotTaken(dropped *drop[M]) []Action[M] {
+	if !dropped.to.OnASide {
+		return d.endDrop(dropped, true)
+	}
+	if dropped.cancelling {
+		return nil
+	}
+	dropped.cancelling = true
+	if dropped.arrived {
+		d.removeDrop(dropped)
+	}
+	return []Action[M]{{Do: CancelDrop, To: dropped.to.Side, Transfer: dropped.id}}
+}
+
+func (d *Desk[M]) takesDrops(place Place[M]) bool {
+	if !place.OnASide {
+		return d.centralDrops
+	}
+	machine, connected := d.sides[place.Side]
+	return connected && machine.drops
+}
+
+func (d *Desk[M]) dropArrived(dropped *drop[M]) []Action[M] {
+	dropped.arrived = true
+	if dropped.taken || dropped.cancelling {
+		d.removeDrop(dropped)
+	}
+	if dropped.to.OnASide {
+		return nil
+	}
+	return []Action[M]{{Do: FinishDrop, Transfer: dropped.id}}
+}
+
+func (d *Desk[M]) stopDropsNoLongerWanted() []Action[M] {
+	var actions []Action[M]
+	for _, dropped := range slices.Clone(d.drops) {
+		if !d.dropWanted(*dropped) {
+			actions = append(actions, d.endDrop(dropped, true)...)
+		}
+	}
+	return actions
+}
+
+func (d *Desk[M]) dropWanted(dropped drop[M]) bool {
+	if !d.on.Has(Files) || !d.placeSharesFiles(dropped.to) || !d.takesDrops(dropped.to) {
+		return false
+	}
+	return dropped.arrived || d.placeSharesFiles(dropped.from)
+}
+
+func (d *Desk[M]) endDrop(dropped *drop[M], cancelTheSession bool) []Action[M] {
+	d.removeDrop(dropped)
+	var actions []Action[M]
+	if !dropped.arrived {
+		actions = append(actions, Action[M]{Do: Stop, Transfer: dropped.id, Drop: true})
+	}
+	if cancelTheSession && !dropped.to.OnASide {
+		actions = append(actions, Action[M]{Do: CancelDrop, Transfer: dropped.id})
+	}
+	return actions
+}
+
+func (d *Desk[M]) dropNumbered(transfer int) *drop[M] {
+	for _, dropped := range d.drops {
+		if dropped.id == transfer {
+			return dropped
+		}
+	}
+	return nil
+}
+
+func (d *Desk[M]) removeDrop(dropped *drop[M]) {
+	d.drops = slices.DeleteFunc(d.drops, func(other *drop[M]) bool { return other == dropped })
+}
+
 func notShared(kind Kinds) error {
 	if kind == Files {
 		return ErrFilesNotShared
@@ -546,8 +774,19 @@ type Side struct {
 	receiving    int
 	isReceiving  bool
 	sending      []int
+	dropsIn      []sideDrop
+	dropsOut     []int
+	cancelled    []int
 
 	unchangedQueuedBehindReads []int
+}
+
+const cancelsRemembered = 8
+
+type sideDrop struct {
+	transfer int
+	taken    bool
+	arrived  bool
 }
 
 func NewSide(on Kinds) *Side {
@@ -555,8 +794,12 @@ func NewSide(on Kinds) *Side {
 }
 
 func (s *Side) Connected() []Action[ToCentral] {
+	var cancelled []Action[ToCentral]
+	for _, dropped := range s.dropsIn {
+		cancelled = append(cancelled, Action[ToCentral]{Do: CancelDrop, Transfer: dropped.transfer})
+	}
 	*s = Side{on: s.on}
-	return []Action[ToCentral]{{Do: Announce, Takes: s.on}}
+	return append(cancelled, Action[ToCentral]{Do: Announce, Takes: s.on})
 }
 
 func (s *Side) CentralSays(takes Kinds) []Action[ToCentral] {
@@ -581,15 +824,16 @@ func (s *Side) FocusArrives() {
 func (s *Side) FocusLeaves() []Action[ToCentral] {
 	s.focused = false
 	actions := s.stopReceiving()
-	if s.sharing() != 0 {
+	switch {
+	case s.sharing() != 0:
 		s.unchangedQueuedBehindReads = append(s.unchangedQueuedBehindReads, 0)
-		return append(actions, Action[ToCentral]{Do: Read})
+		actions = append(actions, Action[ToCentral]{Do: Read})
+	case len(s.unchangedQueuedBehindReads) > 0:
+		s.unchangedQueuedBehindReads[len(s.unchangedQueuedBehindReads)-1]++
+	default:
+		actions = append(actions, Action[ToCentral]{Do: Unchanged})
 	}
-	if running := len(s.unchangedQueuedBehindReads); running > 0 {
-		s.unchangedQueuedBehindReads[running-1]++
-		return actions
-	}
-	return append(actions, Action[ToCentral]{Do: Unchanged})
+	return append(actions, s.cancelDropsNotTaken()...)
 }
 
 func (s *Side) ReadUnchanged() []Action[ToCentral] {
@@ -635,6 +879,13 @@ func (s *Side) CentralSendsFiles(transfer int) []Action[ToCentral] {
 }
 
 func (s *Side) FilesArrived(transfer int) []Action[ToCentral] {
+	if i := s.dropIn(transfer); i >= 0 {
+		s.dropsIn[i].arrived = true
+		if s.dropsIn[i].taken {
+			s.dropsIn = slices.Delete(s.dropsIn, i, i+1)
+		}
+		return []Action[ToCentral]{{Do: FinishDrop, Transfer: transfer}}
+	}
 	if !s.isReceiving || s.receiving != transfer {
 		return nil
 	}
@@ -647,6 +898,108 @@ func (s *Side) TransferEnded(transfer int) {
 		s.isReceiving = false
 	}
 	s.sending = slices.DeleteFunc(s.sending, func(sent int) bool { return sent == transfer })
+	s.dropsOut = slices.DeleteFunc(s.dropsOut, func(sent int) bool { return sent == transfer })
+}
+
+func (s *Side) CentralWantsDraggedFiles(transfer int) []Action[ToCentral] {
+	if !s.sharing().Has(Files) {
+		return []Action[ToCentral]{{Do: Stop, Transfer: transfer, Drop: true}}
+	}
+	s.dropsOut = append(s.dropsOut, transfer)
+	return []Action[ToCentral]{{Do: SendFiles, Transfer: transfer, Drop: true}}
+}
+
+func (s *Side) CentralDropsFiles(transfer int, files FileCopy) []Action[ToCentral] {
+	if i := slices.Index(s.cancelled, transfer); i >= 0 {
+		s.cancelled = slices.Delete(s.cancelled, i, i+1)
+		return []Action[ToCentral]{{Do: Stop, Transfer: transfer, Drop: true}}
+	}
+	if !s.sharing().Has(Files) {
+		return []Action[ToCentral]{{Do: Stop, Transfer: transfer, Drop: true}}
+	}
+	actions := s.cancelDropsNotTaken()
+	s.dropsIn = append(s.dropsIn, sideDrop{transfer: transfer})
+	return append(actions,
+		Action[ToCentral]{Do: StartDrop, Transfer: transfer, FileCopy: files},
+		Action[ToCentral]{Do: ReceiveFiles, Transfer: transfer, Drop: true},
+	)
+}
+
+func (s *Side) CentralCancelsDrop(transfer int) []Action[ToCentral] {
+	i := s.dropIn(transfer)
+	if i < 0 {
+		s.cancelled = append(s.cancelled, transfer)
+		if len(s.cancelled) > cancelsRemembered {
+			s.cancelled = slices.Delete(s.cancelled, 0, len(s.cancelled)-cancelsRemembered)
+		}
+		return nil
+	}
+	dropped := s.dropsIn[i]
+	if dropped.taken {
+		return nil
+	}
+	s.dropsIn = slices.Delete(s.dropsIn, i, i+1)
+	actions := []Action[ToCentral]{{Do: CancelDrop, Transfer: transfer}}
+	if !dropped.arrived {
+		actions = append(actions, Action[ToCentral]{Do: Stop, Transfer: transfer, Drop: true})
+	}
+	return actions
+}
+
+func (s *Side) DropTaken(transfer int) []Action[ToCentral] {
+	i := s.dropIn(transfer)
+	if i < 0 {
+		return nil
+	}
+	s.dropsIn[i].taken = true
+	if s.dropsIn[i].arrived {
+		s.dropsIn = slices.Delete(s.dropsIn, i, i+1)
+	}
+	return []Action[ToCentral]{{Do: DropTaken, Transfer: transfer}}
+}
+
+func (s *Side) DropRefused(transfer int) []Action[ToCentral] {
+	i := s.dropIn(transfer)
+	if i < 0 {
+		return nil
+	}
+	dropped := s.dropsIn[i]
+	s.dropsIn = slices.Delete(s.dropsIn, i, i+1)
+	if dropped.arrived {
+		return nil
+	}
+	return []Action[ToCentral]{{Do: Stop, Transfer: transfer, Drop: true}}
+}
+
+func (s *Side) DropStopped(transfer int) []Action[ToCentral] {
+	s.dropsOut = slices.DeleteFunc(s.dropsOut, func(sent int) bool { return sent == transfer })
+	i := s.dropIn(transfer)
+	if i < 0 {
+		return nil
+	}
+	s.dropsIn = slices.Delete(s.dropsIn, i, i+1)
+	return []Action[ToCentral]{{Do: CancelDrop, Transfer: transfer}}
+}
+
+func (s *Side) dropIn(transfer int) int {
+	return slices.IndexFunc(s.dropsIn, func(dropped sideDrop) bool { return dropped.transfer == transfer })
+}
+
+func (s *Side) cancelDropsNotTaken() []Action[ToCentral] {
+	var actions []Action[ToCentral]
+	kept := s.dropsIn[:0]
+	for _, dropped := range s.dropsIn {
+		if dropped.taken {
+			kept = append(kept, dropped)
+			continue
+		}
+		actions = append(actions, Action[ToCentral]{Do: CancelDrop, Transfer: dropped.transfer})
+		if !dropped.arrived {
+			actions = append(actions, Action[ToCentral]{Do: Stop, Transfer: dropped.transfer, Drop: true})
+		}
+	}
+	s.dropsIn = kept
+	return actions
 }
 
 func (s *Side) answer(kind Kinds, answer Action[ToCentral], readErr error) ([]Action[ToCentral], error) {
@@ -701,6 +1054,17 @@ func (s *Side) stopTransfers() []Action[ToCentral] {
 		actions = append(actions, Action[ToCentral]{Do: Stop, Transfer: sending})
 	}
 	s.sending = nil
+	for _, dropped := range s.dropsIn {
+		actions = append(actions, Action[ToCentral]{Do: CancelDrop, Transfer: dropped.transfer})
+		if !dropped.arrived {
+			actions = append(actions, Action[ToCentral]{Do: Stop, Transfer: dropped.transfer, Drop: true})
+		}
+	}
+	s.dropsIn = nil
+	for _, sending := range s.dropsOut {
+		actions = append(actions, Action[ToCentral]{Do: Stop, Transfer: sending, Drop: true})
+	}
+	s.dropsOut = nil
 	return actions
 }
 
