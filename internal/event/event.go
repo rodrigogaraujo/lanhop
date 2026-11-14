@@ -36,6 +36,7 @@ const (
 	ControlFileCopySize uint16 = 12
 	ControlOpenData     uint16 = 13
 	ControlDataStop     uint16 = 14
+	ControlDataAck      uint16 = 15
 
 	ControlUpdate  uint16 = 16
 	ControlVersion uint16 = 17
@@ -171,6 +172,20 @@ func SplitOpenData(value int32) (transfer int32, sideMachineSends bool) {
 
 func DataStop(transfer int32) Event {
 	return Event{Type: TypeControl, Code: ControlDataStop, Value: transfer}
+}
+
+const everyFileArrivedBit int32 = math.MinInt32
+
+func DataAck(blocksRead int32) Event {
+	return Event{Type: TypeControl, Code: ControlDataAck, Value: blocksRead & TransferNumberMax}
+}
+
+func AllArrived(blocksRead int32) Event {
+	return Event{Type: TypeControl, Code: ControlDataAck, Value: blocksRead&TransferNumberMax | everyFileArrivedBit}
+}
+
+func SplitDataAck(value int32) (blocksRead int32, allArrived bool) {
+	return value & TransferNumberMax, value&everyFileArrivedBit != 0
 }
 
 func (e Event) IsControl() bool {
