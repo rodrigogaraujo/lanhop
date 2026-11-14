@@ -4,7 +4,6 @@ package x11
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -125,7 +124,7 @@ func TestAFileCopyIsOfferedOnlyAsFileListsAndNeverAsText(t *testing.T) {
 		t.Fatalf("WriteFiles: %v", err)
 	}
 
-	offered, err := reader.targetsOffered()
+	offered, err := reader.targetsOffered(time.Now().Add(reader.wholeRead))
 
 	want := []uint32{reader.atoms.targets, reader.atoms.timestamp, reader.atoms.gnomeFiles, reader.atoms.uriList}
 	if err != nil || !slices.Equal(offered, want) {
@@ -155,7 +154,7 @@ func TestATextIsStillOfferedInTheSameFormats(t *testing.T) {
 		if _, err := writer.write(text.text, text.offered); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		if offered, err := reader.targetsOffered(); err != nil || !slices.Equal(offered, text.want) {
+		if offered, err := reader.targetsOffered(time.Now().Add(reader.wholeRead)); err != nil || !slices.Equal(offered, text.want) {
 			t.Errorf("%s: targets = %v, %v, want %v", text.name, offered, err, text.want)
 		}
 	}
@@ -187,7 +186,7 @@ func TestTheGNOMEListIsPreferredEvenWhenTheAddressListIsOfferedFirst(t *testing.
 	if _, err := writer.own(addressListFirst); err != nil {
 		t.Fatalf("own: %v", err)
 	}
-	offered, err := reader.targetsOffered()
+	offered, err := reader.targetsOffered(time.Now().Add(reader.wholeRead))
 	if err != nil || slices.Index(offered, reader.atoms.uriList) > slices.Index(offered, reader.atoms.gnomeFiles) {
 		t.Fatalf("targets = %v, %v, want the address list before the GNOME list", offered, err)
 	}
@@ -422,27 +421,12 @@ func TestAListOfMillionsOfLinesIsReadWithoutKeepingEachLine(t *testing.T) {
 
 func TestAnOwnerThatNeverAnswersAReadOfFilesIsReportedInsteadOfAwaited(t *testing.T) {
 	display := startXvfb(t)
-	d, err := parseDisplay(display)
-	if err != nil {
-		t.Fatalf("parseDisplay: %v", err)
-	}
-	silent, err := dial(d, nil, func([]byte) {})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	t.Cleanup(func() { silent.close() })
 	reader := openOn(t, display)
-	window := silent.newID()
-	silent.send(newRequest(opCreateWindow, 0).u32(window).u32(silent.root).u16(0).u16(0).u16(1).u16(1).u16(0).u16(classInputOnly).u32(0).u32(0).done())
-	silent.send(newRequest(opSetSelectionOwner, 0).u32(window).u32(reader.atoms.clipboard).u32(currentTime).done())
-	reply, err := silent.call(newRequest(opGetSelectionOwner, 0).u32(reader.atoms.clipboard).done())
-	if err != nil || binary.LittleEndian.Uint32(reply[8:12]) != window {
-		t.Fatalf("the silent program does not own the clipboard: %v", err)
-	}
+	ownedByAnotherProgram(t, display, reader, neverAnswering)
 	reader.readTimeout = 200 * time.Millisecond
 
 	start := time.Now()
-	_, err = reader.ReadFiles()
+	_, err := reader.ReadFiles()
 
 	if !errors.Is(err, ErrNoAnswer) {
 		t.Errorf("ReadFiles: error = %v, want %v", err, ErrNoAnswer)

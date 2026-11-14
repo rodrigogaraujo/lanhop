@@ -56,6 +56,7 @@ const (
 	selectionEventsMask = 1 | 2 | 4
 
 	answerTimeout    = time.Second
+	wholeReadTimeout = 3 * time.Second
 	transferLifetime = 10 * time.Second
 	largestChunk     = 64 << 10
 	privateHintValue = "secret"
@@ -132,6 +133,7 @@ type Clipboard struct {
 	extraOffers  map[uint32][]byte
 	transfers    []*transfer
 	readTimeout  time.Duration
+	wholeRead    time.Duration
 	handleEvents func(event []byte)
 }
 
@@ -173,6 +175,7 @@ func open(d display, cookie []byte) (*Clipboard, error) {
 		newValues:   make(chan uint32, 64),
 		times:       make(chan uint32, 8),
 		readTimeout: answerTimeout,
+		wholeRead:   wholeReadTimeout,
 	}
 	c, err := dial(d, cookie, board.handle)
 	if err != nil {
@@ -348,6 +351,7 @@ func (b *Clipboard) heldByLanhop(owner uint32) (heldCopy, bool) {
 }
 
 func (b *Clipboard) Read() (string, error) {
+	until := time.Now().Add(b.wholeRead)
 	owner, err := b.owner()
 	if err != nil {
 		return "", err
@@ -364,21 +368,21 @@ func (b *Clipboard) Read() (string, error) {
 		}
 		return string(held.text), nil
 	}
-	offered, err := b.targetsOffered()
+	offered, err := b.targetsOffered(until)
 	if err != nil {
 		return "", err
 	}
-	if b.markedPrivate(offered) {
+	if b.markedPrivate(offered, until) {
 		return "", clipboard.ErrPrivate
 	}
-	if b.offersFiles(offered) {
+	if b.offersFiles(offered, until) {
 		return "", clipboard.ErrNotText
 	}
 	target, found := b.textTarget(offered)
 	if !found {
 		return "", clipboard.ErrNotText
 	}
-	data, err := b.convert(target, clipboard.Limit)
+	data, err := b.convert(target, clipboard.Limit, until)
 	if err != nil {
 		return "", err
 	}
@@ -392,6 +396,7 @@ func (b *Clipboard) Read() (string, error) {
 }
 
 func (b *Clipboard) ReadFiles() ([]string, error) {
+	until := time.Now().Add(b.wholeRead)
 	owner, err := b.owner()
 	if err != nil {
 		return nil, err
@@ -408,18 +413,18 @@ func (b *Clipboard) ReadFiles() ([]string, error) {
 		}
 		return slices.Clone(held.paths), nil
 	}
-	offered, err := b.targetsOffered()
+	offered, err := b.targetsOffered(until)
 	if err != nil {
 		return nil, err
 	}
-	if b.markedPrivate(offered) {
+	if b.markedPrivate(offered, until) {
 		return nil, clipboard.ErrPrivate
 	}
 	target, found := b.fileListTarget(offered)
 	if !found {
 		return nil, clipboard.ErrNotFiles
 	}
-	list, err := b.convert(target, fileListLimit)
+	list, err := b.convert(target, fileListLimit, until)
 	switch {
 	case errors.Is(err, errTargetRefused):
 		return nil, clipboard.ErrNotFiles
@@ -489,16 +494,16 @@ func localPath(address string) (string, bool) {
 	return parsed.Path, true
 }
 
-func (b *Clipboard) markedPrivate(offered []uint32) bool {
+func (b *Clipboard) markedPrivate(offered []uint32, until time.Time) bool {
 	if !slices.Contains(offered, b.atoms.passwordHint) {
 		return false
 	}
-	marker, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16)
+	marker, err := b.convert(b.atoms.passwordHint, len(privateHintValue)+16, until)
 	return err != nil || string(marker) == privateHintValue
 }
 
-func (b *Clipboard) targetsOffered() ([]uint32, error) {
-	data, err := b.convert(b.atoms.targets, 4096)
+func (b *Clipboard) targetsOffered(until time.Time) ([]uint32, error) {
+	data, err := b.convert(b.atoms.targets, 4096, until)
 	if errors.Is(err, errTargetRefused) {
 		return []uint32{b.atoms.utf8String}, nil
 	}
@@ -512,7 +517,7 @@ func (b *Clipboard) targetsOffered() ([]uint32, error) {
 	return offered, nil
 }
 
-func (b *Clipboard) offersFiles(offered []uint32) bool {
+func (b *Clipboard) offersFiles(offered []uint32, until time.Time) bool {
 	for _, files := range []uint32{b.atoms.gnomeFiles, b.atoms.portalFiles, b.atoms.portalTransfer} {
 		if slices.Contains(offered, files) {
 			return true
@@ -521,7 +526,7 @@ func (b *Clipboard) offersFiles(offered []uint32) bool {
 	if !slices.Contains(offered, b.atoms.uriList) {
 		return false
 	}
-	list, err := b.convert(b.atoms.uriList, uriListLimit)
+	list, err := b.convert(b.atoms.uriList, uriListLimit, until)
 	if err != nil {
 		return true
 	}
@@ -554,7 +559,7 @@ func (b *Clipboard) textTarget(offered []uint32) (uint32, bool) {
 
 var errTargetRefused = errors.New("x11: the owner of the clipboard refused that format")
 
-func (b *Clipboard) convert(target uint32, limit int) ([]byte, error) {
+func (b *Clipboard) convert(target uint32, limit int, until time.Time) ([]byte, error) {
 	drain(b.notifies)
 	if err := b.c.send(newRequest(opDeleteProperty, 0).u32(b.window).u32(b.atoms.ownProperty).done()); err != nil {
 		return nil, err
@@ -563,7 +568,7 @@ func (b *Clipboard) convert(target uint32, limit int) ([]byte, error) {
 	if err := b.c.send(request); err != nil {
 		return nil, err
 	}
-	deadline := time.After(b.readTimeout)
+	deadline := b.nextStepDeadline(until)
 	for {
 		select {
 		case got := <-b.notifies:
@@ -574,7 +579,7 @@ func (b *Clipboard) convert(target uint32, limit int) ([]byte, error) {
 				return nil, errTargetRefused
 			}
 			drain(b.newValues)
-			return b.receive(limit)
+			return b.receive(limit, until)
 		case <-deadline:
 			return nil, ErrNoAnswer
 		case <-b.c.closed:
@@ -583,7 +588,7 @@ func (b *Clipboard) convert(target uint32, limit int) ([]byte, error) {
 	}
 }
 
-func (b *Clipboard) receive(limit int) ([]byte, error) {
+func (b *Clipboard) receive(limit int, until time.Time) ([]byte, error) {
 	kind, data, tooLarge, err := b.takeProperty(limit)
 	if err != nil {
 		return nil, err
@@ -596,7 +601,7 @@ func (b *Clipboard) receive(limit int) ([]byte, error) {
 	}
 	var whole []byte
 	for {
-		if err := b.waitForNewValue(time.After(b.readTimeout)); err != nil {
+		if err := b.waitForNewValue(b.nextStepDeadline(until)); err != nil {
 			return nil, err
 		}
 		_, part, tooLarge, err := b.takeProperty(limit - len(whole))
@@ -611,6 +616,10 @@ func (b *Clipboard) receive(limit int) ([]byte, error) {
 		}
 		whole = append(whole, part...)
 	}
+}
+
+func (b *Clipboard) nextStepDeadline(until time.Time) <-chan time.Time {
+	return time.After(min(b.readTimeout, time.Until(until)))
 }
 
 func (b *Clipboard) waitForNewValue(deadline <-chan time.Time) error {
