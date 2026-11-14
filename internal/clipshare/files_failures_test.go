@@ -386,3 +386,19 @@ func TestTimeThisMachineSpendsBetweenReadsDoesNotCountAgainstTheOtherMachine(t *
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestTheCentralEndsARelayItselfWhenTheSenderWaitsAndTheReceiverNeverSaysEveryFileArrived(t *testing.T) {
+	d := newShortSilenceFileDesk(t, "sender", "receiver")
+	d.rogueJoins("sender", &rogueSide{sends: sendsUnderNames("patient.txt")})
+	d.rogueJoins("receiver", &rogueSide{receives: receivesAndNeverSaysEveryFileArrived})
+	d.waitUntilTheCentralSeesTakingPart("receiver", "sender")
+	d.focusOn(d.sides["sender"].number)
+	crossed := d.focusOn(d.sides["receiver"].number)
+
+	d.log.waitFor(t, "The file copy from sender to receiver stopped")
+
+	if took := time.Since(crossed); took > 3*shortDataSilence {
+		t.Errorf("the central ended the relay %s after focus moved, want within %s of a data silence limit of %s", took.Round(time.Millisecond), 3*shortDataSilence, shortDataSilence)
+	}
+	d.expectNoTransfersLeft()
+}
