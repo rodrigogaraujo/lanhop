@@ -235,7 +235,7 @@ func TestTheEscapeOfAPendingLinuxDropIsNotReplayed(t *testing.T) {
 	d := newXdndDesk(t)
 	d.startADrop(t)
 
-	d.hand.Emit(event.Key(keyEscape, event.KeyPressed), event.Sync(), event.Key(keyEscape, event.KeyReleased), event.Sync())
+	d.hand.Emit(event.Key(event.KeyEsc, event.KeyPressed), event.Sync(), event.Key(event.KeyEsc, event.KeyReleased), event.Sync())
 
 	expectEntries(t, "the replay", onlyEvents(d.log.seen()), "drag starts", "left down")
 }

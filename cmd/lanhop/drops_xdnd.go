@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 )
+
+const cancelledDragEndLimit = 3 * time.Second
 
 type xdndDrag interface {
 	FilesArrived(paths []string) error
@@ -42,6 +45,7 @@ func (x *xdndDrops) StartDrop(ctx context.Context, files []clipshare.DroppedFile
 	for _, earlier := range x.sessions() {
 		if !earlier.wasAccepted() {
 			earlier.Cancel()
+			earlier.waitForTheEnd(cancelledDragEndLimit)
 		}
 	}
 	if x.isClosed() {
@@ -122,13 +126,24 @@ type xdndSession struct {
 }
 
 func (s *xdndSession) Arrived(paths []string) {
-	if err := s.drag.FilesArrived(paths); err != nil {
-		fmt.Fprintf(s.log, "The dragged files arrived, and the drop on this machine cannot take them: %s\n", forTheLog(err))
-		return
-	}
 	s.state.Lock()
 	s.filesGiven = true
 	s.state.Unlock()
+	if err := s.drag.FilesArrived(paths); err != nil {
+		s.state.Lock()
+		s.filesGiven = false
+		s.state.Unlock()
+		fmt.Fprintf(s.log, "The dragged files arrived, and the drop on this machine cannot take them: %s\n", forTheLog(err))
+	}
+}
+
+func (s *xdndSession) waitForTheEnd(limit time.Duration) {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-s.drag.Done():
+	case <-timer.C:
+	}
 }
 
 func (s *xdndSession) Cancel() {

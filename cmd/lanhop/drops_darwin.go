@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
+	"syscall"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 	"github.com/rodrigogaraujo/lanhop/internal/macos"
@@ -50,7 +52,12 @@ func startAppKitDropWith(ctx context.Context, start func(context.Context, []maco
 
 func carryTheQuarantine(source, destination string) error {
 	mark, err := macos.Quarantine(source)
-	if err != nil || mark == "" {
+	switch {
+	case errors.Is(err, syscall.ENOATTR):
+		return nil
+	case err != nil:
+		return err
+	case mark == "":
 		return nil
 	}
 	return macos.SetQuarantine(destination, mark)

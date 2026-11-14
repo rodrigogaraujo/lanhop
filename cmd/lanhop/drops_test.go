@@ -75,9 +75,9 @@ func nameOfEvent(e event.Event) string {
 		return "left down"
 	case e == event.Key(event.ButtonLeft, event.KeyReleased):
 		return "left up"
-	case e == event.Key(keyEscape, event.KeyPressed):
+	case e == event.Key(event.KeyEsc, event.KeyPressed):
 		return "escape down"
-	case e == event.Key(keyEscape, event.KeyReleased):
+	case e == event.Key(event.KeyEsc, event.KeyReleased):
 		return "escape up"
 	case e.Type == event.TypeRelative && e.Code == event.RelX:
 		return fmt.Sprintf("x %+d", e.Value)
@@ -103,11 +103,11 @@ func TestTheEscapeOfAPendingDropIsNotReplayedNorItsRelease(t *testing.T) {
 	hand := newDropReplay(log, nil)
 
 	hand.dropStarts()
-	hand.Emit(event.Key(keyEscape, event.KeyPressed), event.Sync())
-	hand.Emit(event.Key(keyEscape, event.KeyRepeated), event.Sync())
+	hand.Emit(event.Key(event.KeyEsc, event.KeyPressed), event.Sync())
+	hand.Emit(event.Key(event.KeyEsc, event.KeyRepeated), event.Sync())
 	hand.dropSettled()
-	hand.Emit(event.Key(keyEscape, event.KeyReleased), event.Sync())
-	hand.Emit(event.Key(keyEscape, event.KeyPressed), event.Sync(), event.Key(keyEscape, event.KeyReleased), event.Sync())
+	hand.Emit(event.Key(event.KeyEsc, event.KeyReleased), event.Sync())
+	hand.Emit(event.Key(event.KeyEsc, event.KeyPressed), event.Sync(), event.Key(event.KeyEsc, event.KeyReleased), event.Sync())
 
 	expectEntries(t, "replayed", onlyEvents(log.seen()), "escape down", "escape up")
 }
@@ -255,7 +255,7 @@ func TestLocalDragsAreResetOnAReplayedLeftButtonOrEscape(t *testing.T) {
 	}
 	hand.Emit(event.Key(event.ButtonLeft, event.KeyPressed), event.Sync())
 	hand.Emit(event.Key(event.ButtonLeft, event.KeyReleased), event.Sync())
-	hand.Emit(event.Key(keyEscape, event.KeyPressed), event.Sync())
+	hand.Emit(event.Key(event.KeyEsc, event.KeyPressed), event.Sync())
 	hand.emitForLanhop(event.Key(event.ButtonLeft, event.KeyReleased), event.Sync())
 
 	if got := resets.Load(); got != 3 {
@@ -346,5 +346,40 @@ func TestDragsAreAllowedOnlyWithFilesMovingAndADropSession(t *testing.T) {
 				t.Errorf("dragsAllowed = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestAStartThatOutlastsTheHoldStillAdoptsTheButton(t *testing.T) {
+	log := &replayLog{}
+	hand := newDropReplay(keepingReplayLog{log}, nil)
+	hand.holdLimit = 20 * time.Millisecond
+
+	held := hand.holdBack()
+	hand.Emit(event.Relative(event.RelX, 3), event.Sync())
+	waitUntil(t, "the held back move to be replayed", func() bool { return log.count("x +3") == 1 })
+	if releasedEarlier := held.resumeHoldingTheLeftButton(false); releasedEarlier {
+		t.Error("a start with no release counted as a release before the drop")
+	}
+
+	expectEntries(t, "replayed", onlyEvents(log.seen()), "x +3", "hold 0")
+	if !hand.holdsTheDropButton() {
+		t.Error("the drop does not hold the button after a start that outlasted the hold")
+	}
+}
+
+func TestAStartThatOutlastsTheHoldAfterTheReleaseWasReplayedReleasesByState(t *testing.T) {
+	log := &replayLog{}
+	hand := newDropReplay(keepingReplayLog{log}, nil)
+	hand.holdLimit = 20 * time.Millisecond
+
+	held := hand.holdBack()
+	hand.Emit(event.Key(event.ButtonLeft, event.KeyReleased), event.Sync())
+	waitUntil(t, "the held back release to be replayed", func() bool { return log.count("left up") == 1 })
+
+	if releasedEarlier := held.resumeHoldingTheLeftButton(true); !releasedEarlier {
+		t.Error("a release replayed before a late start did not count as a release before the drop")
+	}
+	if hand.holdsTheDropButton() {
+		t.Error("the drop still holds the button the person already released")
 	}
 }

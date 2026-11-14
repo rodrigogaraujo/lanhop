@@ -12,10 +12,9 @@ import (
 )
 
 const (
-	keyEscape             uint16 = 1
-	leftButtonOfTheReplay        = 0
-	longestHoldBack              = 5 * time.Second
-	releaseBeforeTheDrop         = 3 * time.Second
+	leftButtonOfTheReplay = 0
+	longestHoldBack       = 10 * time.Second
+	releaseBeforeTheDrop  = 3 * time.Second
 )
 
 type localDrag struct {
@@ -87,7 +86,7 @@ func (r *dropReplay) Close() error {
 }
 
 func (r *dropReplay) swallows(e event.Event) bool {
-	if e.Type != event.TypeKey || e.Code != keyEscape {
+	if e.Type != event.TypeKey || e.Code != event.KeyEsc {
 		return false
 	}
 	switch {
@@ -132,7 +131,7 @@ func (r *dropReplay) follow(e event.Event) (resetsLocalDrags bool) {
 		}
 		r.leftByPerson = false
 		return true
-	case e.Code == keyEscape && e.Value == event.KeyPressed:
+	case e.Code == event.KeyEsc && e.Value == event.KeyPressed:
 		return true
 	}
 	return false
@@ -164,10 +163,17 @@ func (h *heldBack) resume() {
 }
 
 func (h *heldBack) resumeHoldingTheLeftButton(post bool) (releasedEarlier bool) {
+	adopted := false
 	h.end(func(r *dropReplay) {
+		adopted = true
 		releasedEarlier = r.holdTheLeftButton(post)
 	})
-	return releasedEarlier
+	if adopted || h == nil {
+		return releasedEarlier
+	}
+	h.r.mutex.Lock()
+	defer h.r.mutex.Unlock()
+	return h.r.holdTheLeftButton(post)
 }
 
 func (h *heldBack) end(first func(r *dropReplay)) {
