@@ -151,8 +151,9 @@ func (e *EdgeCatch) Dropped() <-chan EdgeDrop {
 
 func (e *EdgeCatch) Close() error {
 	e.stopping.Do(func() { close(e.stop) })
-	e.finish(false)
-	e.vanish()
+	if wasReading := e.finish(false); wasReading {
+		e.vanish()
+	}
 	<-e.done
 	return nil
 }
@@ -179,10 +180,24 @@ func (e *EdgeCatch) run() {
 			e.end(EdgeDrop{Err: ErrNoDropAtEdge})
 			return
 		case <-e.stop:
+			e.refuseQueuedDrops(visit)
 			e.end(EdgeDrop{Err: ErrClosed})
 			return
 		case <-e.c.closed:
 			e.end(EdgeDrop{Err: e.c.err()})
+			return
+		}
+	}
+}
+
+func (e *EdgeCatch) refuseQueuedDrops(visit edgeVisit) {
+	for {
+		select {
+		case message := <-e.messages:
+			if message.window == e.window && message.kind != e.atoms.position {
+				e.take(message, &visit)
+			}
+		default:
 			return
 		}
 	}
@@ -233,9 +248,9 @@ func (e *EdgeCatch) answerPosition(visit edgeVisit) {
 }
 
 func (e *EdgeCatch) takeDrop(visit edgeVisit, when uint32) EdgeDrop {
-	e.finishing.Lock()
-	e.unfinished = visit
-	e.finishing.Unlock()
+	if started := e.startOrRefuse(visit); !started {
+		return EdgeDrop{Err: ErrClosed}
+	}
 	drop := EdgeDrop{Err: clipboard.ErrNotFiles}
 	if visit.offersList {
 		drop.Paths, drop.Err = e.reader.readPaths(e.atoms.uriList, when, false, time.Now().Add(e.wholeRead))
@@ -244,14 +259,32 @@ func (e *EdgeCatch) takeDrop(visit edgeVisit, when uint32) EdgeDrop {
 	return drop
 }
 
-func (e *EdgeCatch) finish(taken bool) {
+func (e *EdgeCatch) startOrRefuse(visit edgeVisit) (started bool) {
+	e.finishing.Lock()
+	defer e.finishing.Unlock()
+	select {
+	case <-e.stop:
+		e.sendFinished(visit, false)
+		return false
+	default:
+		e.unfinished = visit
+		return true
+	}
+}
+
+func (e *EdgeCatch) finish(taken bool) (wasReading bool) {
 	e.finishing.Lock()
 	defer e.finishing.Unlock()
 	visit := e.unfinished
 	if visit.source == atomNone {
-		return
+		return false
 	}
 	e.unfinished = edgeVisit{}
+	e.sendFinished(visit, taken)
+	return true
+}
+
+func (e *EdgeCatch) sendFinished(visit edgeVisit, taken bool) {
 	finished := [5]uint32{e.window}
 	if visit.version >= xdndVersion && taken {
 		finished[1], finished[2] = finishedAccepted, e.atoms.actionCopy
