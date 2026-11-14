@@ -1185,7 +1185,7 @@ func TestAMachineWithoutTheEditorIsToldWhereTheLayoutFileIs(t *testing.T) {
 	})
 }
 
-func TestTheLastLineSaysHowToUpdateWhenTheInstalledLanhopCan(t *testing.T) {
+func TestTheInstallerSaysHowToUpdateWhenTheInstalledLanhopCan(t *testing.T) {
 	inEveryShell(t, func(t *testing.T, shell string) {
 		for _, c := range []struct {
 			usage string
