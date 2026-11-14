@@ -38,9 +38,35 @@ Side machines open their connection to the central, and the central does not ope
 
 **Content.** The machine that has the files sends, for each file or folder, its relative path, its kind and its size, then the content, then a SHA-256 of the content worked out while sending it. It compares the size and modification time of each file before and after reading it, and stops the transfer if the file changed. The receiving side says on the same connection when every file has arrived whole, so that the machine that sent knows the copy is held there. That answer is a Data ack with bit 31 set. Before it, the reading side sends a Data ack for each 32 KiB it reads, which tells the writing side how fast the bytes get through. Each data connection carries files one way only, and its way back carries only these Data acks.
 
+**The format of the content** (amendment, proposed with task 6b). Numbers are big-endian.
+
+- A header of 13 bytes opens the stream: the format, 1; the number of files and folders, 4 bytes, from 1 to 10 000; and the total size of the files, 8 bytes, at most 4 GiB. The receiving side checks the room for the copy against this total (FR-013), not against the description of the leave.
+- Each file and folder follows in depth-first order, so a folder comes before what it holds: its kind, 1 byte, 1 for a file and 2 for a folder; the length of its path, 2 bytes, under 4096; the path, relative, in UTF-8, with `/` between names and no empty name, `.` or `..`; and its size, 8 bytes, 0 for a folder. A file then carries its content and the SHA-256 of that content, 32 bytes.
+- A byte 0 ends the copy.
+- The receiving side refuses a stream that breaks any of these rules, holds more or fewer files, folders or bytes than its header says, or puts a path under a folder it has not just opened, and removes what arrived of it. It also removes a whole copy when it cannot send the Data ack that says every file arrived, so that both sides agree the copy did not arrive.
+
+The path of each file and folder starts at the folder that holds the copied path, so `/a/b/report` arrives as `report/…`. The folders on the way to a copied path are resolved first as the system resolves them, links and `..` included. A copied path that is a link or a special file makes the copy unsendable, and so do two copied paths with the same name and a name that is not UTF-8. Inside a copied folder, links and special files stay behind and are counted, so that the log can say once how many. A link is never followed, so a link to `~/.ssh` inside a copied project does not send the keys. Each file and folder inside the copy is opened from the folder already open around it, with `openat` on Linux, or refusing a link anywhere on its path, with `O_NOFOLLOW_ANY` on macOS. Its size, modification time and identity come from that opened file, and sending compares them again, so a folder swapped for a link while the copy is listed or sent stops the transfer. Permissions and times do not travel.
+
 **Receiving safely.** The receiving side refuses absolute paths, `..`, links and special files; creates every file without following links, under a temporary name in the arrival folder; refuses a total size over the limit or over the free space; checks size and digest; and renames only when a file is whole. When the transfer stops, at a Data stop, at a lost connection on either the data or the control connection, or at any error, what arrived of that transfer is removed. Focus leaving the receiving machine stops a transfer too, except one that serves a drop already accepted there. A stopped transfer starts again from the beginning when it is needed again.
 
 **Pace.** TCP sets the pace of the data connection, and each machine keeps what it writes on all its data connections together to 80 Mbit/s of TLS content, about 84 Mbit/s on the wire, in bursts of at most 128 KiB. Keys never wait behind file bytes in the same stream. They can still wait behind them in a queue shared by both streams, such as a Wi-Fi link or a router. Measured on Linux over TLS for task 2, with both connections behind one first-in first-out queue of 1000 packets drained at 100 Mbit/s: without the limit, 100 MiB kept the queue full and keys arrived 123 ms late; with it, keys arrived at most 8 ms late, and the 100 MiB took 10.5 s instead of 8.9 s. The limit helps only on a link faster than itself: behind the same queue drained at 50 Mbit/s, keys arrived 245 ms late. Task 2b of the plan makes the pace follow the delay.
+
+**Pace that follows the delay** (task 2b). The writing side measures the round trip of each Data ack, from the moment it starts the write that ends at a 32 KiB boundary to the moment the ack for it arrives. For each data connection it keeps the shortest round trip of the last minute as the base, so a route that grew longer stops reading as a queue within a minute while the queue the pace itself keeps does not creep into the base, and takes the queue as the shortest of the last 4 round trips less the base. One pace per machine reacts to the longest queue among the data connections heard from in the last 200 ms; a data connection that ends stops counting at once:
+
+- It starts at 40 Mbit/s and doubles every 100 ms while the queue stays under 5 ms, until the first decrease.
+- Below the target of 15 ms of queue, it rises by at most 20 Mbit/s per second, less as the queue nears the target.
+- Above the target, it falls to 90% of its rate, down to 50% when the queue is twice the target, at most once every 50 ms.
+- It stays between 1 Mbit/s and the ceiling of 80 Mbit/s, and starts again from 40 Mbit/s at the first write or acknowledgement after a second without acknowledgements.
+
+Measured on Linux over TLS, without the race detector, with both connections behind one first-in first-out queue of 1000 packets:
+
+| Link | 100 MiB | Keys, worst later than usual | First 10 MiB |
+|---|---|---|---|
+| 100 Mbit/s | 10.5 s, 79.9 Mbit/s | 3.5 ms | 1.07 s |
+| 50 Mbit/s, which carries 47.5 Mbit/s of content | 18.6 s, 45.0 Mbit/s | 22.7 ms | |
+| No queue, loopback | | | 1.07 s |
+
+So SC-002 holds behind both queues, where the fixed pace left keys 245 ms late at 50 Mbit/s, and the first 10 MiB of SC-001 arrive in about 1.1 s, which leaves time within the 2 s to list, check and rename. The 50 Mbit/s test takes about 19 s of the Linux CI. A Wi-Fi link, with its own jitter, is measured at the desk in task 7.
 
 **Side machine to side machine.** Through the central, which streams from one data connection to the other without waiting for whole files, and keeps a copy only when it has focus itself and will paste it.
 

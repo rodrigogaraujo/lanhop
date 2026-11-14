@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: take-certificate FOLDER CERTIFICATE_LEAF_FILE" >&2
+  echo "LANHOP_SIGNING_CERTIFICATE holds the certificate and its key in PKCS#12, in base64, and LANHOP_SIGNING_CERTIFICATE_PASSWORD its password" >&2
+  exit 64
+fi
+folder=$1
+leaf_file=$2
+
+refuse() {
+  printf 'take-certificate: %s\n' "$*" >&2
+  exit 1
+}
+
+if [ -z "${LANHOP_SIGNING_CERTIFICATE:-}" ] || [ -z "${LANHOP_SIGNING_CERTIFICATE_PASSWORD:-}" ]; then
+  refuse "LANHOP_SIGNING_CERTIFICATE and LANHOP_SIGNING_CERTIFICATE_PASSWORD must both be set"
+fi
+if [ ! -s "$leaf_file" ]; then
+  refuse "$leaf_file, the hash of the certificate of the project, is missing"
+fi
+leaf=$(cat "$leaf_file")
+case $leaf in
+  *[!0-9a-f]* | '') refuse "$leaf_file must hold the SHA-1 of the certificate in 40 lowercase hexadecimal digits, without colons" ;;
+esac
+if [ "${#leaf}" -ne 40 ]; then
+  refuse "$leaf_file must hold the SHA-1 of the certificate in 40 lowercase hexadecimal digits, without colons"
+fi
+
+umask 077
+mkdir -p "$folder"
+printf '%s' "$LANHOP_SIGNING_CERTIFICATE" | base64 --decode >"$folder/certificate.p12" ||
+  refuse "LANHOP_SIGNING_CERTIFICATE is not base64"
+printf '%s' "$LANHOP_SIGNING_CERTIFICATE_PASSWORD" >"$folder/password"
+printf '%s\n' "$leaf" >"$folder/leaf"

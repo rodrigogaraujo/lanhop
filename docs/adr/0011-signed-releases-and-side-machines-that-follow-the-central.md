@@ -18,7 +18,7 @@ What exists today:
 
 **Who can sign.**
 
-- The signing secrets live in a GitHub environment named `release`. Its deployment policy allows only tags that match `v*`, and each run needs the approval of the owner.
+- The signing secrets live in a GitHub environment named `release`. Its deployment policy allows only tags that match `v*`, and each job that uses it waits for the approval of the owner. A release has two such jobs, so the owner approves twice: before lanhop.app is signed, and before `SHA256SUMS` is signed.
 - A tag ruleset on `v*` lets only the owner create, move or delete such a tag. A ruleset on `main` asks for a pull request and forbids force pushes.
 - Pull requests and manual runs on a branch sign with a certificate and a key made inside the job and thrown away after it.
 - The release job fails when the program was built with build tags, which `go version -m` shows.

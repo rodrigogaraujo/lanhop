@@ -465,6 +465,16 @@ func TestAFileCopyFromASideMachineThatDoesNotShareFilesCountsAsAWithdrawal(t *te
 	expect(t, "B keeps what it held", actions)
 }
 
+func TestAFileCopyTheCentralReadsOnlyAfterALaterWithdrawalReachesNoOne(t *testing.T) {
+	d := deskSharingFiles(t, "left", "right")
+	d.Says("right", Text)
+	expect(t, "focus to right", d.FocusOn("right"), read())
+	expect(t, "focus from right to left", d.FocusOn("left"))
+
+	expect(t, "right withdraws the file copy it does not share", d.WithdrawalFrom("right"))
+	expect(t, "the read of the central ends with the file copy made before", readGaveFiles(t, d, report))
+}
+
 func TestASideMachineThatTakesFilesButNotTextGetsFilesAndNoText(t *testing.T) {
 	d := deskSharingFiles(t, "A")
 	d.Connected("B")

@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ] || { [ "$#" -eq 2 ] && [ "$1" != --release ]; }; then
+  echo "usage: installer-at-from [--release] OUT" >&2
+  exit 64
+fi
+release=no
+if [ "$1" = --release ]; then
+  release=yes
+  shift
+fi
+out=$1
+
+from=$(cat packaging/update-from)
+if git rev-parse -q --verify "refs/tags/$from^{commit}" >/dev/null; then
+  git show "$from:install.sh" >"$out"
+  printf 'Took install.sh at %s.\n' "$from"
+elif [ "$release" = yes ]; then
+  printf 'installer-at-from: %s, which packaging/update-from names, has no tag\n' "$from" >&2
+  exit 1
+else
+  cp install.sh "$out"
+  printf '%s has no tag yet, so install.sh is compared with itself.\n' "$from"
+fi

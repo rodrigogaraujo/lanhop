@@ -19,7 +19,7 @@ type centralNews struct {
 }
 
 type sideMachine struct {
-	takes   bool
+	takes   clipboard.Kinds
 	stale   int
 	answers []*answerDue
 }
@@ -38,13 +38,19 @@ type Central struct {
 	links      map[sharer.Conn]*link
 
 	desk           *clipboard.Desk[*link]
-	on             bool
+	on             clipboard.Kinds
 	reachable      bool
 	focused        *link
 	focusHere      bool
 	focusMoving    bool
 	heldDuringMove []centralNews
 	sides          map[*link]*sideMachine
+
+	ctx         context.Context
+	transfers   map[int]*centralTransfer
+	moving      sync.WaitGroup
+	ownFiles    []string
+	filesNotice filesNotice
 }
 
 func NewCentral(config Config) *Central {
@@ -54,6 +60,7 @@ func NewCentral(config Config) *Central {
 		links:     make(map[sharer.Conn]*link),
 		sides:     make(map[*link]*sideMachine),
 		focusHere: true,
+		transfers: make(map[int]*centralTransfer),
 	}
 	c.keeper = newKeeper(c.config, func(reachable bool) {
 		c.tell(func() { c.clipboardReachable(reachable) })
@@ -70,9 +77,11 @@ func (c *Central) Run(ctx context.Context) {
 	}()
 	defer func() { <-keeperStopped }()
 	c.reachable = <-reachedAtStart
-	c.on = c.reachable && c.config.SwitchedOn()
-	c.desk = clipboard.NewDesk[*link](onlyText(c.on))
+	c.on = c.kindsOn()
+	c.desk = clipboard.NewDesk[*link](c.on)
+	c.ctx = ctx
 	defer c.closeLinks()
+	defer c.endEveryTransfer()
 	for {
 		select {
 		case <-ctx.Done():
@@ -87,7 +96,9 @@ func (c *Central) Run(ctx context.Context) {
 }
 
 func (c *Central) Connected(conn sharer.Conn) func(event.Event) {
-	l := startLink(conn, conn.Peer().Name, c.config.SilenceLimit, c.config.Log)
+	peer := conn.Peer()
+	l := startLink(conn, peer.Name, c.config.SilenceLimit, c.config.Log)
+	l.fingerprint = peer.Fingerprint
 	c.linksMutex.Lock()
 	c.links[conn] = l
 	c.linksMutex.Unlock()
@@ -164,7 +175,7 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 	}
 	switch frame.Code {
 	case event.ControlFeatures:
-		takes := takesCopies(frame)
+		takes := clipboard.KindsIn(frame.Value)
 		c.tell(func() { c.says(l, takes) })
 	case event.ControlClipboard, event.ControlClipboardData:
 		text, progress, err := l.take(frame)
@@ -181,6 +192,15 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 		l.acknowledged(frame.Value)
 	case event.ControlClipboardUnchanged:
 		c.tell(func() { c.unchangedOn(l) })
+	case event.ControlFileCopy:
+		l.filesDescribed(frame.Value)
+	case event.ControlFileCopySize:
+		if files, described := l.filesSized(frame.Value); described {
+			c.tell(func() { c.fileCopyFrom(l, files) })
+		}
+	case event.ControlDataStop:
+		wire := frame.Value
+		c.tell(func() { c.dataStopFrom(l, wire) })
 	}
 }
 
@@ -195,6 +215,7 @@ func (c *Central) lost(l *link) {
 	delete(c.sides, l)
 	l.close()
 	c.do(c.desk.Lost(l))
+	c.endTransfersWith(l)
 }
 
 func (c *Central) left(l *link, copyCutShort bool) {
@@ -206,17 +227,13 @@ func (c *Central) left(l *link, copyCutShort bool) {
 }
 
 func (c *Central) arrived(toASide bool, l *link) {
-	on := c.switchedOn()
-	if !on {
-		c.switchTo(false)
-	}
+	next := c.kindsOn()
+	c.switchTo(c.on & next)
 	if !c.reachable {
 		c.keeper.tryToReach()
 	}
 	c.moveFocus(toASide, l)
-	if on {
-		c.switchTo(true)
-	}
+	c.switchTo(next)
 }
 
 func (c *Central) moveFocus(toASide bool, l *link) {
@@ -245,7 +262,7 @@ func (c *Central) awaitTheAnswerOf(l *link) {
 	if machine == nil {
 		return
 	}
-	if !machine.takes || !c.on {
+	if machine.takes&c.on == 0 {
 		machine.stale++
 		return
 	}
@@ -300,17 +317,19 @@ func (c *Central) forgetAnswersOf(l *link) {
 	machine.answers = nil
 }
 
-func (c *Central) says(l *link, takes bool) {
+func (c *Central) says(l *link, takes clipboard.Kinds) {
 	machine := c.sides[l]
 	if machine == nil {
 		return
 	}
 	machine.takes = takes
-	if !takes {
+	if takes&c.on == 0 {
 		stopWaitingFor(machine)
+	}
+	if !takes.Has(clipboard.Text) {
 		l.stopCopies()
 	}
-	c.do(c.desk.Says(l, onlyText(takes)))
+	c.do(c.desk.Says(l, takes))
 }
 
 func (c *Central) unchangedOn(l *link) {
@@ -331,34 +350,56 @@ func (c *Central) withdrawalFrom(l *link) {
 	}
 }
 
+func (c *Central) fileCopyFrom(l *link, files clipboard.FileCopy) {
+	if !c.answerWasOwed(l) {
+		return
+	}
+	actions, err := c.desk.FileCopyFrom(l, files)
+	if err != nil {
+		fmt.Fprintf(c.config.Log, "A file copy from %s is not taken: %s\n", l.name, forTheLog(err))
+	}
+	c.do(actions)
+}
+
 func (c *Central) clipboardReachable(reachable bool) {
 	c.reachable = reachable
 	c.followTheSwitch()
 }
 
-func (c *Central) switchedOn() bool {
-	return c.reachable && c.config.SwitchedOn()
+func (c *Central) kindsOn() clipboard.Kinds {
+	return kindsOn(c.reachable, c.config.SwitchedOn(), c.config.FilesOn(), func() bool {
+		return c.filesNotice.possible(c.config.Log, c.config.whyNoFiles(c.keeper.canHoldFiles(), c.config.AwaitData != nil))
+	})
 }
 
 func (c *Central) followTheSwitch() {
-	c.switchTo(c.switchedOn())
+	c.switchTo(c.kindsOn())
 }
 
-func (c *Central) switchTo(on bool) {
+func (c *Central) switchTo(on clipboard.Kinds) {
 	if on == c.on {
 		return
 	}
+	textOff := c.on.Has(clipboard.Text) && !on.Has(clipboard.Text)
 	c.on = on
-	actions := c.desk.Switch(onlyText(on))
-	if !on {
-		for l, machine := range c.sides {
+	actions := c.desk.Switch(on)
+	for l, machine := range c.sides {
+		if machine.takes&on == 0 {
 			stopWaitingFor(machine)
-			if l.stopCopies() {
-				c.desk.SendStopped(l)
-			}
+		}
+		if textOff && l.stopCopies() {
+			c.desk.SendStopped(l)
 		}
 	}
 	c.do(actions)
+}
+
+func (c *Central) sharedKinds() clipboard.Kinds {
+	var shared clipboard.Kinds
+	for _, machine := range c.sides {
+		shared |= machine.takes & c.on
+	}
+	return shared
 }
 
 func (c *Central) readDone(result readResult) {
@@ -366,18 +407,40 @@ func (c *Central) readDone(result readResult) {
 		c.do(c.desk.ReadUnchanged())
 		return
 	}
-	actions, err := c.desk.ReadGave(result.text, result.err)
+	if !result.holdsFiles {
+		actions, err := c.desk.ReadGave(result.text, result.err)
+		if err != nil {
+			fmt.Fprintf(c.config.Log, "The copy on this machine is not shared: %s\n", forTheLog(err))
+		}
+		c.do(actions)
+		return
+	}
+	actions, err := c.desk.ReadGaveFiles(result.files, result.err)
 	if err != nil {
-		fmt.Fprintf(c.config.Log, "The copy on this machine is not shared: %v\n", err)
+		fmt.Fprintf(c.config.Log, "The file copy on this machine is not sent: %s\n", forTheLog(err))
+	} else {
+		c.ownFiles = result.paths
+		noteLeftOut(c.config.Log, result.skipped)
 	}
 	c.do(actions)
 }
 
 func (c *Central) do(actions []clipboard.Action[*link]) {
+	var planned []*centralTransfer
+	plan := func(transfer int) *centralTransfer {
+		for _, t := range planned {
+			if t.id == transfer {
+				return t
+			}
+		}
+		t := &centralTransfer{id: transfer}
+		planned = append(planned, t)
+		return t
+	}
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			action.To.announce(c.config.turnTheClipboard(action.Takes.Has(clipboard.Text)))
+			action.To.announce(c.config.announcing(action.Takes))
 		case clipboard.Send:
 			if !action.To.sendNewestCopy(action.Text) {
 				c.desk.SendStopped(action.To)
@@ -385,9 +448,22 @@ func (c *Central) do(actions []clipboard.Action[*link]) {
 		case clipboard.Write:
 			c.keeper.write(action.Text)
 		case clipboard.Read:
-			c.keeper.read(func(result readResult) { c.tell(func() { c.readDone(result) }) })
+			c.keeper.read(listFilesBy(c.sharedKinds(), c.config.SilenceLimit), func(result readResult) {
+				c.tell(func() { c.readDone(result) })
+			})
 		case clipboard.Mark:
-			c.keeper.takeReadMark()
+			c.keeper.takeReadMark(action.Takes)
+		case clipboard.Fetch:
+			plan(action.Transfer).from = action.To
+		case clipboard.Deliver:
+			plan(action.Transfer).to = action.To
+		case clipboard.Stop:
+			c.stopTransfer(action.Transfer)
+		case clipboard.WriteFiles:
+			c.writeArrived(action.Transfer)
 		}
+	}
+	for _, t := range planned {
+		c.start(t)
 	}
 }

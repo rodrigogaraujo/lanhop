@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 3 ]; then
+  echo "usage: compare-installers OLD_INSTALL.sh NEW_INSTALL.sh SERVED_RELEASES" >&2
+  exit 64
+fi
+old=$1
+new=$2
+served=$(cd "$3" && pwd)
+
+refuse() {
+  printf 'compare-installers: %s\n' "$*" >&2
+  exit 1
+}
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+case $(uname -s) in
+  Darwin)
+    role=share
+    kept="launch-agent"
+    ;;
+  *)
+    role=receive
+    kept="systemd-unit udev-rule"
+    ;;
+esac
+
+install_with() {
+  installer=$1
+  into=$2
+  rm -rf "${work:?}/home" "${work:?}/root"
+  mkdir -p "$work/home" "$work/root/Applications" "$into"
+  if ! HOME="$work/home" XDG_CONFIG_HOME="" XDG_STATE_HOME="" LANHOP_SYSTEM_ROOT="$work/root" \
+    LANHOP_RELEASES_URL="file://$served" LANHOP_ROLE=$role LANHOP_YES=1 LANHOP_PRINT_COMMANDS=1 \
+    sh "$installer" </dev/null >"$into/output" 2>&1; then
+    cat "$into/output" >&2
+    refuse "$installer did not finish"
+  fi
+  agent=$work/home/Library/LaunchAgents/com.github.rodrigogaraujo.lanhop.plist
+  unit=$work/home/.config/systemd/user/lanhop.service
+  if [ -f "$agent" ]; then cp "$agent" "$into/launch-agent"; fi
+  if [ -f "$unit" ]; then cp "$unit" "$into/systemd-unit"; fi
+  sed -n "s/.*'\(KERNEL==[^']*\)'.*/\1/p" "$into/output" | sort -u >"$into/udev-rule"
+}
+
+install_with "$old" "$work/old"
+install_with "$new" "$work/new"
+differ=no
+for name in $kept; do
+  if [ ! -s "$work/new/$name" ]; then
+    cat "$work/new/output" >&2
+    refuse "$new wrote no $name, so there is nothing to compare"
+  fi
+  if ! diff -u "$work/old/$name" "$work/new/$name" >&2; then
+    printf 'compare-installers: the %s that %s writes differs from the one %s writes\n' "$name" "$new" "$old" >&2
+    differ=yes
+  fi
+done
+if [ "$differ" = yes ]; then
+  exit 1
+fi
+printf '%s and %s write the same: %s\n' "$old" "$new" "$kept"

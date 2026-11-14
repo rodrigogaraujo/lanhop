@@ -72,7 +72,7 @@ After an update, a Mac goes on controlling and sharing without a new click in Sy
 - lanhop was not installed by the installer, or runs from a folder the person cannot write.
 - lanhop runs by hand in a terminal instead of as a service.
 - A Mac whose disk cannot swap two folders in one step.
-- A build that is not a release: `dev` from the source code, or `dev-<commit>` from a run of the workflow.
+- A build that is not a release: `dev` from the source code, or `dev-<commit>` from a run of the workflow before v0.1.2.
 - Two `lanhop update` at the same time on one machine.
 - The central updates while a side machine is in the middle of its own update.
 - GitHub cannot be reached, or answers slowly.

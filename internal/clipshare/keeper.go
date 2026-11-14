@@ -2,11 +2,17 @@ package clipshare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
+	"github.com/rodrigogaraujo/lanhop/internal/filestream"
 )
 
 const (
@@ -14,10 +20,62 @@ const (
 	longestRetryAfter = 30 * time.Second
 )
 
+var filesNotShared time.Time
+
 type readResult struct {
-	text      string
-	err       error
-	unchanged bool
+	text       string
+	holdsFiles bool
+	files      clipboard.FileCopy
+	paths      []string
+	skipped    int
+	err        error
+	unchanged  bool
+}
+
+func (r readResult) kind() clipboard.Kinds {
+	if r.holdsFiles {
+		return clipboard.Files
+	}
+	return clipboard.Text
+}
+
+type readMarks struct {
+	text  int64
+	files int64
+}
+
+func bothMarks(mark int64) readMarks {
+	return readMarks{text: mark, files: mark}
+}
+
+func (m *readMarks) take(kinds clipboard.Kinds, mark int64) {
+	if kinds.Has(clipboard.Text) {
+		m.text = mark
+	}
+	if kinds.Has(clipboard.Files) {
+		m.files = mark
+	}
+}
+
+func (m readMarks) of(kind clipboard.Kinds) int64 {
+	if kind == clipboard.Files {
+		return m.files
+	}
+	return m.text
+}
+
+type seenMark struct {
+	mark   int64
+	starts int
+}
+
+type focusArrival struct {
+	seen *seenMark
+}
+
+type arrived interface {
+	Paths() []string
+	GiveUp()
 }
 
 type keeper struct {
@@ -27,13 +85,20 @@ type keeper struct {
 	jobs            *mailbox[func()]
 	board           Clipboard
 	gone            <-chan struct{}
-	readMark        int64
+	readMarks       readMarks
 	untouchedMark   int64
+	starts          int
 	saidUnreachable bool
 	retryAfter      time.Duration
 	nextAttempt     time.Time
 	now             func() time.Time
-	readMarkWaiting atomic.Bool
+	holdsFiles      atomic.Bool
+	readsAsked      atomic.Int64
+
+	marksMutex sync.Mutex
+	marksDue   *clipboard.Kinds
+	underWay   *seenMark
+	arriving   []*focusArrival
 }
 
 func newKeeper(config Config, reachable func(bool)) *keeper {
@@ -48,7 +113,9 @@ func newKeeper(config Config, reachable func(bool)) *keeper {
 }
 
 func (k *keeper) queue(job func()) {
-	k.readMarkWaiting.Store(false)
+	k.marksMutex.Lock()
+	k.marksDue = nil
+	k.marksMutex.Unlock()
 	k.jobs.put(job)
 }
 
@@ -70,6 +137,10 @@ func (k *keeper) run(ctx context.Context, reachedAtStart chan<- bool) {
 	}
 }
 
+func (k *keeper) canHoldFiles() bool {
+	return k.holdsFiles.Load()
+}
+
 func (k *keeper) tryToReach() {
 	k.queue(k.reachIfDue)
 }
@@ -80,32 +151,72 @@ func (k *keeper) reachIfDue() {
 	}
 }
 
-func (k *keeper) takeReadMark() {
-	if k.readMarkWaiting.Swap(true) {
+func (k *keeper) takeReadMark(kinds clipboard.Kinds) {
+	k.marksMutex.Lock()
+	if k.marksDue != nil {
+		*k.marksDue |= kinds
+		k.marksMutex.Unlock()
 		return
 	}
+	due := &kinds
+	k.marksDue = due
+	k.marksMutex.Unlock()
 	k.jobs.put(func() {
-		k.readMarkWaiting.Store(false)
+		k.marksMutex.Lock()
+		if k.marksDue == due {
+			k.marksDue = nil
+		}
+		taking := *due
+		k.marksMutex.Unlock()
 		if k.board != nil {
-			k.readMark = k.board.Mark()
+			k.readMarks.take(taking, k.board.Mark())
 		}
 	})
 }
 
 func (k *keeper) takeArrivalMark() {
-	k.queue(func() {
-		if k.board != nil {
-			k.untouchedMark = k.board.Mark()
-		}
-	})
+	arriving := &focusArrival{}
+	k.marksMutex.Lock()
+	if k.underWay != nil {
+		arriving.seen = k.underWay
+	} else {
+		k.arriving = append(k.arriving, arriving)
+	}
+	k.marksMutex.Unlock()
+	k.queue(func() { k.arrive(arriving) })
 }
 
-func (k *keeper) read(done func(readResult)) {
-	k.queue(func() { done(k.readNow()) })
+func (k *keeper) arrive(arriving *focusArrival) {
+	k.marksMutex.Lock()
+	k.arriving = slices.DeleteFunc(k.arriving, func(waiting *focusArrival) bool { return waiting == arriving })
+	seen := arriving.seen
+	k.marksMutex.Unlock()
+	switch {
+	case k.board == nil:
+	case seen == nil:
+		k.untouchedMark = k.board.Mark()
+	case seen.starts == k.starts:
+		k.untouchedMark = seen.mark
+	}
+}
+
+func (k *keeper) read(listFilesBy time.Time, done func(readResult)) {
+	asked := k.readsAsked.Add(1)
+	k.queue(func() {
+		if k.readsAsked.Load() != asked {
+			done(readResult{unchanged: true})
+			return
+		}
+		done(k.readNow(listFilesBy))
+	})
 }
 
 func (k *keeper) write(text string) {
 	k.queue(func() { k.writeNow(text) })
+}
+
+func (k *keeper) writeFiles(files arrived) {
+	k.queue(func() { k.writeFilesNow(files) })
 }
 
 func (k *keeper) connect() bool {
@@ -120,12 +231,13 @@ func (k *keeper) connect() bool {
 		return false
 	}
 	k.board, k.gone = board, nil
+	_, holdsFiles := board.(FileClipboard)
+	k.holdsFiles.Store(holdsFiles)
 	k.tryAgainAtOnce()
 	if ending, endsSometimes := board.(interface{ Done() <-chan struct{} }); endsSometimes {
 		k.gone = ending.Done()
 	}
-	fresh := board.Mark()
-	k.readMark, k.untouchedMark = fresh, fresh
+	k.startFrom(board.Mark())
 	if k.saidUnreachable {
 		fmt.Fprintln(k.log, "lanhop reaches the clipboard of this machine again.")
 		k.saidUnreachable = false
@@ -154,19 +266,67 @@ func (k *keeper) disconnect() {
 		closer.Close()
 	}
 	k.board, k.gone = nil, nil
+	k.holdsFiles.Store(false)
 }
 
-func (k *keeper) readNow() readResult {
+func (k *keeper) readNow(listFilesBy time.Time) readResult {
 	if k.board == nil {
 		return readResult{err: ErrUnreachable}
 	}
 	now := k.board.Mark()
-	if now == k.readMark {
+	k.readStarts(&seenMark{mark: now, starts: k.starts})
+	defer k.readEnds()
+	if now == k.readMarks.text && now == k.readMarks.files {
 		return readResult{unchanged: true}
 	}
-	text, err := k.board.Read()
-	k.readMark = now
-	return readResult{text: text, err: err}
+	result := k.readCopy(listFilesBy)
+	readBefore := k.readMarks.of(result.kind())
+	k.readMarks = bothMarks(now)
+	if now == readBefore {
+		return readResult{unchanged: true}
+	}
+	return result
+}
+
+func (k *keeper) readStarts(seen *seenMark) {
+	k.marksMutex.Lock()
+	defer k.marksMutex.Unlock()
+	for _, waiting := range k.arriving {
+		waiting.seen = seen
+	}
+	k.arriving = nil
+	k.underWay = seen
+}
+
+func (k *keeper) readEnds() {
+	k.marksMutex.Lock()
+	k.underWay = nil
+	k.marksMutex.Unlock()
+}
+
+func (k *keeper) readCopy(listFilesBy time.Time) readResult {
+	files, holdsFiles := k.board.(FileClipboard)
+	if !holdsFiles {
+		text, err := k.board.Read()
+		return readResult{text: text, err: err}
+	}
+	paths, err := files.ReadFiles()
+	switch {
+	case errors.Is(err, clipboard.ErrNotFiles):
+		text, err := k.board.Read()
+		if errors.Is(err, clipboard.ErrNotText) {
+			err = fmt.Errorf("%w, nor files lanhop can read, such as a copied file that is gone", err)
+		}
+		return readResult{text: text, err: err}
+	case errors.Is(err, clipboard.ErrPrivate):
+		return readResult{err: err}
+	case err != nil:
+		return readResult{holdsFiles: true, err: err}
+	case listFilesBy.IsZero():
+		return readResult{holdsFiles: true, err: clipboard.ErrFilesNotShared}
+	}
+	listing, err := filestream.Count(paths, listFilesBy)
+	return readResult{holdsFiles: true, files: listing.Copy, paths: paths, skipped: listing.Skipped, err: err}
 }
 
 func (k *keeper) writeNow(text string) {
@@ -182,5 +342,30 @@ func (k *keeper) writeNow(text string) {
 		fmt.Fprintf(k.log, "A copy arrived, and lanhop could not write it to the clipboard: %v\n", err)
 		return
 	}
-	k.readMark, k.untouchedMark = mark, mark
+	k.startFrom(mark)
+}
+
+func (k *keeper) writeFilesNow(files arrived) {
+	board, holdsFiles := k.board.(FileClipboard)
+	if !holdsFiles {
+		files.GiveUp()
+		return
+	}
+	if board.Mark() != k.untouchedMark {
+		fmt.Fprintln(k.log, "Files arrived, and the newer copy made on this machine after focus arrived was kept.")
+		files.GiveUp()
+		return
+	}
+	mark, err := board.WriteFiles(files.Paths())
+	if err != nil {
+		fmt.Fprintf(k.log, "Files arrived, and lanhop could not put them on the clipboard: %s\n", forTheLog(err))
+		files.GiveUp()
+		return
+	}
+	k.startFrom(mark)
+}
+
+func (k *keeper) startFrom(mark int64) {
+	k.readMarks, k.untouchedMark = bothMarks(mark), mark
+	k.starts++
 }

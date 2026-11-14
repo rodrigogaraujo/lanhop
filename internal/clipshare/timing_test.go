@@ -2,6 +2,7 @@ package clipshare
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -139,6 +140,42 @@ func TestA64KiBCopyIsReadyToPasteWithin300MillisecondsAfterFocusArrivesOverA20Me
 	for _, took := range slices.Concat(tookFromTheCentral, tookFromASideMachine) {
 		if took > pasteReadyWithin {
 			t.Errorf("a 64 KiB copy was written %s after focus moved, want under %s", took, pasteReadyWithin)
+		}
+	}
+}
+
+const fileReadyWithin = 2 * time.Second
+
+func TestA10MiBFileIsReadyToPasteWithin2SecondsAfterFocusArrives(t *testing.T) {
+	measuredWithoutTheRaceDetector(t)
+	d := newFileDesk(t, "left", "right")
+	left, right := d.sideJoins("left"), d.sideJoins("right")
+	d.waitUntilSharingFiles(left, right)
+
+	d.focusOn(left.number)
+	fromTheLeft := writeFile(t, filepath.Join(t.TempDir(), "from the left.bin"), randomContent(t, 10<<20))
+	left.clipboard.personCopiesFiles(fromTheLeft)
+	crossed := d.focusOn(right.number)
+	arrived := waitUntilFilesWritten(t, "right", right.clipboard, 1)
+	sideToSide := right.clipboard.filesWritten()[0].at.Sub(crossed)
+	expectSameFiles(t, arrived, right.arrivalDir, fromTheLeft)
+
+	d.focusOn(left.number)
+	left.clipboard.personCopies("between the two files")
+	d.focusOn(thisMachine)
+	waitUntilItHolds(t, "the central", d.clipboard, "between the two files")
+	fromTheCentral := writeFile(t, filepath.Join(t.TempDir(), "from the central.bin"), randomContent(t, 10<<20))
+	d.clipboard.personCopiesFiles(fromTheCentral)
+	crossed = d.focusOn(right.number)
+	arrived = waitUntilFilesWritten(t, "right", right.clipboard, 2)
+	centralToSide := right.clipboard.filesWritten()[1].at.Sub(crossed)
+	expectSameFiles(t, arrived, right.arrivalDir, fromTheCentral)
+
+	t.Logf("SC-001: from the hotkey to 10 MiB on the clipboard of the next machine: side machine to side machine through the central %s, central to side machine %s",
+		sideToSide.Round(time.Millisecond), centralToSide.Round(time.Millisecond))
+	for _, took := range []time.Duration{sideToSide, centralToSide} {
+		if took > fileReadyWithin {
+			t.Errorf("a 10 MiB file was on the clipboard %s after focus moved, want under %s", took, fileReadyWithin)
 		}
 	}
 }
