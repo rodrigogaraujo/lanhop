@@ -60,6 +60,7 @@ const (
 	answerTimeout    = time.Second
 	wholeReadTimeout = 3 * time.Second
 	transferLifetime = 10 * time.Second
+	retiredAtMost    = 8
 	largestChunk     = 64 << 10
 	privateHintValue = "secret"
 	uriListLimit     = 64 << 10
@@ -136,6 +137,7 @@ type Clipboard struct {
 	transfers    []*transfer
 	readTimeout  time.Duration
 	reader       atomic.Uint32
+	retired      []retiredWindow
 	wholeRead    time.Duration
 	handleEvents func(event []byte)
 }
@@ -577,12 +579,31 @@ func (b *Clipboard) openReader() error {
 	return nil
 }
 
+type retiredWindow struct {
+	window uint32
+	since  time.Time
+}
+
 func (b *Clipboard) leaveTheOwnerNothingToWriteInto() {
 	abandoned := b.reader.Load()
 	if err := b.openReader(); err != nil {
 		return
 	}
-	b.c.send(newRequest(opDestroyWindow, 0).u32(abandoned).done())
+	now := time.Now()
+	for len(b.retired) > 0 && (now.Sub(b.retired[0].since) > transferLifetime || len(b.retired) >= retiredAtMost) {
+		b.c.send(newRequest(opDestroyWindow, 0).u32(b.retired[0].window).done())
+		b.retired = b.retired[1:]
+	}
+	b.retired = append(b.retired, retiredWindow{window: abandoned, since: now})
+}
+
+func (b *Clipboard) connectionLost() bool {
+	select {
+	case <-b.c.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *Clipboard) convert(target uint32, limit int, until time.Time) ([]byte, error) {
@@ -590,7 +611,7 @@ func (b *Clipboard) convert(target uint32, limit int, until time.Time) ([]byte, 
 		return nil, ErrNoAnswer
 	}
 	data, err := b.askTheOwner(target, limit, until)
-	if errors.Is(err, ErrNoAnswer) || errors.Is(err, clipboard.ErrTooLarge) {
+	if err != nil && !errors.Is(err, errTargetRefused) && !b.connectionLost() {
 		b.leaveTheOwnerNothingToWriteInto()
 	}
 	return data, err

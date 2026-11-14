@@ -446,6 +446,65 @@ func TestReadsAfterStoppingACopyOverTheLimitAreNotSpoiledByTheRestOfIt(t *testin
 	}
 }
 
+func windowExists(t *testing.T, b *Clipboard, window uint32) bool {
+	t.Helper()
+	_, err := b.c.call(newRequest(opGetProperty, 0).u32(window).u32(b.atoms.ownProperty).u32(0).u32(0).u32(0).done())
+	var refused RequestError
+	if errors.As(err, &refused) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("GetProperty: %v", err)
+	}
+	return true
+}
+
+func givingUpOn(t *testing.T, reader *Clipboard) uint32 {
+	t.Helper()
+	abandoned := reader.reader.Load()
+	if _, err := reader.Read(); !errors.Is(err, ErrNoAnswer) {
+		t.Fatalf("Read of the endless copy: error = %v, want %v", err, ErrNoAnswer)
+	}
+	return abandoned
+}
+
+func TestAWindowGivenUpOnStaysUntilItsOwnerCanNoLongerBeWritingIntoIt(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 0, []byte("x")))
+	reader.wholeRead = 200 * time.Millisecond
+
+	abandoned := givingUpOn(t, reader)
+	if !windowExists(t, reader, abandoned) {
+		t.Fatal("the window given up on was destroyed while its owner may still be writing into it")
+	}
+
+	reader.retired[0].since = time.Now().Add(-transferLifetime - time.Second)
+	givingUpOn(t, reader)
+	if windowExists(t, reader, abandoned) {
+		t.Error("a window given up on longer ago than a transfer may last was kept")
+	}
+}
+
+func TestAtMostEightWindowsGivenUpOnAreKept(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 0, []byte("x")))
+	reader.wholeRead = 100 * time.Millisecond
+
+	first := givingUpOn(t, reader)
+	for range retiredAtMost {
+		givingUpOn(t, reader)
+	}
+
+	if len(reader.retired) != retiredAtMost {
+		t.Errorf("%d windows given up on are kept, want %d", len(reader.retired), retiredAtMost)
+	}
+	if windowExists(t, reader, first) {
+		t.Error("the oldest window given up on was kept past the limit")
+	}
+}
+
 func TestWritingAndReading64KiBTakesLittleOfTheTimeACopyMayTake(t *testing.T) {
 	const budget = 300 * time.Millisecond
 	writer, reader := twoPrograms(t)
