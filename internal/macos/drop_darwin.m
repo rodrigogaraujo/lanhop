@@ -26,8 +26,8 @@ static const CGFloat pileShift = 4;
 static const NSUInteger pileDepth = 4;
 static const NSInteger concurrentWrites = 4;
 static const CGFloat nearlyClear = 0.01;
-static const int64_t abandonAfterSeconds = 10;
-static const int64_t quitBackstopSeconds = 15;
+static const NSTimeInterval abandonAfterSeconds = 10;
+static const NSTimeInterval quitBackstopSeconds = 15;
 static const double mainThreadLimitSeconds = 2;
 
 static atomic_bool exitAsked;
@@ -45,7 +45,23 @@ bool lanhopHasGUISession(void) {
 	return true;
 }
 
+static NSArray *mainThreadModes(void) {
+	static NSArray *modes;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		modes = [@[ NSDefaultRunLoopMode, NSEventTrackingRunLoopMode, NSModalPanelRunLoopMode, (id)kCFRunLoopCommonModes ] retain];
+	});
+	return modes;
+}
+
+static void performOnMainThread(void (^work)(void)) {
+	CFRunLoopRef main = CFRunLoopGetMain();
+	CFRunLoopPerformBlock(main, (CFTypeRef)mainThreadModes(), work);
+	CFRunLoopWakeUp(main);
+}
+
 @interface LanhopAppDelegate : NSObject <NSApplicationDelegate>
+- (void)answerTheQuit;
 @end
 
 @implementation LanhopAppDelegate
@@ -54,10 +70,12 @@ bool lanhopHasGUISession(void) {
 	if (!atomic_load(&exitAsked)) {
 		kill(getpid(), SIGTERM);
 	}
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, quitBackstopSeconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-		[NSApp replyToApplicationShouldTerminate:YES];
-	});
+	[self performSelector:@selector(answerTheQuit) withObject:nil afterDelay:quitBackstopSeconds inModes:mainThreadModes()];
 	return NSTerminateLater;
+}
+
+- (void)answerTheQuit {
+	[NSApp replyToApplicationShouldTerminate:YES];
 }
 
 @end
@@ -80,14 +98,12 @@ void lanhopAppRun(void) {
 }
 
 void lanhopAppQuit(void) {
-	dispatch_async(dispatch_get_main_queue(), ^{
-		[NSApp terminate:nil];
-	});
+	[NSApp performSelectorOnMainThread:@selector(terminate:) withObject:nil waitUntilDone:NO];
 }
 
 void lanhopExitOnMainThread(int code) {
 	atomic_store(&exitAsked, true);
-	dispatch_async(dispatch_get_main_queue(), ^{
+	performOnMainThread(^{
 		lanhopExitNow(code);
 	});
 }
@@ -95,9 +111,15 @@ void lanhopExitOnMainThread(int code) {
 static void runOnMainThread(void (^work)(void)) {
 	if ([NSThread isMainThread]) {
 		work();
-	} else {
-		dispatch_sync(dispatch_get_main_queue(), work);
+		return;
 	}
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+	performOnMainThread(^{
+		work();
+		dispatch_semaphore_signal(done);
+	});
+	dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+	dispatch_release(done);
 }
 
 @interface LanhopAnswer : NSObject {
@@ -115,7 +137,7 @@ static int answerOnMainThread(int late, int (^work)(void)) {
 	}
 	LanhopAnswer *answer = [[LanhopAnswer alloc] init];
 	dispatch_semaphore_t answered = dispatch_semaphore_create(0);
-	dispatch_async(dispatch_get_main_queue(), ^{
+	performOnMainThread(^{
 		answer->value = work();
 		dispatch_semaphore_signal(answered);
 	});
@@ -271,7 +293,7 @@ static NSPoint onTheScreens(CGPoint at) {
 	if ([NSThread isMainThread]) {
 		[queue release];
 	} else {
-		dispatch_async(dispatch_get_main_queue(), ^{
+		performOnMainThread(^{
 			[queue release];
 		});
 	}
@@ -298,7 +320,7 @@ static NSPoint onTheScreens(CGPoint at) {
 	if ([NSThread isMainThread]) {
 		closing();
 	} else {
-		dispatch_async(dispatch_get_main_queue(), closing);
+		performOnMainThread(closing);
 	}
 }
 
@@ -347,7 +369,7 @@ static NSPoint onTheScreens(CGPoint at) {
 - (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
 	if (abandoned) {
 		abandoned = NO;
-		dispatch_async(dispatch_get_main_queue(), ^{
+		performOnMainThread(^{
 			[self release];
 		});
 		return;
@@ -361,7 +383,7 @@ static NSPoint onTheScreens(CGPoint at) {
 	giveBackActivation(frontBefore);
 	lanhopDropEnded(dropID, (uint64_t)operation, held);
 	if (closed) {
-		dispatch_async(dispatch_get_main_queue(), ^{
+		performOnMainThread(^{
 			[self release];
 		});
 	}
@@ -526,9 +548,7 @@ bool lanhopDropClose(void *drop) {
 		[source->window orderOut:nil];
 		giveBackActivation(source->frontBefore);
 		if (source->asked && !source->ended) {
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, abandonAfterSeconds * (int64_t)NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-				[source abandon];
-			});
+			[source performSelector:@selector(abandon) withObject:nil afterDelay:abandonAfterSeconds inModes:mainThreadModes()];
 			return 1;
 		}
 		lanhopDropSessionOver(source->dropID);

@@ -10,13 +10,17 @@ import "C"
 
 import (
 	"errors"
+	"log"
 	"os"
 	"runtime"
 	"sync"
 	"time"
 )
 
-const appKitStartLimit = 5 * time.Second
+const (
+	appKitStartLimit    = 5 * time.Second
+	mainThreadExitLimit = 5 * time.Second
+)
 
 var (
 	ErrNoMainThread      = errors.New("macos: no AppKit run loop can run on the main thread of this program")
@@ -63,6 +67,9 @@ func exitOnTheMainThread(code int) {
 	exitCodes <- code
 	if appKit {
 		C.lanhopExitOnMainThread(C.int(code))
+		time.Sleep(mainThreadExitLimit)
+		log.Printf("macos: the main thread did not exit within %v, so lanhop exits from another thread", mainThreadExitLimit)
+		os.Exit(code)
 	}
 	select {}
 }

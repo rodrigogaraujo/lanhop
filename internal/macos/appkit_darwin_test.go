@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -91,6 +92,8 @@ func TestTheDropWindowAndAQuitOfTheAppWorkOnTheAppKitRunLoopOfTheMainThread(t *t
 		t.Fatalf("the AppKit check did not run: %v", err)
 	}
 	switch code := child.ProcessState.ExitCode(); {
+	case code == appKitWindowCheckPassed && strings.Contains(string(output), "did not exit within"):
+		t.Fatalf("the exit code reached the process, but not through the main thread:\n%s", output)
 	case code == appKitWindowCheckPassed:
 		t.Logf("%s", output)
 	case code == appKitWithoutGUISession && os.Getenv("CI") == "":
