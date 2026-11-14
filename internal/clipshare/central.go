@@ -14,14 +14,19 @@ import (
 )
 
 type centralNews struct {
-	endsAMoveOfFocus bool
-	handle           func()
+	endsAMoveOfFocus    bool
+	evenWhileFocusMoves bool
+	handle              func()
 }
 
 type sideMachine struct {
-	takes   clipboard.Kinds
-	stale   int
-	answers []*answerDue
+	takes       clipboard.Kinds
+	drops       bool
+	stale       int
+	answers     []*answerDue
+	dragging    bool
+	drag        clipboard.FileCopy
+	dragCrossed bool
 }
 
 type answerDue struct {
@@ -47,10 +52,25 @@ type Central struct {
 	sides          map[*link]*sideMachine
 
 	ctx         context.Context
+	stopped     chan struct{}
 	transfers   map[int]*centralTransfer
 	moving      sync.WaitGroup
 	ownFiles    []string
 	filesNotice filesNotice
+
+	dragWatch      dragWatch
+	dragging       bool
+	drag           clipboard.FileCopy
+	dragged        []string
+	ownDragCrossed bool
+	lastDrop       int
+	drops          map[int]*dropRun
+	delivered      map[int]dataHalf
+	started        chan struct{}
+	remover        remover
+
+	sideDragStarted func(SideDrag)
+	sideDragEnded   func(origin string)
 }
 
 func NewCentral(config Config) *Central {
@@ -60,7 +80,11 @@ func NewCentral(config Config) *Central {
 		links:     make(map[sharer.Conn]*link),
 		sides:     make(map[*link]*sideMachine),
 		focusHere: true,
+		stopped:   make(chan struct{}),
+		started:   make(chan struct{}),
 		transfers: make(map[int]*centralTransfer),
+		drops:     make(map[int]*dropRun),
+		delivered: make(map[int]dataHalf),
 	}
 	c.keeper = newKeeper(c.config, func(reachable bool) {
 		c.tell(func() { c.clipboardReachable(reachable) })
@@ -80,12 +104,17 @@ func (c *Central) Run(ctx context.Context) {
 	c.on = c.kindsOn()
 	c.desk = clipboard.NewDesk[*link](c.on)
 	c.ctx = ctx
+	c.do(c.desk.CentralTakesDrops(c.config.takesDrops(c.on)))
+	close(c.started)
+	defer c.remover.wait(c.config.SilenceLimit)
 	defer c.closeLinks()
 	defer c.endEveryTransfer()
+	defer c.endEveryDrop()
 	for {
 		select {
 		case <-ctx.Done():
 			c.inbox.close()
+			close(c.stopped)
 			return
 		case <-c.inbox.ready:
 			for _, news := range c.inbox.take() {
@@ -135,6 +164,43 @@ func (c *Central) FocusArrives(conn sharer.Conn) {
 	c.inbox.put(centralNews{endsAMoveOfFocus: true, handle: func() { c.arrived(toASide, l) }})
 }
 
+func (c *Central) DragSeen(paths []string) {
+	paths = slices.Clone(paths)
+	c.tell(func() { c.dragSeen(paths) })
+}
+
+func (c *Central) DragGone() {
+	c.tell(c.dragGone)
+}
+
+func (c *Central) OnSideDrags(started func(SideDrag), ended func(origin string)) {
+	c.sideDragStarted, c.sideDragEnded = started, ended
+}
+
+func (c *Central) DragCrossed(origin, to string) error {
+	select {
+	case <-c.started:
+	default:
+		return errNotRunning
+	}
+	answer := make(chan error, 1)
+	c.inbox.put(centralNews{evenWhileFocusMoves: true, handle: func() { answer <- c.dragCrossed(origin, to) }})
+	select {
+	case err := <-answer:
+		return err
+	case <-c.stopped:
+		return errNotRunning
+	}
+}
+
+func (c *Central) DragCancelled() {
+	c.tell(func() { c.do(c.desk.DragCancelled(c.lastDrop)) })
+}
+
+func (c *Central) DragOver() {
+	c.tell(c.dragOver)
+}
+
 func (c *Central) linkOf(conn sharer.Conn) *link {
 	c.linksMutex.Lock()
 	defer c.linksMutex.Unlock()
@@ -154,7 +220,7 @@ func (c *Central) tell(handle func()) {
 }
 
 func (c *Central) receive(news centralNews) {
-	if c.focusMoving && !news.endsAMoveOfFocus {
+	if c.focusMoving && !news.endsAMoveOfFocus && !news.evenWhileFocusMoves {
 		c.heldDuringMove = append(c.heldDuringMove, news)
 		return
 	}
@@ -176,7 +242,8 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 	switch frame.Code {
 	case event.ControlFeatures:
 		takes := clipboard.KindsIn(frame.Value)
-		c.tell(func() { c.says(l, takes) })
+		drops := clipboard.DropsIn(frame.Value)
+		c.tell(func() { c.says(l, takes, drops) })
 	case event.ControlClipboard, event.ControlClipboardData:
 		text, progress, err := l.take(frame)
 		switch {
@@ -201,6 +268,17 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 	case event.ControlDataStop:
 		wire := frame.Value
 		c.tell(func() { c.dataStopFrom(l, wire) })
+	case event.ControlDragFiles:
+		if l.dragDescribed(frame.Value) {
+			c.tell(func() { c.dragGoneOn(l) })
+		}
+	case event.ControlDragFilesSize:
+		if files, dock, described := l.dragSized(frame.Value); described {
+			c.tell(func() { c.dragOn(l, files, dock) })
+		}
+	case event.ControlDropTaken:
+		wire := frame.Value
+		c.tell(func() { c.dropTakenOn(l, wire) })
 	}
 }
 
@@ -211,11 +289,15 @@ func (c *Central) connected(l *link) {
 }
 
 func (c *Central) lost(l *link) {
+	if machine := c.sides[l]; machine != nil {
+		c.forgetDragOn(l, machine)
+	}
 	c.forgetAnswersOf(l)
 	delete(c.sides, l)
 	l.close()
 	c.do(c.desk.Lost(l))
 	c.endTransfersWith(l)
+	c.forgetDeliveredTo(l)
 }
 
 func (c *Central) left(l *link, copyCutShort bool) {
@@ -317,12 +399,15 @@ func (c *Central) forgetAnswersOf(l *link) {
 	machine.answers = nil
 }
 
-func (c *Central) says(l *link, takes clipboard.Kinds) {
+func (c *Central) says(l *link, takes clipboard.Kinds, drops bool) {
 	machine := c.sides[l]
 	if machine == nil {
 		return
 	}
-	machine.takes = takes
+	machine.takes, machine.drops = takes, drops
+	if !c.takesDraggedFilesOf(machine) {
+		c.forgetDragOn(l, machine)
+	}
 	if takes&c.on == 0 {
 		stopWaitingFor(machine)
 	}
@@ -330,6 +415,7 @@ func (c *Central) says(l *link, takes clipboard.Kinds) {
 		l.stopCopies()
 	}
 	c.do(c.desk.Says(l, takes))
+	c.do(c.desk.SaysDrops(l, drops))
 }
 
 func (c *Central) unchangedOn(l *link) {
@@ -383,9 +469,13 @@ func (c *Central) switchTo(on clipboard.Kinds) {
 	textOff := c.on.Has(clipboard.Text) && !on.Has(clipboard.Text)
 	c.on = on
 	actions := c.desk.Switch(on)
+	actions = append(actions, c.desk.CentralTakesDrops(c.config.takesDrops(on))...)
 	for l, machine := range c.sides {
 		if machine.takes&on == 0 {
 			stopWaitingFor(machine)
+		}
+		if !c.takesDraggedFilesOf(machine) {
+			c.forgetDragOn(l, machine)
 		}
 		if textOff && l.stopCopies() {
 			c.desk.SendStopped(l)
@@ -454,13 +544,21 @@ func (c *Central) do(actions []clipboard.Action[*link]) {
 		case clipboard.Mark:
 			c.keeper.takeReadMark(action.Takes)
 		case clipboard.Fetch:
-			plan(action.Transfer).from = action.To
+			t := plan(action.Transfer)
+			t.from, t.drop = action.To, t.drop || action.Drop
 		case clipboard.Deliver:
-			plan(action.Transfer).to = action.To
+			t := plan(action.Transfer)
+			t.to, t.drop = action.To, t.drop || action.Drop
 		case clipboard.Stop:
 			c.stopTransfer(action.Transfer)
 		case clipboard.WriteFiles:
 			c.writeArrived(action.Transfer)
+		case clipboard.StartDrop:
+			c.startDrop(action.Transfer)
+		case clipboard.FinishDrop:
+			c.finishDrop(action.Transfer)
+		case clipboard.CancelDrop:
+			c.cancelDrop(action.To, action.Transfer)
 		}
 	}
 	for _, t := range planned {

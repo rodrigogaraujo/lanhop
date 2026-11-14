@@ -15,6 +15,8 @@ type sideTransfer struct {
 	wire      int
 	link      *link
 	receiving bool
+	drop      bool
+	run       *dropRun
 	paths     []string
 	arrival   *arrival.Arrival
 	written   bool
@@ -26,9 +28,14 @@ type sideTransfer struct {
 	conn   *transport.DataConn
 }
 
-func (s *Side) startTransfer(wire int, receiving bool) {
-	t := &sideTransfer{wire: wire, link: s.current, receiving: receiving}
-	if !receiving {
+func (s *Side) startTransfer(wire int, receiving, drop bool) {
+	t := &sideTransfer{wire: wire, link: s.current, receiving: receiving, drop: drop}
+	switch {
+	case receiving && drop:
+		t.run = s.drops[wire]
+	case drop:
+		t.paths = s.dragged
+	case !receiving:
 		t.paths = s.described
 	}
 	t.ctx, t.cancel = context.WithCancelCause(s.ctx)
@@ -56,32 +63,41 @@ func (s *Side) carry(t *sideTransfer) error {
 	}
 	data := watch(conn, s.config.DataSilenceLimit)
 	if !t.receiving {
-		_, err := filestream.Send(t.ctx, data, t.paths)
+		send := filestream.Send
+		if t.drop {
+			send = filestream.SendDrop
+		}
+		_, err := send(t.ctx, data, t.paths)
 		return err
 	}
 	t.arrival = s.config.Arrivals.Expecting(t.wire)
+	if t.drop {
+		return filestream.ReceiveDrop(t.ctx, data, dropArrivals{arrivals: arrivals{t.arrival}, begin: s.beginDrop(t)})
+	}
 	return filestream.Receive(t.ctx, data, arrivals{t.arrival})
 }
 
 func (s *Side) transferDone(t *sideTransfer, err error) {
 	if s.transfers[t.wire] != t {
 		if err == nil {
-			t.leaveNothing()
+			s.remover.giveUp(t.arrival)
 		}
 		return
 	}
 	if err != nil || !t.receiving {
 		delete(s.transfers, t.wire)
+		s.machine.TransferEnded(t.wire)
 		if err != nil {
 			fmt.Fprintf(s.config.Log, "%s stopped: %s\n", t.describe(), forTheLog(whyItStopped(err)))
+			s.do(s.machine.DropStopped(t.wire))
 		}
-		s.machine.TransferEnded(t.wire)
 		return
 	}
+	s.keepForTheDrop(t)
 	s.do(s.machine.FilesArrived(t.wire))
 	delete(s.transfers, t.wire)
 	if !t.written {
-		t.leaveNothing()
+		s.remover.giveUp(t.arrival)
 	}
 }
 
@@ -100,6 +116,7 @@ func (s *Side) dataStop(l *link, wire int) {
 	}
 	s.endTransfer(wire, errStoppedByCentral)
 	s.machine.TransferEnded(wire)
+	s.do(s.machine.DropStopped(wire))
 }
 
 func (s *Side) endTransfer(wire int, cause error) {
@@ -136,12 +153,6 @@ func (t *sideTransfer) close(cause error) {
 	}
 }
 
-func (t *sideTransfer) leaveNothing() {
-	if t.arrival != nil {
-		t.arrival.GiveUp()
-	}
-}
-
 func whyItStopped(err error) error {
 	if endedByTheOtherEnd(err) {
 		return errEndedByTheCentral
@@ -150,8 +161,12 @@ func whyItStopped(err error) error {
 }
 
 func (t *sideTransfer) describe() string {
-	if t.receiving {
-		return "The file copy from " + theCentral
+	what := "The file copy"
+	if t.drop {
+		what = "The dragged files"
 	}
-	return "The file copy to " + theCentral
+	if t.receiving {
+		return what + " from " + theCentral
+	}
+	return what + " to " + theCentral
 }

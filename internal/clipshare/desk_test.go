@@ -318,6 +318,7 @@ type sideUnderTest struct {
 	arrivalDir  string
 	pace        *transport.Pace
 	dataAddress string
+	drops       *fakeDrops
 	log         *logBook
 	replay      *timedReplay
 	runtime     *Side
@@ -336,6 +337,8 @@ type deskUnderTest struct {
 	arrivals    *arrival.Folder
 	arrivalDir  string
 	pace        *transport.Pace
+	drops       *fakeDrops
+	described   *describedDrags
 	log         *logBook
 	capture     *fakeCapture
 	runtime     *Central
@@ -350,6 +353,8 @@ type deskSetup struct {
 	files          bool
 	bytesPerSecond int
 	dataSilence    time.Duration
+	drops          bool
+	holdData       <-chan struct{}
 }
 
 func newDesk(t *testing.T, sideNames ...string) *deskUnderTest {
@@ -396,6 +401,9 @@ func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderT
 			side.pace = transport.NewPace(setup.bytesPerSecond)
 			side.arrivalDir, side.arrivals = openArrivals(t, 0)
 		}
+		if setup.drops {
+			side.drops = &fakeDrops{}
+		}
 		d.sides[name] = side
 		d.peers = append(d.peers, trust.Peer{Name: name, Fingerprint: side.identity.Fingerprint})
 	}
@@ -416,13 +424,19 @@ func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderT
 		Watch: edge.DefaultSettings(),
 	})
 	machine.OnReceivers(d.noteConnected)
-	config := Config{Open: setup.open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, DataSilenceLimit: setup.dataSilence, Log: d.log}
+	config := Config{Name: "desk", Open: setup.open, SwitchedOn: d.switchedOn.Load, SilenceLimit: testSilenceLimit, DataSilenceLimit: setup.dataSilence, Log: d.log}
 	if setup.files {
 		config.FilesOn = d.filesOn.Load
 		config.Arrivals = d.arrivals
-		config.AwaitData = listener.AwaitData
+		config.AwaitData = heldUntil(setup.holdData, listener.AwaitData)
+	}
+	if setup.drops {
+		d.drops = &fakeDrops{}
+		config.Drops = d.drops
 	}
 	d.runtime = NewCentral(config)
+	d.described = &describedDrags{}
+	d.runtime.OnSideDrags(d.described.started, d.described.ended)
 	machine.ShareClipboard(d.runtime)
 
 	ctx, stop := context.WithCancel(context.Background())
@@ -497,6 +511,9 @@ func (d *deskUnderTest) startSide(side *sideUnderTest, address string, open func
 		config.FilesOn = side.filesOn.Load
 		config.Arrivals = side.arrivals
 		config.DialData = d.dataDialerOf(side)
+	}
+	if side.drops != nil {
+		config.Drops = side.drops
 	}
 	side.runtime = NewSide(config)
 	ctx, stop := context.WithCancel(context.Background())
