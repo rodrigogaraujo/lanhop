@@ -54,6 +54,7 @@ type dragTracker struct {
 	mark      int64
 	dragging  bool
 	paths     []string
+	candidate []string
 	readsLeft int
 }
 
@@ -63,7 +64,7 @@ func (d *dragTracker) poll(source dragSource) []DragEvent {
 	changed := mark != d.mark
 	d.mark = mark
 	if !held {
-		d.readsLeft = 0
+		d.readsLeft, d.candidate = 0, nil
 		if !d.dragging {
 			return nil
 		}
@@ -71,27 +72,32 @@ func (d *dragTracker) poll(source dragSource) []DragEvent {
 		return []DragEvent{{Kind: DragEnded}}
 	}
 	if changed {
-		d.readsLeft = readsPerChange
+		d.readsLeft, d.candidate = readsPerChange, nil
 	}
 	if d.readsLeft == 0 {
 		return nil
 	}
 	d.readsLeft--
 	paths, err := source.board.ReadFiles()
+	if d.dragging && err == nil && slices.Equal(paths, d.paths) {
+		d.readsLeft, d.candidate = 0, nil
+		return nil
+	}
 	var seen []DragEvent
-	if d.dragging && (err != nil || !slices.Equal(paths, d.paths)) {
+	if d.dragging {
 		d.dragging, d.paths = false, nil
 		seen = append(seen, DragEvent{Kind: DragEnded})
 	}
 	switch {
+	case err == nil && d.candidate != nil && slices.Equal(paths, d.candidate):
+		d.dragging, d.paths, d.candidate, d.readsLeft = true, paths, nil, 0
+		seen = append(seen, DragEvent{Kind: DragStarted, Paths: slices.Clone(paths)})
 	case err == nil:
-		d.readsLeft = 0
-		if !d.dragging {
-			d.dragging, d.paths = true, paths
-			seen = append(seen, DragEvent{Kind: DragStarted, Paths: slices.Clone(paths)})
-		}
-	case !errors.Is(err, clipboard.ErrNotFiles):
-		d.readsLeft = 0
+		d.candidate = paths
+	case errors.Is(err, clipboard.ErrNotFiles):
+		d.candidate = nil
+	default:
+		d.candidate, d.readsLeft = nil, 0
 	}
 	return seen
 }
