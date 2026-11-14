@@ -4,6 +4,8 @@ x-machine: &machine
   networks: [desk]
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
+  pids_limit: 256
+  mem_limit: 512m
 
 services:
   pair:
@@ -44,7 +46,8 @@ services:
       - l2:/desk/l2
 
 networks:
-  desk: {}
+  desk:
+    internal: true
 
 volumes:
   central: {}
