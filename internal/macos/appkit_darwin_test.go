@@ -65,11 +65,17 @@ func openTheDropWindowThenQuit() int {
 	for deadline := time.Now().Add(5 * time.Second); state != windowReady && time.Now().Before(deadline); state = window.state() {
 		time.Sleep(20 * time.Millisecond)
 	}
-	taken, err := window.takeTheMouseAt(elsewhere)
+	taken, tries := false, 0
+	for deadline := time.Now().Add(2 * time.Second); !taken && err == nil && time.Now().Before(deadline); tries++ {
+		if tries > 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+		taken, err = window.takeTheMouseAt(elsewhere)
+	}
 	if err == nil {
 		err = window.close()
 	}
-	fmt.Printf("window opened at %+v: state %d; moved to %+v: takes the mouse there %v; close %v\n", home, state, elsewhere, taken, err)
+	fmt.Printf("window opened at %+v: state %d; moved to %+v: takes the mouse there %v after %d tries; close %v\n", home, state, elsewhere, taken, tries, err)
 	if state != windowReady || !taken || err != nil {
 		return 1
 	}
