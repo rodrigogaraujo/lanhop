@@ -18,6 +18,10 @@ func KindsIn(featuresValue int32) Kinds {
 	return Kinds(featuresValue) & (Text | Files)
 }
 
+func DropsIn(featuresValue int32) bool {
+	return featuresValue&(1<<features.Drag) != 0
+}
+
 func (k Kinds) Has(kind Kinds) bool {
 	return k&kind == kind
 }
@@ -33,12 +37,14 @@ type FileCopy struct {
 }
 
 var (
-	ErrTooManyFiles   = errors.New("clipboard: the file copy holds more than 10 000 files and folders")
-	ErrFilesTooLarge  = errors.New("clipboard: the file copy is larger than 4 GiB")
-	ErrFilesNotShared = errors.New("clipboard: the copy holds files, and files are not shared with the other machine")
-	ErrTextNotShared  = errors.New("clipboard: the copy is text, and text is not shared with the other machine")
-	ErrNegativeFiles  = errors.New("clipboard: the file copy has a negative number of files or a negative size")
-	ErrNotFiles       = errors.New("clipboard: the copy holds no files")
+	ErrTooManyFiles        = errors.New("clipboard: the file copy holds more than 10 000 files and folders")
+	ErrFilesTooLarge       = errors.New("clipboard: the file copy is larger than 4 GiB")
+	ErrFilesNotShared      = errors.New("clipboard: the copy holds files, and files are not shared with the other machine")
+	ErrTextNotShared       = errors.New("clipboard: the copy is text, and text is not shared with the other machine")
+	ErrNegativeFiles       = errors.New("clipboard: the file copy has a negative number of files or a negative size")
+	ErrNotFiles            = errors.New("clipboard: the copy holds no files")
+	ErrDropsNotTaken       = errors.New("clipboard: the machine the drag crossed to does not take dragged files")
+	ErrDragBackToItsSource = errors.New("clipboard: the drag crossed back to the machine its files are on")
 )
 
 func sendableFiles(files FileCopy) error {
