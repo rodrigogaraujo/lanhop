@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: v0.1.1.** On macOS, lanhop is now an app, `lanhop.app`, with an identifier of its own, so that macOS can apply the Local Network permission to it. The installer now checks lanhop as it runs at login: on a Mac it opens the pane of each permission that is missing, Accessibility and Local Network, and it ends when the machine is connected or says what is still missing. The `lanhop.app`, `lanhop status` and the installer of this version have been checked only by automated tests, and no person has run them on a real machine yet. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. On `main`, not in a release yet: [adding a machine with one line](#adding-a-machine), [`lanhop update`](#updating) and [copy and paste](#copy-and-paste). They have passed only automated tests. `lanhop update` does not work yet: the release keys of the project do not exist yet. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: v0.1.1.** On macOS, lanhop is now an app, `lanhop.app`, with an identifier of its own, so that macOS can apply the Local Network permission to it. The installer now checks lanhop as it runs at login: on a Mac it opens the pane of each permission that is missing, Accessibility and Local Network, and it ends when the machine is connected or says what is still missing. The `lanhop.app`, `lanhop status` and the installer of this version have been checked only by automated tests, and no person has run them on a real machine yet. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. On `main`, not in a release yet: [adding a machine with one line](#adding-a-machine) and [`lanhop update`](#updating). They have passed only automated tests. `lanhop update` does not work yet: the release keys of the project do not exist yet. [Copy and paste](#copy-and-paste) of text and files, and [dragging files](#dragging-files) from one screen to the next, come with v0.1.2. They have passed automated tests, and nobody has tried them at a desk yet. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -118,7 +118,7 @@ lanhop update
 
 ## Copy and paste
 
-> Built on `main`, not in a release yet. This has passed only automated tests. Still open:
+> New in v0.1.2. It has passed automated tests. Still open:
 >
 > - Nobody has tried it at the desk yet.
 > - On macOS, the machine you just left may ask for a permission before lanhop reads a copy there, or before it reads files in protected folders: Desktop, Documents, Downloads, iCloud Drive and external volumes.
@@ -126,6 +126,8 @@ lanhop update
 
 Copy on one machine, move focus to another, and paste there. Copies of text and copies of files move this way between paired machines. Text travels on the encrypted connection that carries the keyboard and mouse, and files on a second encrypted connection next to it.
 
+- **Files and folders.** Copy files or folders in Finder or in Nautilus, and paste them in a folder of the other machine. A folder arrives with what it holds. A copy holds at most 10 000 files and folders, and 4 GiB. The names and paths of copied files never travel as text.
+- **When files travel.** Files start to travel when focus reaches a machine that takes them, and a paste there gives them once every file has arrived. Until then, a paste gives what the clipboard held before. If focus leaves first, the transfer stops, what arrived is removed, and the next visit starts it again.
 - **Where files land.** Files that arrive wait in a folder of lanhop, and a paste copies them from there:
 
   | System | Folder |
@@ -145,6 +147,30 @@ Copy on one machine, move focus to another, and paste there. Copies of text and 
   Files move only while both switches are on. `lanhop clipboard` and `lanhop files` say what is on. A running `lanhop share` or `lanhop receive` follows a switch the next time focus moves.
 - **When files cannot move.** lanhop says why in its log, once, for example when it cannot open the folder for files that arrive.
 
+## Dragging files
+
+> New in v0.1.2. It has passed automated tests, and Linux to Linux has passed in containers. Nobody has tried it at a desk yet. On macOS, the machine you drag from may ask for a permission before lanhop reads files in protected folders, as for [copy and paste](#copy-and-paste).
+
+Drag a file or a folder on one machine, push it through the edge of the screen toward the next machine with the button still held, and drop it in a folder or a window there. The [layout](#layout) says which machine is behind each edge. lanhop always copies: the file stays where it was on the machine you dragged it from.
+
+- **Where it works.** Mac to Mac, Mac to Linux, Linux to a Mac, and Linux to Linux. The machine where a drag starts, and the one where it ends, must each be a Mac or a Linux machine in an X11 session that receives the keyboard and mouse. The machine with the keyboard passes a drag from one of its side machines to another, whatever its system. A drag can cross more than one edge on its way.
+- **How it crosses.** A dragged file crosses after you push it against the edge for 600 ms, longer than the cursor alone needs. It never crosses in a corner, nor through the edge where the Dock of macOS or the dock of Ubuntu sits, so that a file dragged to the Trash or to the dock stays on its machine.
+- **Changing your mind.** Drag the file back across the edge, or press Escape, and nothing is dropped. What had arrived of the file is removed.
+- **Waiting for the file.** The file starts to travel when it crosses, while you still hold the button, and the drop waits for it. On Linux, a drop waits at most about 2 minutes for the files after you let go of the button. Copy and paste very large files instead.
+- **Where it does not work.** Copying the file and pasting it there works instead:
+  - A drag that starts on a Linux machine with the keyboard, or that would end on it, does not cross ([ADR 15](docs/adr/0015-what-dragging-a-file-can-use-on-each-system.md)). A drag between the machines it controls does.
+  - A Linux machine in a Wayland session takes no dragged files, and gives none.
+- **Switching it off.** `lanhop files off` or `lanhop clipboard off` keeps dragged files from leaving or reaching that machine too.
+- **What lanhop says.** When a dragged file cannot cross, the machine with the keyboard says why in its log and in `lanhop status`, once per run of lanhop and per machine. `<machine>` is the name of the other machine. Nothing appears on the screen.
+
+  | When | Line |
+  |---|---|
+  | A file is dragged on a Linux machine with the keyboard | `A file dragged on this machine cannot leave it. Copying the file and pasting it on the other machine works instead.` |
+  | The other machine takes copies of files but not dragged files: a Linux machine in a Wayland session, or a Linux machine with the keyboard | `Dragging a file cannot reach "<machine>". Copying the file and pasting it there works instead.` |
+  | Copies of files are off on the other machine | `Dragging a file cannot reach "<machine>": file sharing is off on that machine.` |
+
+- **Linux to Linux.** It has passed only in containers, between lanhop and small test programs, not with a real file manager on two machines. If you have two Linux machines in an X11 session, and a third machine with the keyboard and mouse, please try it and [report](https://github.com/rodrigogaraujo/lanhop/issues) what happens.
+
 ## Roadmap
 
 - [x] Wire format for input events
@@ -159,7 +185,7 @@ Copy on one machine, move focus to another, and paste there. Copies of text and 
     - [ ] A hotkey that locks focus, and settings for the push time, the corner size and the cursor speed
 - [ ] Windows
 - [ ] Automatic discovery on the local network
-- [ ] Clipboard sharing ([spec 005](specs/005-clipboard-sharing/spec.md)) and file sharing ([spec 011](specs/011-file-sharing/spec.md)): [copy and paste](#copy-and-paste) of text and of files is built on `main` and has passed only automated tests; dragging a file across an edge is not built yet
+- [ ] Clipboard sharing ([spec 005](specs/005-clipboard-sharing/spec.md)) and file sharing ([spec 011](specs/011-file-sharing/spec.md)): [copy and paste](#copy-and-paste) of text and of files, and [dragging files](#dragging-files) across an edge, come with v0.1.2. They have passed automated tests, and dragging from Linux to Linux has passed in containers. Nobody has tried them at a desk yet
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
   - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 is meant to fix
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
