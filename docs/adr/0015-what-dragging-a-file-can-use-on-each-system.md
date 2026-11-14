@@ -43,11 +43,19 @@ These directions keep the plan of spec 011:
 1. **Inject the release into the physical mouse.** The kernel lets a process write events to the event node of a device, and they reach X as if that device sent them. So X would see button 1 released by the slave that holds it. lanhop needs write access to that node, which the `input` group that lanhop's setup already uses gives.
 2. **A drop target of lanhop at the edge.** An XdndAware window of lanhop on the edge receives the drop with the copy action. Nautilus then finishes the drag, and nothing moves. This alone does not end the drag: the drop happens only when X sees the release.
 
-They are measured alone and together. Together, 1 makes X see the release and 2 makes the drop it causes harmless, so the source drag would end at the crossing without a drop into a real folder. A third way, letting the real release reach X before lanhop takes the mouse, does not fit a drag that crosses with the button still held, so it is left out. This ADR is completed with those measurements.
+A third way, letting the real release reach X before lanhop takes the mouse, does not fit a drag that crosses with the button still held, so it was left out.
+
+**Second session (2026-11-14), measured.** On the Linux machine of the desk, which receives (a side machine), the mouse is lanhop's own virtual device, replayed from the central: the same device that pressed button 1 can release it, and X takes that release. With technique 2, a file dragged in Nautilus with the mouse of the central and released over lanhop's window on the edge was dropped there: `XdndEnter` on the window, `XdndStatus` accept with `XdndActionCopy`, `XdndDrop`, the `text/uri-list` of the file read from `XdndSelection`, `XdndFinished` accepted with copy, and the file still in its place 3 s later. Technique 1, for a Linux machine whose physical mouse drives the drag (the Linux machine as the central), was not measured: the mouse of the desk's Linux machine is paired with the other machine, and the owner chose not to switch it.
+
+**From Linux, decided by the owner.**
+
+- A Linux machine that receives ends the source drag at the crossing by releasing button 1 through lanhop's own virtual device over an XdndAware window of lanhop at the edge, which takes the drop with copy. Nothing moves on the source, and the window also hands lanhop the list of the dragged files.
+- A Linux machine that is the central, whose physical mouse drives the drag, does not let a file drag cross in the first release. The central says so once per run in its log and in `lanhop status`, as for a machine in a Wayland session, and copying and pasting the file works instead.
 
 ## Consequences
 
-- Every choice the owner had keeps the directions from a Mac, to a Mac and to Linux, so tasks 10 and 11 and the Mac half of task 9 are built while the second session is prepared.
-- The Linux half of task 9 (ending the source drag) and task 12 wait for the second session.
+- Every choice the owner had kept the directions from a Mac, to a Mac and to Linux, so tasks 10 and 11 are built in their own pull requests, and the Mac half of task 9 can be, while the second session is prepared.
+- The Linux half of task 9 and task 12 use the edge window and the release of lanhop's own virtual device, on a Linux machine that receives only.
+- On Linux, the edge window must accept only the copy action, so a source never moves or deletes its file, even when the person holds a modifier.
 - On a Mac, posted events that end the source drag need the Accessibility permission lanhop already has for its capture.
 - On Linux, lanhop's XDND source must refuse the portal types and offer `text/uri-list`, which Nautilus takes.
