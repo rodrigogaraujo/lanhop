@@ -9,6 +9,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
+	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
@@ -1203,4 +1204,120 @@ func TestInputsCanBeCalledFromTheEndOfADrag(t *testing.T) {
 		then(entered(thisMachine, thisMachine, "desk", 2)),
 	))
 	s.expectDragsEnded(ended(thisMachine, 1))
+}
+
+func TestADragEndsWhenItsOriginGoesAwayWhileAnotherMachineHoldsIt(t *testing.T) {
+	carryToLaptop := func(s *sharing) {
+		s.focusOn(2)
+		s.moves(400, 0)
+		s.holdsTheButton()
+		s.dragStartsOn("desk", 1, noDock)
+		s.pushes(1, 0, dragReportsToCross)
+	}
+	carriedToLaptop := story(
+		then(tookInput),
+		gets(desk, enteredAt(centre, centre)...),
+		gets(desk, positioned(farEdge, centre)...),
+		gets(desk, press(event.ButtonLeft), event.Sync()),
+		gets(desk, times(dragReportsToCross, positioned(farEdge, centre)...)...),
+		then(dragged("desk", "desk", "laptop", 1)),
+		gets(desk, event.Sync(), event.Leave()),
+		gets(laptop, enteredAt(0, centre)...),
+		then(entered("desk", "desk", "laptop", 1)),
+	)
+	pushTowardTablet := func(s *sharing) {
+		s.moves(700, 0)
+		s.pushes(1, 0, 2*dragReportsToCross-1)
+	}
+
+	t.Run("the origin side disconnects", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop tablet", desk, laptop, tablet)
+		origin := s.connect(desk)
+		s.connectTakingDrags(laptop)
+		s.connectTakingDrags(tablet)
+
+		carryToLaptop(s)
+		origin.loseConnection()
+		s.eventually("the end of the drag", func() bool { return len(s.dragsEnded.read()) == 1 })
+		pushTowardTablet(s)
+
+		s.expectJournal(story(
+			carriedToLaptop,
+			then(closed(desk)),
+			gets(laptop, times(2*dragReportsToCross, positioned(farEdge, centre)...)...),
+		))
+		s.expectDragsEnded(ended("desk", 1))
+	})
+	t.Run("the origin side connects again", func(t *testing.T) {
+		s := startSharingWithLayout(t, "me desk laptop tablet", desk, laptop, tablet)
+		s.connect(desk)
+		s.connectTakingDrags(laptop)
+		s.connectTakingDrags(tablet)
+
+		carryToLaptop(s)
+		s.connect(desk)
+		pushTowardTablet(s)
+
+		s.expectJournal(story(
+			carriedToLaptop,
+			then(closed(desk)),
+			gets(laptop, times(2*dragReportsToCross, positioned(farEdge, centre)...)...),
+		))
+		s.expectDragsEnded(ended("desk", 1))
+	})
+}
+
+func TestTheMachineADragCrossedToGetsTheReleaseOfALaterPressWhenSharingStops(t *testing.T) {
+	s := startSharingWithLayout(t, "me desk laptop", desk, laptop)
+	s.connect(desk)
+	s.connectTakingDrags(laptop)
+
+	s.focusOn(2)
+	s.moves(400, 0)
+	s.holdsTheButton()
+	s.dragStartsOn("desk", 1, noDock)
+	s.pushes(1, 0, dragReportsToCross)
+	s.releasesTheButton()
+	s.holdsTheButton()
+	s.stop()
+	if result := s.outcome(); result.err != nil || result.panicked != nil {
+		t.Fatalf("the sharer stopped with %+v", result)
+	}
+
+	releasedOnLaptop := 0
+	for _, entry := range s.journal.read() {
+		if entry == gets(laptop, release(event.ButtonLeft))[0] {
+			releasedOnLaptop++
+		}
+	}
+	if releasedOnLaptop != 2 {
+		t.Errorf("laptop got %d releases of the left button, want 2", releasedOnLaptop)
+	}
+	s.expectInOrder(story(
+		gets(laptop, enteredAt(0, centre)...),
+		gets(laptop, release(event.ButtonLeft), event.Sync()),
+		gets(laptop, press(event.ButtonLeft), event.Sync()),
+		gets(laptop, release(event.ButtonLeft), event.Sync(), event.Leave()),
+	)...)
+}
+
+func TestAFeaturesFrameFromAMachineNoLongerConnectedChangesNothing(t *testing.T) {
+	detector, err := hotkey.New(hotkey.DefaultModifiers)
+	if err != nil {
+		t.Fatalf("hotkey.New: %v", err)
+	}
+	written := &journal{}
+	machine := New(&fakeCapture{journal: written, events: make(chan event.Event)}, &fakeTrusted{}, detector, EdgeSwitching{Name: thisMachine})
+	var takenBack []BlockedDrag
+	machine.OnDragUnblocked(func(unblocked BlockedDrag) { takenBack = append(takenBack, unblocked) })
+	told := BlockedDrag{Machine: "desk", Block: DragCannotReach}
+	machine.toldBlocked[told] = true
+	gone := &fakeReceiver{journal: written, peer: desk, lost: make(chan struct{}), shut: make(chan struct{})}
+
+	machine.sideAnnounced(gone, takesDrags.Value)
+
+	if len(machine.announced) != 0 || len(takenBack) != 0 || !machine.toldBlocked[told] {
+		t.Errorf("a frame from a machine no longer connected left announced %v, took back %v and kept the notice %v; want nothing changed",
+			machine.announced, takenBack, machine.toldBlocked[told])
+	}
 }
