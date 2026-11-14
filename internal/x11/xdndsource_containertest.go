@@ -224,9 +224,7 @@ func (s *XdndTestSource) enter(found dragTarget) {
 }
 
 func (s *XdndTestSource) describe(window uint32) string {
-	const opGetWindowAttributesRequest = 3
-	const classInputOnlyWindow = 2
-	attributes, err := s.h.call(newRequest(opGetWindowAttributesRequest, 0).u32(window).done())
+	attributes, err := s.h.call(newRequest(opGetWindowAttributes, 0).u32(window).done())
 	if err != nil {
 		return fmt.Sprintf("described=no error=%q", err.Error())
 	}
@@ -234,7 +232,7 @@ func (s *XdndTestSource) describe(window uint32) string {
 	if err != nil {
 		return fmt.Sprintf("described=no error=%q", err.Error())
 	}
-	inputOnly := binary.LittleEndian.Uint16(attributes[12:14]) == classInputOnlyWindow
+	inputOnly := binary.LittleEndian.Uint16(attributes[12:14]) == classInputOnly
 	overrideRedirect := attributes[27] != 0
 	return fmt.Sprintf("input-only=%t override-redirect=%t x=%d y=%d width=%d height=%d", inputOnly, overrideRedirect, area.x, area.y, area.width, area.height)
 }

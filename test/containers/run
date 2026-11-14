@@ -330,6 +330,7 @@ else
 fi
 
 required "the XDND source and target saw no request fail" no_request_failed
+required "the central is still connected to l1 and l2 after the drag" desk_connected
 
 printf '\n%d passed, %d failed, %d waiting for %s\n' "${#passed[@]}" "${#failed[@]}" "${#waiting[@]}" "$waits_for"
 if [ "${#failed[@]}" -gt 0 ]; then

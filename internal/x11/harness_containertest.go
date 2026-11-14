@@ -91,8 +91,7 @@ func (h *harnessConn) createWindow(x, y, width, height int, eventMask uint32) (u
 }
 
 func (h *harnessConn) mapAndWait(window uint32) error {
-	const opMapWindowRequest = 8
-	if err := h.send(newRequest(opMapWindowRequest, 0).u32(window).done()); err != nil {
+	if err := h.send(newRequest(opMapWindow, 0).u32(window).done()); err != nil {
 		return err
 	}
 	_, _, _, err := h.pointer()
