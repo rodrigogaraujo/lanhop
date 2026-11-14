@@ -60,7 +60,7 @@ func numberedPaths(count int, folder string) []string {
 func answerTo(t *testing.T, reader *Clipboard, target uint32) (format uint32, data string) {
 	t.Helper()
 	drain(reader.notifies)
-	reader.c.send(newRequest(opConvertSelection, 0).u32(reader.window).u32(reader.atoms.clipboard).u32(target).u32(reader.atoms.ownProperty).u32(currentTime).done())
+	reader.c.send(newRequest(opConvertSelection, 0).u32(reader.reader.Load()).u32(reader.atoms.clipboard).u32(target).u32(reader.atoms.ownProperty).u32(currentTime).done())
 	deadline := time.After(time.Second)
 	for {
 		select {

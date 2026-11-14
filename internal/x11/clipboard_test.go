@@ -4,6 +4,7 @@ package x11
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -303,7 +304,7 @@ func ownedByAnotherProgram(t *testing.T, display string, reader *Clipboard, answ
 
 func neverAnswering(*conn, []byte) {}
 
-func tricklingATextForever(names atoms, every time.Duration) func(owner *conn, event []byte) {
+func tricklingATextForever(names atoms, every time.Duration, part []byte) func(owner *conn, event []byte) {
 	return func(owner *conn, event []byte) {
 		switch event[0] & 0x7f {
 		case eventSelectionRequest:
@@ -330,7 +331,7 @@ func tricklingATextForever(names atoms, every time.Duration) func(owner *conn, e
 			property := binary.LittleEndian.Uint32(event[8:12])
 			if event[16] == propertyDeleted {
 				time.AfterFunc(every, func() {
-					owner.send(newRequest(opChangeProperty, modeReplace).u32(window).u32(property).u32(names.utf8String).u8(8).u8(0).u8(0).u8(0).u32(1).raw([]byte("x")).done())
+					owner.send(newRequest(opChangeProperty, modeReplace).u32(window).u32(property).u32(names.utf8String).u8(8).u8(0).u8(0).u8(0).u32(uint32(len(part))).raw(part).done())
 				})
 			}
 		}
@@ -379,7 +380,7 @@ func TestAReadWhoseTimeHasRunOutAsksTheOwnerForNothing(t *testing.T) {
 func TestAnOwnerThatTricklesItsCopyForeverIsGivenUpWhenTheWholeReadRunsOut(t *testing.T) {
 	display := startXvfb(t)
 	reader := openOn(t, display)
-	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 50*time.Millisecond))
+	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 50*time.Millisecond, []byte("x")))
 	reader.readTimeout = 400 * time.Millisecond
 	reader.wholeRead = 800 * time.Millisecond
 
@@ -400,6 +401,48 @@ func TestAnOwnerThatTricklesItsCopyForeverIsGivenUpWhenTheWholeReadRunsOut(t *te
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Read was still taking parts of a copy that never ends after 5 s")
+	}
+}
+
+func TestReadsAfterGivingUpOnAnOwnerAreNotSpoiledByWhatThatOwnerKeepsSending(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	writer := openOn(t, display)
+	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 0, []byte("x")))
+	reader.wholeRead = 300 * time.Millisecond
+	if _, err := reader.Read(); !errors.Is(err, ErrNoAnswer) {
+		t.Fatalf("Read of the endless copy: error = %v, want %v", err, ErrNoAnswer)
+	}
+	reader.wholeRead = wholeReadTimeout
+
+	if _, err := writer.Write("hello"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	for i := range 20 {
+		if got, err := reader.Read(); err != nil || got != "hello" {
+			t.Fatalf("read %d after giving up = %q, %v, want %q", i+1, got, err, "hello")
+		}
+	}
+}
+
+func TestReadsAfterStoppingACopyOverTheLimitAreNotSpoiledByTheRestOfIt(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	writer := openOn(t, display)
+	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 0, bytes.Repeat([]byte("o"), 64<<10)))
+	if _, err := reader.Read(); !errors.Is(err, clipboard.ErrTooLarge) {
+		t.Fatalf("Read of the endless copy: error = %v, want %v", err, clipboard.ErrTooLarge)
+	}
+
+	if _, err := writer.Write("hello"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	for i := range 20 {
+		if got, err := reader.Read(); err != nil || got != "hello" {
+			t.Fatalf("read %d after the copy over the limit = %.20q, %v, want %q", i+1, got, err, "hello")
+		}
 	}
 }
 

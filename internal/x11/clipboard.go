@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -23,6 +24,7 @@ import (
 const (
 	opCreateWindow           = 1
 	opChangeWindowAttributes = 2
+	opDestroyWindow          = 4
 	opInternAtom             = 16
 	opChangeProperty         = 18
 	opDeleteProperty         = 19
@@ -133,6 +135,7 @@ type Clipboard struct {
 	extraOffers  map[uint32][]byte
 	transfers    []*transfer
 	readTimeout  time.Duration
+	reader       atomic.Uint32
 	wholeRead    time.Duration
 	handleEvents func(event []byte)
 }
@@ -237,6 +240,9 @@ func (b *Clipboard) prepare() error {
 		return err
 	}
 	if err := b.c.send(newRequest(xfixes, xfixesSelectSelectionInput).u32(b.window).u32(b.atoms.clipboard).u32(selectionEventsMask).done()); err != nil {
+		return err
+	}
+	if err := b.openReader(); err != nil {
 		return err
 	}
 	if _, err := b.owner(); err != nil {
@@ -559,15 +565,44 @@ func (b *Clipboard) textTarget(offered []uint32) (uint32, bool) {
 
 var errTargetRefused = errors.New("x11: the owner of the clipboard refused that format")
 
+func (b *Clipboard) openReader() error {
+	window := b.c.newID()
+	create := newRequest(opCreateWindow, 0).u32(window).u32(b.c.root).
+		u16(0).u16(0).u16(1).u16(1).u16(0).u16(classInputOnly).u32(0).
+		u32(attributeEventMask).u32(propertyChangeMask).done()
+	if err := b.c.send(create); err != nil {
+		return err
+	}
+	b.reader.Store(window)
+	return nil
+}
+
+func (b *Clipboard) leaveTheOwnerNothingToWriteInto() {
+	abandoned := b.reader.Load()
+	if err := b.openReader(); err != nil {
+		return
+	}
+	b.c.send(newRequest(opDestroyWindow, 0).u32(abandoned).done())
+}
+
 func (b *Clipboard) convert(target uint32, limit int, until time.Time) ([]byte, error) {
 	if !time.Now().Before(until) {
 		return nil, ErrNoAnswer
 	}
+	data, err := b.askTheOwner(target, limit, until)
+	if errors.Is(err, ErrNoAnswer) || errors.Is(err, clipboard.ErrTooLarge) {
+		b.leaveTheOwnerNothingToWriteInto()
+	}
+	return data, err
+}
+
+func (b *Clipboard) askTheOwner(target uint32, limit int, until time.Time) ([]byte, error) {
+	reader := b.reader.Load()
 	drain(b.notifies)
-	if err := b.c.send(newRequest(opDeleteProperty, 0).u32(b.window).u32(b.atoms.ownProperty).done()); err != nil {
+	if err := b.c.send(newRequest(opDeleteProperty, 0).u32(reader).u32(b.atoms.ownProperty).done()); err != nil {
 		return nil, err
 	}
-	request := newRequest(opConvertSelection, 0).u32(b.window).u32(b.atoms.clipboard).u32(target).u32(b.atoms.ownProperty).u32(currentTime).done()
+	request := newRequest(opConvertSelection, 0).u32(reader).u32(b.atoms.clipboard).u32(target).u32(b.atoms.ownProperty).u32(currentTime).done()
 	if err := b.c.send(request); err != nil {
 		return nil, err
 	}
@@ -642,7 +677,7 @@ func (b *Clipboard) waitForNewValue(deadline <-chan time.Time) error {
 
 func (b *Clipboard) takeProperty(limit int) (kind uint32, data []byte, tooLarge bool, err error) {
 	units := uint32(limit/4 + 1)
-	reply, err := b.c.call(newRequest(opGetProperty, 1).u32(b.window).u32(b.atoms.ownProperty).u32(0).u32(0).u32(units).done())
+	reply, err := b.c.call(newRequest(opGetProperty, 1).u32(b.reader.Load()).u32(b.atoms.ownProperty).u32(0).u32(0).u32(units).done())
 	if err != nil {
 		return 0, nil, false, err
 	}
@@ -705,7 +740,7 @@ func (b *Clipboard) handle(event []byte) {
 		window := binary.LittleEndian.Uint32(event[4:8])
 		property := binary.LittleEndian.Uint32(event[8:12])
 		state := event[16]
-		if window == b.window {
+		if window == b.window || window == b.reader.Load() {
 			if state != propertyNewValue {
 				return
 			}
