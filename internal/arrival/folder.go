@@ -21,7 +21,7 @@ const (
 	DefaultMargin int64 = 256 << 20
 	KeptFor             = 24 * time.Hour
 
-	folderName   = "arrivals"
+	folderName   = "arrived"
 	recordSuffix = ".complete"
 )
 

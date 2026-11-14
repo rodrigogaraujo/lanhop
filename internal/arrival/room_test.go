@@ -367,9 +367,9 @@ func TestTheArrivalFolderLivesInTheCacheOfThePerson(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", "")
-	want := filepath.Join(home, ".cache", "lanhop", "arrivals")
+	want := filepath.Join(home, ".cache", "lanhop", "arrived")
 	if runtime.GOOS == "darwin" {
-		want = filepath.Join(home, "Library", "Caches", "lanhop", "arrivals")
+		want = filepath.Join(home, "Library", "Caches", "lanhop", "arrived")
 	}
 	f, err := Open(Config{})
 	if err != nil {
@@ -387,7 +387,7 @@ func TestTheArrivalFolderLivesInTheCacheOfThePerson(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if want := filepath.Join(elsewhere, "lanhop", "arrivals"); f.Directory() != want {
+	if want := filepath.Join(elsewhere, "lanhop", "arrived"); f.Directory() != want {
 		t.Errorf("with XDG_CACHE_HOME set, the arrival folder is %s, want %s", f.Directory(), want)
 	}
 }

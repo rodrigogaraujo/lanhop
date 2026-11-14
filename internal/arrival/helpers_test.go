@@ -50,7 +50,7 @@ func openFolder(t *testing.T, room, margin int64) (*Folder, *clock, *disk) {
 	ticking := &clock{at: time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)}
 	plenty := &disk{free: 1 << 40}
 	f, err := Open(Config{
-		Directory: filepath.Join(t.TempDir(), "cache", "lanhop", "arrivals"),
+		Directory: filepath.Join(t.TempDir(), "cache", "lanhop", "arrived"),
 		Room:      room,
 		Margin:    margin,
 		now:       ticking.now,
