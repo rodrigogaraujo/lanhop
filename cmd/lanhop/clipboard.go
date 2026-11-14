@@ -38,8 +38,12 @@ func (s copySwitches) filesMove() bool {
 	return s.clipboard && s.files
 }
 
-func dragsAllowed(switches copySwitches) bool {
+func dragsSwitchedOn(switches copySwitches) bool {
 	return switches.filesMove()
+}
+
+func dragsAllowed(switches copySwitches, drops clipshare.Drops) bool {
+	return drops != nil && dragsSwitchedOn(switches)
 }
 
 func (s copySwitches) clipboardState() string {
@@ -148,7 +152,6 @@ func clipboardConfigIn(done context.Context, directory string, announced *featur
 		Open:       openClipboard,
 		SwitchedOn: func() bool { return copySwitchesIn(directory).clipboard },
 		FilesOn:    filesOnIn(directory, whyNoArrivals, stdout),
-		DragsOn:    func() bool { return dragsAllowed(copySwitchesIn(directory)) },
 		Arrivals:   arrivals,
 		Log:        stdout,
 		Features:   announced,
@@ -163,8 +166,9 @@ func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory s
 	}
 	config.AwaitData = awaitData
 	config.Name, config.Drops = drags.name, drags.drops
+	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), drags.drops) }
 	central := clipshare.NewCentral(config)
-	drags.wire(machine, central, config.DragsOn)
+	drags.wire(machine, central, func() bool { return dragsSwitchedOn(copySwitchesIn(directory)) })
 	machine.ShareClipboard(sharer.Together(central, alongside))
 	return inTurn(runUntilStopped(done, central.Run), release)
 }
@@ -176,6 +180,7 @@ func sideOfThisMachine(done context.Context, directory string, announced *featur
 	}
 	config.DialData = dialData
 	config.Drops = drops
+	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), drops) }
 	side := clipshare.NewSide(config)
 	return side, inTurn(runUntilStopped(done, side.Run), release)
 }

@@ -62,7 +62,6 @@ type Config struct {
 	Open             func() (Clipboard, error)
 	SwitchedOn       func() bool
 	FilesOn          func() bool
-	DragsOn          func() bool
 	Arrivals         *arrival.Folder
 	AwaitData        AwaitData
 	DialData         DialData
@@ -71,6 +70,7 @@ type Config struct {
 	Log              io.Writer
 	Features         *features.Set
 	Drops            Drops
+	DragsOn          func() bool
 }
 
 func (c Config) withDefaults() Config {
@@ -82,9 +82,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.FilesOn == nil {
 		c.FilesOn = func() bool { return false }
-	}
-	if c.DragsOn == nil {
-		c.DragsOn = func() bool { return true }
 	}
 	if c.SilenceLimit == 0 {
 		c.SilenceLimit = transport.DefaultSilenceLimit
@@ -109,7 +106,11 @@ func (c Config) announcing(kinds clipboard.Kinds) *features.Set {
 }
 
 func (c Config) takesDrops(kinds clipboard.Kinds) bool {
-	return kinds.Has(clipboard.Files) && c.Drops != nil && c.DragsOn()
+	return kinds.Has(clipboard.Files) && c.Drops != nil && c.dragsOn()
+}
+
+func (c Config) dragsOn() bool {
+	return c.DragsOn == nil || c.DragsOn()
 }
 
 func (c Config) whyNoFiles(clipboardHoldsFiles, opensDataConnections bool) error {

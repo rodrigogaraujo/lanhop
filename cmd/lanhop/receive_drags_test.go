@@ -47,6 +47,18 @@ func TestOnAMacTheDragThatLeftIsStillEndedWhenTheShieldFails(t *testing.T) {
 	}
 }
 
+func TestOnACentralMacTheDragThatLeftIsEndedWithoutAReplay(t *testing.T) {
+	log := &replayLog{}
+	shield := func(context.Context) (io.Closer, error) {
+		log.record("shield")
+		return closerFunc(func() error { log.record("shield closed"); return nil }), nil
+	}
+
+	endTheSourceDragUnderAShield(context.Background(), shield, func() error { log.record("source drag ended"); return nil }, nil, &screen{})
+
+	expectEntries(t, "the steps", log.seen(), "shield", "source drag ended", "shield closed")
+}
+
 type edgeHandLog struct {
 	*replayLog
 }

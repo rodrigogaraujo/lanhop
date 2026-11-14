@@ -53,7 +53,7 @@ func (s *Side) offersDraggedFiles(now time.Time) bool {
 }
 
 func (s *Side) takesDrops() bool {
-	return s.config.takesDrops(s.on)
+	return s.dragsOn && s.config.takesDrops(s.on)
 }
 
 func (s *Side) describesDrags() bool {
