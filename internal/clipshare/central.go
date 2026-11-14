@@ -20,12 +20,13 @@ type centralNews struct {
 }
 
 type sideMachine struct {
-	takes    clipboard.Kinds
-	drops    bool
-	stale    int
-	answers  []*answerDue
-	dragging bool
-	drag     clipboard.FileCopy
+	takes       clipboard.Kinds
+	drops       bool
+	stale       int
+	answers     []*answerDue
+	dragging    bool
+	drag        clipboard.FileCopy
+	dragCrossed bool
 }
 
 type answerDue struct {
@@ -57,13 +58,16 @@ type Central struct {
 	ownFiles    []string
 	filesNotice filesNotice
 
-	dragWatch dragWatch
-	dragging  bool
-	drag      clipboard.FileCopy
-	dragged   []string
-	lastDrop  int
-	drops     map[int]*dropRun
-	delivered map[int]dataHalf
+	dragWatch      dragWatch
+	dragging       bool
+	drag           clipboard.FileCopy
+	dragged        []string
+	ownDragCrossed bool
+	lastDrop       int
+	drops          map[int]*dropRun
+	delivered      map[int]dataHalf
+	started        chan struct{}
+	remover        remover
 
 	sideDragStarted func(SideDrag)
 	sideDragEnded   func(origin string)
@@ -77,6 +81,7 @@ func NewCentral(config Config) *Central {
 		sides:     make(map[*link]*sideMachine),
 		focusHere: true,
 		stopped:   make(chan struct{}),
+		started:   make(chan struct{}),
 		transfers: make(map[int]*centralTransfer),
 		drops:     make(map[int]*dropRun),
 		delivered: make(map[int]dataHalf),
@@ -100,6 +105,8 @@ func (c *Central) Run(ctx context.Context) {
 	c.desk = clipboard.NewDesk[*link](c.on)
 	c.ctx = ctx
 	c.do(c.desk.CentralTakesDrops(c.config.takesDrops(c.on)))
+	close(c.started)
+	defer c.remover.wait(c.config.SilenceLimit)
 	defer c.closeLinks()
 	defer c.endEveryTransfer()
 	defer c.endEveryDrop()
@@ -171,18 +178,27 @@ func (c *Central) OnSideDrags(started func(SideDrag), ended func(origin string))
 }
 
 func (c *Central) DragCrossed(origin, to string) error {
+	select {
+	case <-c.started:
+	default:
+		return errNotRunning
+	}
 	answer := make(chan error, 1)
 	c.inbox.put(centralNews{evenWhileFocusMoves: true, handle: func() { answer <- c.dragCrossed(origin, to) }})
 	select {
 	case err := <-answer:
 		return err
 	case <-c.stopped:
-		return errSharingStopped
+		return errNotRunning
 	}
 }
 
 func (c *Central) DragCancelled() {
 	c.tell(func() { c.do(c.desk.DragCancelled(c.lastDrop)) })
+}
+
+func (c *Central) DragOver() {
+	c.tell(c.dragOver)
 }
 
 func (c *Central) linkOf(conn sharer.Conn) *link {

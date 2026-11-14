@@ -1,7 +1,9 @@
 package clipshare
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -144,6 +146,7 @@ type rawCentral struct {
 	side     identity.Fingerprint
 	runtime  *Side
 	drops    *fakeDrops
+	log      *logBook
 }
 
 func newRawCentralWithASide(t *testing.T) *rawCentral {
@@ -160,6 +163,7 @@ func newRawCentralWithASide(t *testing.T) *rawCentral {
 	dialing := transportFor(side)
 	dialing.DataPace = transport.NewPace(0)
 	drops := &fakeDrops{}
+	log := &logBook{}
 	runtime := NewSide(Config{
 		Open:     opening(takingFiles{board}),
 		FilesOn:  func() bool { return true },
@@ -168,7 +172,7 @@ func newRawCentralWithASide(t *testing.T) *rawCentral {
 			return transport.DialData(ctx, dialing, centralPeer, transfer)
 		},
 		SilenceLimit: testSilenceLimit,
-		Log:          &logBook{},
+		Log:          log,
 		Drops:        drops,
 	})
 	ctx, stop := context.WithCancel(context.Background())
@@ -191,7 +195,7 @@ func newRawCentralWithASide(t *testing.T) *rawCentral {
 		t.Fatalf("Accept: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	raw := &rawCentral{frameRecorder: &frameRecorder{}, t: t, ctx: ctx, listener: listener, conn: conn, side: side.Fingerprint, runtime: runtime, drops: drops}
+	raw := &rawCentral{frameRecorder: &frameRecorder{}, t: t, ctx: ctx, listener: listener, conn: conn, side: side.Fingerprint, runtime: runtime, drops: drops, log: log}
 	go raw.record(conn)
 	return raw
 }
@@ -208,19 +212,19 @@ func (r *rawCentral) announces(value int32) {
 	})
 }
 
-func (r *rawCentral) dropsFiles(paths ...string) int32 {
+func (r *rawCentral) opensDropData(sideSends bool, stream func(data *transport.DataConn)) int32 {
 	r.t.Helper()
 	wires := make(chan int32, 1)
 	go func() {
 		data, err := r.listener.AwaitData(r.ctx, r.side, func(wire int32) error {
 			wires <- wire
-			return r.conn.Send(event.OpenDropData(wire, false))
+			return r.conn.Send(event.OpenDropData(wire, sideSends))
 		})
 		if err != nil {
 			return
 		}
 		defer data.Close()
-		filestream.SendDrop(r.ctx, data, paths)
+		stream(data)
 	}()
 	select {
 	case wire := <-wires:
@@ -229,6 +233,13 @@ func (r *rawCentral) dropsFiles(paths ...string) int32 {
 		r.t.Fatal("the raw central opened no drop data")
 		return 0
 	}
+}
+
+func (r *rawCentral) dropsFiles(paths ...string) int32 {
+	r.t.Helper()
+	return r.opensDropData(false, func(data *transport.DataConn) {
+		filestream.SendDrop(r.ctx, data, paths)
+	})
 }
 
 func (r *rawCentral) waitForDrops(count int) *fakeDropSession {
@@ -249,12 +260,12 @@ func TestASideMachineSendsDragFramesOnlyToACentralWithTheDragBit(t *testing.T) {
 			t.Errorf("a central without the drag bit got %+v", sent)
 		}
 	}
-	if err := raw.conn.Send(event.OpenDropData(5, false)); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
+	refused := raw.dropsFiles(file)
 	eventually(t, "the side machine refusing drop data from a central without the drag bit", func() bool {
-		return slices.Contains(raw.withCode(event.ControlDataStop), event.DataStop(5))
+		return slices.Contains(raw.withCode(event.ControlDataStop), event.DataStop(refused))
 	})
+	raw.log.waitFor(t, "does not take dragged files now")
+	time.Sleep(settling)
 	expectNoDropStarted(t, "the side machine", raw.drops)
 
 	raw.announces(textFilesAndDrags)
@@ -298,5 +309,140 @@ func TestAnnouncingKindsTurnsTheDragBitOnlyWithFilesAndADropSession(t *testing.T
 	without := Config{}.withDefaults()
 	if got := without.announcing(clipboard.Text|clipboard.Files).Value() & dragBit; got != 0 {
 		t.Error("a machine without a drop session announced the drag bit")
+	}
+}
+
+func dropStreamStartingWith(top string) []byte {
+	var stream bytes.Buffer
+	stream.WriteByte(2)
+	stream.Write(binary.BigEndian.AppendUint32(nil, 1))
+	stream.Write(binary.BigEndian.AppendUint64(nil, 3))
+	stream.Write(binary.BigEndian.AppendUint32(nil, 1))
+	stream.WriteByte(1)
+	stream.Write(binary.BigEndian.AppendUint16(nil, uint16(len(top))))
+	stream.WriteString(top)
+	return stream.Bytes()
+}
+
+func TestATopLevelNameThatIsNotAPlainNameStartsNoDropOnASideMachine(t *testing.T) {
+	raw := newRawCentralWithASide(t)
+	raw.announces(textFilesAndDrags)
+
+	for _, top := range []string{"..", ".", "/etc/passwd", "report/a.txt"} {
+		wire := raw.opensDropData(false, func(data *transport.DataConn) {
+			data.Write(dropStreamStartingWith(top))
+			data.AwaitAllArrived(raw.ctx)
+		})
+		eventually(t, "the side machine stopping the drop named "+top, func() bool {
+			return slices.Contains(raw.withCode(event.ControlDataStop), event.DataStop(wire))
+		})
+	}
+
+	time.Sleep(settling)
+	expectNoDropStarted(t, "the side machine", raw.drops)
+	if left := askSide(t, raw.runtime, func() int { return len(raw.runtime.drops) }); left != 0 {
+		t.Errorf("the side machine kept %d drops", left)
+	}
+}
+
+func TestASideMachineSendsOnlyTheFilesOfARecentDragItDescribed(t *testing.T) {
+	raw := newRawCentralWithASide(t)
+	raw.announces(textFilesAndDrags)
+	file := writeFile(t, filepath.Join(t.TempDir(), "offered.txt"), []byte("offered"))
+	nothingToSend := func(data *transport.DataConn) {}
+
+	unoffered := raw.opensDropData(true, nothingToSend)
+	eventually(t, "the side machine refusing to send a drag it never described", func() bool {
+		return slices.Contains(raw.withCode(event.ControlDataStop), event.DataStop(unoffered))
+	})
+	raw.log.waitFor(t, "none are offered")
+
+	raw.runtime.DragSeen([]string{file}, 0)
+	eventually(t, "the side machine describing its drag", func() bool { return len(raw.withCode(event.ControlDragFiles)) > 0 })
+	raw.runtime.DragGone()
+	received := make(chan error, 1)
+	raw.opensDropData(true, func(data *transport.DataConn) {
+		received <- filestream.ReceiveDrop(raw.ctx, data, dropArrivalsInto(t))
+	})
+	select {
+	case err := <-received:
+		if err != nil {
+			t.Errorf("the files of a drag that just ended did not arrive: %v", err)
+		}
+	case <-time.After(testPatience):
+		t.Fatal("the side machine sent nothing for a drag that just ended")
+	}
+
+	raw.runtime.DragSeen([]string{filepath.Join(t.TempDir(), "missing.txt")}, 0)
+	raw.log.waitFor(t, "The file drag on this machine cannot cross")
+	replaced := raw.opensDropData(true, nothingToSend)
+	eventually(t, "the side machine refusing to send the files of a drag that a new drag replaced", func() bool {
+		return slices.Contains(raw.withCode(event.ControlDataStop), event.DataStop(replaced))
+	})
+}
+
+type arrivalsOnly struct {
+	arrivals
+}
+
+func (arrivalsOnly) Dropping([]filestream.TopEntry) error { return nil }
+
+func dropArrivalsInto(t *testing.T) filestream.DropArrivals {
+	t.Helper()
+	_, folder := openArrivals(t, 0)
+	return arrivalsOnly{arrivals{folder.Expecting(1)}}
+}
+
+func TestDraggedFilesAreOfferedForTwoMinutesAfterTheDragEndedHere(t *testing.T) {
+	s := NewSide(Config{})
+	now := time.Now()
+	s.dragged = []string{"/drag/report.txt"}
+	if !s.offersDraggedFiles(now) {
+		t.Error("the files of a drag still under way are not offered")
+	}
+	s.dragEnded = now.Add(-draggedFilesKeptFor + time.Second)
+	if !s.offersDraggedFiles(now) {
+		t.Error("the files of a drag that ended a moment ago are not offered")
+	}
+	s.dragEnded = now.Add(-draggedFilesKeptFor)
+	if s.offersDraggedFiles(now) || s.dragged != nil {
+		t.Errorf("the files of a drag that ended %s ago are still offered: %q", draggedFilesKeptFor, s.dragged)
+	}
+}
+
+func TestTheCentralRemembersTheLastEightDropsItDeliveredAndNoneAlreadyTaken(t *testing.T) {
+	c := NewCentral(Config{})
+	right := &link{name: "right"}
+	delivered := func(transfer int, taken bool) *centralTransfer {
+		return &centralTransfer{id: transfer, drop: true, to: right, halves: []dataHalf{{side: right, wire: int32(100 + transfer)}}, takenThere: taken}
+	}
+	for transfer := 1; transfer <= deliveredDropsRemembered+2; transfer++ {
+		c.rememberDelivered(delivered(transfer, false))
+	}
+	c.rememberDelivered(delivered(deliveredDropsRemembered+3, true))
+
+	if len(c.delivered) != deliveredDropsRemembered {
+		t.Fatalf("the central remembers %d delivered drops, want %d", len(c.delivered), deliveredDropsRemembered)
+	}
+	for transfer := 1; transfer <= deliveredDropsRemembered+3; transfer++ {
+		half, remembered := c.delivered[transfer]
+		want := transfer > 2 && transfer <= deliveredDropsRemembered+2
+		if remembered != want || remembered && half.wire != int32(100+transfer) {
+			t.Errorf("drop %d remembered %t with %+v, want remembered %t", transfer, remembered, half, want)
+		}
+	}
+}
+
+func TestACrossingIsRefusedAtOnceWhenTheCentralIsNotRunning(t *testing.T) {
+	c := NewCentral(Config{Name: "desk"})
+	answered := make(chan error, 1)
+	go func() { answered <- c.DragCrossed("left", "right") }()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, errNotRunning) {
+			t.Errorf("DragCrossed before Run = %v, want errNotRunning", err)
+		}
+	case <-time.After(testPatience):
+		t.Fatal("DragCrossed before Run never answered")
 	}
 }

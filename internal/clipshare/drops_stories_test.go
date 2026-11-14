@@ -338,7 +338,26 @@ func TestADragTowardASideMachineWithoutTheDragBitMovesNothing(t *testing.T) {
 	expectNothingLeftIn(t, "plain", plain.arrivalDir)
 }
 
-func TestADragThatEndedCannotCrossAnyMore(t *testing.T) {
+func (d *deskUnderTest) originReportsItsDragGone(origin *sideUnderTest) {
+	d.t.Helper()
+	if origin == onTheCentral {
+		d.runtime.DragGone()
+		askCentral(d.t, d.runtime, func() bool { return true })
+		return
+	}
+	origin.runtime.DragGone()
+	handledEverythingQueued(d.t, origin.runtime)
+	time.Sleep(settling)
+}
+
+func expectNoDragEndTold(t *testing.T, d *deskUnderTest) {
+	t.Helper()
+	if _, ends := d.described.seen(); len(ends) > 0 {
+		t.Errorf("the central told the end of the drags of %q, want none before the drag is over", ends)
+	}
+}
+
+func TestADragThatDidNotCrossIsForgottenWhenItsOriginReportsItGone(t *testing.T) {
 	d := newDropDesk(t, "left", "right")
 	left, right := d.sideJoins("left"), d.sideJoins("right")
 	d.waitUntilTakingDrops(left, right)
@@ -347,7 +366,10 @@ func TestADragThatEndedCannotCrossAnyMore(t *testing.T) {
 	d.focusMovesTo(left)
 	d.sideDrags(left, file)
 	left.runtime.DragGone()
-	eventually(t, "the central forgetting the drag on the left", func() bool { return !d.seesADragOn(left) })
+	eventually(t, "the central telling that the drag on the left ended", func() bool {
+		_, ends := d.described.seen()
+		return slices.Equal(ends, []string{"left"})
+	})
 	d.focusMovesTo(right)
 	if err := d.crosses(left, right); !errors.Is(err, ErrNoFileDrag) {
 		t.Errorf("a crossing after the drag on the left ended = %v, want ErrNoFileDrag", err)
@@ -355,8 +377,7 @@ func TestADragThatEndedCannotCrossAnyMore(t *testing.T) {
 
 	d.focusMovesTo(onTheCentral)
 	d.centralDrags(file)
-	d.runtime.DragGone()
-	eventually(t, "the central forgetting its own drag", func() bool { return !d.seesADragOn(onTheCentral) })
+	d.originReportsItsDragGone(onTheCentral)
 	if err := d.crosses(onTheCentral, right); !errors.Is(err, ErrNoFileDrag) {
 		t.Errorf("a crossing after the drag on the central ended = %v, want ErrNoFileDrag", err)
 	}
@@ -364,6 +385,98 @@ func TestADragThatEndedCannotCrossAnyMore(t *testing.T) {
 	time.Sleep(settling)
 	d.expectNoTransfersLeft(left, right)
 	expectNoDropStarted(t, "right", right.drops)
+}
+
+func TestADragGoesOnToAThirdMachineAfterItsOriginReportedItGone(t *testing.T) {
+	for _, origin := range []string{"left", "the central"} {
+		t.Run("from "+origin, func(t *testing.T) {
+			d := newDropDesk(t, "left", "right", "third")
+			left, right, third := d.sideJoins("left"), d.sideJoins("right"), d.sideJoins("third")
+			d.waitUntilTakingDrops(left, right, third)
+			from := left
+			if origin == "the central" {
+				from = onTheCentral
+			}
+			report := writeFile(t, filepath.Join(t.TempDir(), "report.txt"), randomContent(t, 64<<10))
+
+			d.dragCrosses(from, right, report)
+			onTheRight := waitForADrop(t, "right", right.drops)
+			d.originReportsItsDragGone(from)
+			expectNoDragEndTold(t, d)
+			d.focusMovesTo(third)
+			if err := d.crosses(from, third); err != nil {
+				t.Fatalf("the drag going on from the right to the third machine = %v, want a new drop", err)
+			}
+
+			waitUntilCancelled(t, "right", onTheRight)
+			onTheThird := waitForADrop(t, "third", third.drops)
+			onTheThird.take()
+			expectSameFiles(t, waitUntilHanded(t, "third", onTheThird), third.arrivalDir, report)
+			expectNothingLeftIn(t, "right", right.arrivalDir)
+			d.expectNoTransfersLeft(left, right, third)
+			d.expectNoDropsLeft(left, right, third)
+			expectNoDragEndTold(t, d)
+		})
+	}
+}
+
+func TestADragBackToItsOriginAfterItReportedItGoneCancelsTheDropAndCanCrossAgain(t *testing.T) {
+	d := newDropDesk(t, "left", "right")
+	left, right := d.sideJoins("left"), d.sideJoins("right")
+	d.waitUntilTakingDrops(left, right)
+	notes := writeFile(t, filepath.Join(t.TempDir(), "notes.md"), randomContent(t, 64<<10))
+
+	d.dragCrosses(left, right, notes)
+	first := waitForADrop(t, "right", right.drops)
+	d.originReportsItsDragGone(left)
+	d.focusMovesTo(left)
+	if err := d.crosses(left, left); !errors.Is(err, clipboard.ErrDragBackToItsSource) {
+		t.Errorf("the drag back to the left = %v, want ErrDragBackToItsSource", err)
+	}
+	waitUntilCancelled(t, "right", first)
+	expectNothingLeftIn(t, "right", right.arrivalDir)
+
+	d.focusMovesTo(right)
+	if err := d.crosses(left, right); err != nil {
+		t.Fatalf("the drag crossing to the right again = %v, want a new drop", err)
+	}
+	eventually(t, "a second drop starting on the right", func() bool { return len(right.drops.started()) == 2 })
+	second := right.drops.started()[1]
+	second.take()
+	expectSameFiles(t, waitUntilHanded(t, "right", second), right.arrivalDir, notes)
+	d.expectNoTransfersLeft(left, right)
+	expectNoDragEndTold(t, d)
+}
+
+func TestDragOverForgetsADragThatCrossedAndTellsItsEnd(t *testing.T) {
+	d := newDropDesk(t, "left", "right")
+	left, right := d.sideJoins("left"), d.sideJoins("right")
+	d.waitUntilTakingDrops(left, right)
+	file := writeFile(t, filepath.Join(t.TempDir(), "over.txt"), []byte("over"))
+
+	d.dragCrosses(left, right, file)
+	waitForADrop(t, "right", right.drops).take()
+	d.originReportsItsDragGone(left)
+	d.runtime.DragOver()
+	eventually(t, "the central telling that the drag on the left ended", func() bool {
+		_, ends := d.described.seen()
+		return slices.Equal(ends, []string{"left"})
+	})
+	if err := d.crosses(left, right); !errors.Is(err, ErrNoFileDrag) {
+		t.Errorf("a crossing after the drag was over = %v, want ErrNoFileDrag", err)
+	}
+
+	d.focusMovesTo(onTheCentral)
+	d.centralDrags(file)
+	d.focusMovesTo(right)
+	if err := d.crosses(onTheCentral, right); err != nil {
+		t.Fatalf("DragCrossed: %v", err)
+	}
+	d.runtime.DragOver()
+	eventually(t, "the central forgetting its own drag that was over", func() bool { return !d.seesADragOn(onTheCentral) })
+	if err := d.crosses(onTheCentral, right); !errors.Is(err, ErrNoFileDrag) {
+		t.Errorf("a crossing after the drag of the central was over = %v, want ErrNoFileDrag", err)
+	}
 }
 
 func TestADragThatCannotBeListedIsNotDescribedAndSaysWhy(t *testing.T) {
@@ -377,5 +490,30 @@ func TestADragThatCannotBeListedIsNotDescribedAndSaysWhy(t *testing.T) {
 	time.Sleep(settling)
 	if d.seesADragOn(left) {
 		t.Error("the central took the description of a drag that could not be listed")
+	}
+}
+
+func TestALostControlConnectionInTheMiddleOfADropClosesItsDataAndLeavesNothing(t *testing.T) {
+	d := newSlowDropDesk(t, oneMebibytePerSecond, "left", "right")
+	left, right := d.sides["left"], d.sides["right"]
+	d.sideJoins("left")
+	control := cuttableProxyTo(t, d.address)
+	d.startSide(right, control.address, d.clipboardOpener(right.clipboard))
+	d.waitUntilTakingDrops(left, right)
+	large := writeFile(t, filepath.Join(t.TempDir(), "film.mov"), randomContent(t, 3<<20))
+
+	d.dragCrosses(left, right, large)
+	session := waitForADrop(t, "right", right.drops)
+	waitUntilArriving(t, "right", right.arrivalDir)
+	session.take()
+	d.waitUntilTakenOn(right)
+	control.cut()
+
+	waitUntilCancelled(t, "right", session)
+	expectNothingLeftIn(t, "right", right.arrivalDir)
+	d.expectNoTransfersLeft(left, right)
+	d.expectNoDropsLeft(left, right)
+	if handed := session.handedPaths(); len(handed) > 0 {
+		t.Errorf("the drop got the files %q after the control connection was lost", handed)
 	}
 }
