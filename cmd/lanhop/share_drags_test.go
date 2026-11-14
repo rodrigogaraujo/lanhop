@@ -402,3 +402,93 @@ func TestEndingASourceDragUnderAShieldOnTheCentralSaysWhetherItEnded(t *testing.
 		t.Errorf("the log says %q, want the missed shield", log.String())
 	}
 }
+
+type hookedCentral struct {
+	*fakeCentralDrops
+	counted func(files int)
+	started func(clipshare.SideDrag)
+	ended   func(origin string)
+	stayed  func(origin string)
+	dock    func(origin string, dock edge.Side)
+}
+
+func (c *hookedCentral) OnOwnDragCounted(counted func(files int)) {
+	c.counted = counted
+}
+
+func (c *hookedCentral) OnSideDrags(started func(clipshare.SideDrag), ended func(origin string)) {
+	c.started, c.ended = started, ended
+}
+
+func (c *hookedCentral) OnSideDragStayed(stayed func(origin string)) {
+	c.stayed = stayed
+}
+
+func (c *hookedCentral) OnSideDock(dock func(origin string, dock edge.Side)) {
+	c.dock = dock
+}
+
+type hookedSharer struct {
+	fakeSharerDrags
+	crossing   func(sharer.DragCrossing) error
+	entered    func(sharer.DragCrossing)
+	ended      func(sharer.Drag)
+	escape     func(bool)
+	leftButton func(bool)
+}
+
+func (s *hookedSharer) OnDragCrossing(crossing func(sharer.DragCrossing) error) {
+	s.crossing = crossing
+}
+
+func (s *hookedSharer) OnDragEntered(entered func(sharer.DragCrossing)) {
+	s.entered = entered
+}
+
+func (s *hookedSharer) OnDragEnded(ended func(sharer.Drag)) {
+	s.ended = ended
+}
+
+func (s *hookedSharer) OnEscape(pressed func(bool)) {
+	s.escape = pressed
+}
+
+func (s *hookedSharer) OnLeftButton(changed func(bool)) {
+	s.leftButton = changed
+}
+
+func TestWiringTheCentralSetsEveryHookOfTheClipboardAndTheSharer(t *testing.T) {
+	calls := &dragCalls{}
+	central := &hookedCentral{fakeCentralDrops: &fakeCentralDrops{calls: calls}}
+	machine := &hookedSharer{fakeSharerDrags: fakeSharerDrags{calls: calls}}
+	drags := newDragsOfTheCentral(theCentral, nil, func() error { return nil }, &screen{})
+	drags.reset = func() { calls.note(localDragsReset) }
+
+	drags.wire(machine, central, func() bool { return true })
+	central.counted(2)
+	central.started(clipshare.SideDrag{Origin: "desk", Files: 1})
+	central.ended("desk")
+	central.stayed("desk")
+	central.dock("desk", edge.Top)
+	machine.crossing(crossingOf("desk", "laptop", "desk"))
+	machine.entered(crossingOf("desk", "desk", "laptop"))
+	machine.ended(sharer.Drag{Origin: "desk"})
+	machine.escape(false)
+	machine.leftButton(true)
+
+	if got, want := calls.take(), []string{
+		"sharer: drag started {Origin:studio Files:2 Dock:unknown}",
+		"sharer: drag started {Origin:desk Files:1 Dock:unknown}",
+		"sharer: the source drag ended on desk",
+		"sharer: drag cancelled",
+		"central: drag cancelled",
+		"sharer: the dock of desk is at top",
+		"central: drag cancelled",
+		"central: drag crossed from desk to laptop",
+		"central: drag over",
+		"central: drag cancelled",
+		localDragsReset,
+	}; !slices.Equal(got, want) {
+		t.Errorf("the hooks led to:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

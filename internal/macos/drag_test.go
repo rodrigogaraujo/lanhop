@@ -891,34 +891,49 @@ func (b *stalledDragBoard) ReadFiles() ([]string, error) {
 }
 
 func TestAResetReturnsAtOnceDuringASlowReadAndNothingReadBeforeItIsSent(t *testing.T) {
-	board := &stalledDragBoard{dragBoard: newDragBoard(), stall: make(chan struct{}), stalled: make(chan struct{})}
-	watch, err := watchDrags(dragSource{board: board, leftHeld: board.leftHeld}, shortestDragPoll)
-	if err != nil {
-		t.Fatalf("watchDrags: %v", err)
-	}
-	t.Cleanup(func() { watch.Close() })
-	board.press()
-	board.holdFiles("/tmp/report.pdf")
-	select {
-	case <-board.stalled:
-	case <-time.After(watchPatience):
-		t.Fatal("the watch never read the drag pasteboard a second time")
-	}
+	for round := range 20 {
+		board := &stalledDragBoard{dragBoard: newDragBoard(), stall: make(chan struct{}), stalled: make(chan struct{})}
+		watch, err := watchDrags(dragSource{board: board, leftHeld: board.leftHeld}, shortestDragPoll)
+		if err != nil {
+			t.Fatalf("watchDrags: %v", err)
+		}
+		board.press()
+		board.holdFiles("/tmp/report.pdf")
+		select {
+		case <-board.stalled:
+		case <-time.After(watchPatience):
+			t.Fatal("the watch never read the drag pasteboard a second time")
+		}
+		sent := make(chan DragEvent, 1)
+		go func() {
+			select {
+			case seen := <-watch.Events():
+				sent <- seen
+			case <-time.After(10 * quietWindow):
+			}
+		}()
+		time.Sleep(quietWindow / 4)
 
-	returned := make(chan struct{})
-	go func() {
-		defer close(returned)
-		watch.Reset()
-		watch.Reset()
-	}()
-	select {
-	case <-returned:
-	case <-time.After(quietWindow):
-		t.Fatal("Reset waited for the read in progress")
-	}
-	close(board.stall)
+		returned := make(chan struct{})
+		go func() {
+			defer close(returned)
+			watch.Reset()
+			watch.Reset()
+		}()
+		select {
+		case <-returned:
+		case <-time.After(quietWindow):
+			t.Fatalf("round %d: Reset waited for the read in progress", round)
+		}
+		close(board.stall)
 
-	expectNoDragEvent(t, watch)
+		select {
+		case seen := <-sent:
+			t.Fatalf("round %d: the watch sent %+v, read before the reset", round, seen)
+		case <-time.After(2 * quietWindow):
+		}
+		watch.Close()
+	}
 }
 
 func TestAResetEndsADragAlreadyToldAndOnlyThat(t *testing.T) {
