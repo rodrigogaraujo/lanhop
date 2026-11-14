@@ -629,3 +629,15 @@ func TestAWaitingMachineThatNowNeedsTheInstallerIsNamedSo(t *testing.T) {
 		t.Errorf("lanhop update printed %q, want office-mac named as needing the installer", output.String())
 	}
 }
+
+func TestTheReleaseBuildSetsTheVariablesThatHoldTheVersions(t *testing.T) {
+	workflow, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, variable := range map[string]*string{"main.version": &version, "main.updateFrom": &updateFrom} {
+		if !strings.Contains(string(workflow), "-X "+name+"=") {
+			t.Errorf("the release workflow does not set %s, which holds %q in this build", name, *variable)
+		}
+	}
+}

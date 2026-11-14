@@ -13,7 +13,7 @@ refuse() {
   exit 1
 }
 
-openssl pkey -in "$key" -noout -text 2>/dev/null | head -n 1 | grep -q 'ED25519 Private-Key' ||
+openssl pkey -in "$key" -noout -text_pub 2>/dev/null | head -n 1 | grep -q 'ED25519 Public-Key' ||
   refuse "$key is not an Ed25519 private key in PEM"
 grep -q ' UPDATE$' "$release/SHA256SUMS" || refuse "$release/SHA256SUMS does not list UPDATE"
 openssl pkeyutl -sign -rawin -inkey "$key" -in "$release/SHA256SUMS" -out "$release/SHA256SUMS.sig"

@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: make-throwaway-certificate FOLDER" >&2
+  echo "usage: make-certificate FOLDER" >&2
   exit 64
 fi
 folder=$1

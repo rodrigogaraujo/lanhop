@@ -112,7 +112,7 @@ Version goes from a side machine to the central, right after Features. Bits 0 to
 - A job verifies `SHA256SUMS.sig` and `UPDATE` through the same function that `lanhop update` uses.
 - The checks of the version, of the certificate hash, of build tags and of `install.sh` are scripts in the repository, which `ci.yml` runs against bad inputs too.
 - The jobs that hold signing secrets use actions pinned to a commit.
-- The jobs that sign run in the GitHub environment `release`. Its deployment policy allows only `v*` tags, each run needs the approval of the owner, and it holds `LANHOP_SIGNING_CERTIFICATE` (the certificate and key in PKCS#12, base64), `LANHOP_SIGNING_CERTIFICATE_PASSWORD` and `LANHOP_RELEASE_KEY` (the Ed25519 private key in PEM). Pull requests and manual runs make a certificate and a key inside the job and throw them away.
+- The jobs that sign run in the GitHub environment `release`. Its deployment policy allows only `v*` tags, each of the two jobs waits for the approval of the owner, and it holds `LANHOP_SIGNING_CERTIFICATE` (the certificate and key in PKCS#12, base64), `LANHOP_SIGNING_CERTIFICATE_PASSWORD` and `LANHOP_RELEASE_KEY` (the Ed25519 private key in PEM). Pull requests and manual runs make a certificate and a key inside the job and throw them away.
 
 ## Decisions
 
@@ -120,7 +120,7 @@ Version goes from a side machine to the central, right after Features. Bits 0 to
 |---|---|---|---|
 | Signature of the macOS app | A self-signed certificate of the project. [ADR 10](../../docs/adr/0010-a-stable-signature-from-a-certificate-of-the-project.md) | The same requirement from release to release, at no cost | Gatekeeper still does not know the app |
 | Trust in a download | Ed25519 signature of `SHA256SUMS` and `UPDATE`, with the public keys in lanhop. [ADR 11](../../docs/adr/0011-signed-releases-and-side-machines-that-follow-the-central.md) | A changed or older release is refused, on macOS and Linux, with no dependency | Keys to keep safe |
-| Who can sign | A tag ruleset on `v*`, a ruleset on `main`, and an environment that only `v*` tags reach, with the owner's approval | Write access to the repository is not enough to sign | One approval on GitHub for each release |
+| Who can sign | A tag ruleset on `v*`, a ruleset on `main`, and an environment that only `v*` tags reach, with the owner's approval | Write access to the repository is not enough to sign | Two approvals on GitHub for each release, one per signing job |
 | Changing a key | A next key and a next certificate hash, already in every machine | A change needs no installer | Two more secrets to keep offline |
 | Who downloads | Each machine, from GitHub | The central can only name a version, never send a program | Side machines need the internet when they update |
 | Order | The central first, the side machines when they connect again | No new local channel between `lanhop update` and the running `lanhop share`, and a machine that was off catches up later | A side machine is one version behind for up to a minute |
@@ -138,7 +138,7 @@ One task, one pull request. Each verify list says what must be true before the t
   - After one approval of Accessibility and of Local Network for the first build, the second build, put at the same path by the first one swapping itself, has both with no new question.
   - The swap from the launch agent, and a swap run from a terminal as `lanhop update` on the central would, show no App Management question. The terminal used is written down.
   - The result goes in ADR 10, which is accepted or rejected by it. The test lines are removed after with `tccutil reset`, for that identifier only, and the launch agent is removed.
-- [ ] **1. Keys of the project.** The owner creates the certificate of ADR 10 and its next one, and the Ed25519 key of ADR 11 and its next one. The owner puts the current ones in the environment `release`, sets its deployment policy and its approval, adds the tag ruleset, and keeps a copy of all four outside GitHub. The public keys and the certificate hashes go in the repository. → Verify:
+- [ ] **1. Keys of the project.** The owner creates the certificate of ADR 10 and its next one, and the Ed25519 key of ADR 11 and its next one. The owner makes each certificate with `scripts/release/make-certificate`, whose PKCS#12 and hash file are the forms the release workflow takes, and each key with `openssl genpkey -algorithm ed25519`. The owner sets the deployment policy and the approval of the environment `release` before putting the current ones in it, adds the tag ruleset, and keeps a copy of all four outside GitHub. The public keys and the certificate hashes go in the repository. → Verify:
   - `codesign` signs a test app with the certificate from a temporary keychain, and its requirement shows the hash in `packaging/macos/certificate-leaf`.
   - No private key is printed or written in a log.
 - [ ] **2. Release workflow.** As in "Release workflow" above, with a manual run that does all of it on a branch with a throwaway certificate and key, and publishes nothing. → Verify:

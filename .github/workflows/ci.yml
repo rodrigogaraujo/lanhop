@@ -79,6 +79,30 @@ jobs:
               exit 1
             fi
           done
+      - name: Refuse to compare with itself the installer of a release whose tag is missing
+        if: runner.os == 'Linux'
+        run: |
+          scripts="$PWD/scripts/release"
+          repo="$WORK/tags"
+          mkdir -p "$repo/packaging"
+          git -C "$repo" init -q
+          printf 'old\n' >"$repo/install.sh"
+          printf 'v9.9.9\n' >"$repo/packaging/update-from"
+          (
+            cd "$repo"
+            if "$scripts/installer-at-from" --release "$WORK/at-from"; then
+              echo "::error::installer-at-from --release took a missing tag"
+              exit 1
+            fi
+            "$scripts/installer-at-from" "$WORK/at-from"
+            cmp install.sh "$WORK/at-from"
+            git add .
+            git -c user.name=lanhop -c user.email=lanhop@example.invalid commit -q -m old
+            git tag v9.9.9
+            printf 'new\n' >install.sh
+            "$scripts/installer-at-from" --release "$WORK/at-from"
+            test "$(cat "$WORK/at-from")" = old
+          )
       - name: Refuse a program built with a build tag
         if: runner.os == 'Linux'
         run: |
@@ -160,8 +184,19 @@ jobs:
         run: |
           app="$WORK/lanhop-darwin-arm64/lanhop.app"
           cp -R "$app" "$WORK/ad-hoc.app"
-          scripts/release/make-throwaway-certificate "$WORK/certificate"
-          scripts/release/make-throwaway-certificate "$WORK/other-certificate"
+          scripts/release/make-certificate "$WORK/made"
+          scripts/release/make-certificate "$WORK/other-certificate"
+          cp "$WORK/made/leaf" "$WORK/certificate-leaf"
+          tr 'a-f' 'A-F' <"$WORK/certificate-leaf" | sed 's/../&:/g; s/:$//' >"$WORK/certificate-leaf-with-colons"
+          LANHOP_SIGNING_CERTIFICATE=$(base64 <"$WORK/made/certificate.p12")
+          LANHOP_SIGNING_CERTIFICATE_PASSWORD=$(cat "$WORK/made/password")
+          export LANHOP_SIGNING_CERTIFICATE LANHOP_SIGNING_CERTIFICATE_PASSWORD
+          if scripts/release/take-certificate "$WORK/refused" "$WORK/certificate-leaf-with-colons"; then
+            echo "::error::take-certificate took a certificate hash with colons and capitals"
+            exit 1
+          fi
+          scripts/release/take-certificate "$WORK/certificate" "$WORK/certificate-leaf"
+          unset LANHOP_SIGNING_CERTIFICATE LANHOP_SIGNING_CERTIFICATE_PASSWORD
           scripts/release/sign-apps "$WORK/certificate/certificate.p12" "$WORK/certificate/password" "$app"
           scripts/release/check-app-requirement "$app" "$(cat "$WORK/certificate/leaf")"
           if scripts/release/check-app-requirement "$app" "$(cat "$WORK/other-certificate/leaf")"; then
