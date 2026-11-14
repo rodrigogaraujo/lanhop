@@ -98,8 +98,8 @@ jobs:
         shell: bash
         run: |
           go test -race -count=1 -v -tags containertest -run '^TestTheContainerTest' ./internal/x11 ./cmd/lanhop | tee containertest.log
-          if grep -e '--- SKIP' containertest.log; then
-            echo "::error::a test of the container test input was skipped"
+          if grep -e '--- SKIP' -e 'no tests to run' containertest.log; then
+            echo "::error::a test of the container test input was skipped, or a package ran none"
             exit 1
           fi
       - name: Test the macOS build without cgo
