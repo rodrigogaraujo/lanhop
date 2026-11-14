@@ -53,7 +53,8 @@ func newDragsOfTheCentral(name string, drops clipshare.Drops, endHere func() err
 func (d *dragsOfTheCentral) wire(machine *sharer.Sharer, central *clipshare.Central, allowed func() bool) {
 	d.central, d.machine, d.allowed = central, machine, allowed
 	central.OnSideDrags(d.sideDragStarted, d.sideDragEnded)
-	central.OnSideDock(d.dockOf)
+	central.OnSideDragStayed(d.sideDragStayed)
+	central.OnSideDock(d.sideDock)
 	machine.OnDragCrossing(d.crossing)
 	machine.OnDragEntered(d.entered)
 	machine.OnDragEnded(d.dragEnded)
@@ -114,6 +115,16 @@ func (d *dragsOfTheCentral) sideDragStarted(drag clipshare.SideDrag) {
 
 func (d *dragsOfTheCentral) sideDragEnded(origin string) {
 	d.machine.SourceDragEnded(origin)
+}
+
+func (d *dragsOfTheCentral) sideDragStayed(origin string) {
+	fmt.Fprintf(d.log, "The file drag that left %q stayed there, so it is cancelled.\n", origin)
+	d.machine.DragCancelled()
+	d.central.DragCancelled()
+}
+
+func (d *dragsOfTheCentral) sideDock(origin string, dock edge.Side) {
+	d.machine.SetDock(origin, dock)
 }
 
 func (d *dragsOfTheCentral) crossing(crossing sharer.DragCrossing) {

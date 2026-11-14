@@ -127,3 +127,113 @@ func TestASideMachineAnnouncesAgainWhenOnlyItsDragsSwitchMoves(t *testing.T) {
 	})
 	eventually(t, "the side machine stopping its drag descriptions", func() bool { return slices.Equal(changes.seen(), []bool{false, true, false}) })
 }
+
+type sideNews struct {
+	mutex sync.Mutex
+	stays []string
+	docks []string
+}
+
+func (n *sideNews) stayed(origin string) {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	n.stays = append(n.stays, origin)
+}
+
+func (n *sideNews) dockMoved(origin string, dock edge.Side) {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	n.docks = append(n.docks, origin+" "+dockName(dock))
+}
+
+func dockName(dock edge.Side) string {
+	if dock == 0 {
+		return "none"
+	}
+	return dock.String()
+}
+
+func (n *sideNews) staysSeen() []string {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	return slices.Clone(n.stays)
+}
+
+func (n *sideNews) docksSeen() []string {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	return slices.Clone(n.docks)
+}
+
+func TestTheCentralHearsThatTheDragOfASideMachineStayed(t *testing.T) {
+	d := newDropDesk(t, "left")
+	left := d.sideJoins("left")
+	d.waitUntilTakingDrops(left)
+
+	left.runtime.DragStayed()
+
+	eventually(t, "the central hearing that the drag on the left stayed", func() bool {
+		return slices.Equal(d.sideNews.staysSeen(), []string{"left"})
+	})
+}
+
+func TestTheCentralIgnoresAStayedDragFromASideMachineWithoutTheDragBit(t *testing.T) {
+	d := newDropDesk(t, "plain")
+	raw := d.rawSideAnnouncing("plain", textAndFiles)
+
+	if err := raw.conn.Send(event.DragStayed(), event.DragFiles(0, int32(edge.Right))); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	askCentral(t, d.runtime, func() bool { return true })
+	time.Sleep(settling)
+	if stays, docks := d.sideNews.staysSeen(), d.sideNews.docksSeen(); len(stays) > 0 || len(docks) > 0 {
+		t.Errorf("the central heard the stays %q and the Docks %q from a machine without the drag bit", stays, docks)
+	}
+}
+
+func TestASideMachineSaysThatItsDragStayedOnlyToACentralThatCarriesDrags(t *testing.T) {
+	raw := newRawCentralWithASide(t)
+
+	raw.announces(textAndFiles)
+	raw.runtime.DragStayed()
+	handledEverythingQueued(t, raw.runtime)
+	time.Sleep(settling)
+	if said := raw.withCode(event.ControlDragStayed); len(said) > 0 {
+		t.Fatalf("a central without the drag bits was told %+v", said)
+	}
+
+	raw.announces(textAndFiles | 1<<features.RelaysDrags)
+	raw.runtime.DragStayed()
+
+	eventually(t, "the side machine saying that its drag stayed", func() bool {
+		return slices.Equal(raw.withCode(event.ControlDragStayed), []event.Event{event.DragStayed()})
+	})
+}
+
+func TestTheCentralTellsTheDockOfASideMachineEachTimeItMoves(t *testing.T) {
+	d := newDropDesk(t, "left")
+	left := d.sideJoins("left")
+	d.waitUntilTakingDrops(left)
+	file := writeFile(t, filepath.Join(t.TempDir(), "drag.txt"), []byte("dragged"))
+
+	left.runtime.DockIs(edge.Left)
+	eventually(t, "the Dock of the left on the left", func() bool { return slices.Equal(d.sideNews.docksSeen(), []string{"left left"}) })
+	left.runtime.DockIs(edge.Left)
+	d.focusMovesTo(left)
+	left.runtime.DragSeen([]string{file}, edge.Left)
+	eventually(t, "the central seeing the drag on the left", func() bool { return d.seesADragOn(left) })
+	left.runtime.DragSeen([]string{file}, edge.Right)
+	eventually(t, "the Dock of the left on the right", func() bool {
+		return slices.Equal(d.sideNews.docksSeen(), []string{"left left", "left right"})
+	})
+	left.runtime.DragGone()
+	eventually(t, "the Dock of the left back on the left with the end of the drag", func() bool {
+		return slices.Equal(d.sideNews.docksSeen(), []string{"left left", "left right", "left left"})
+	})
+	left.runtime.DockIs(0)
+
+	eventually(t, "the left without a Dock", func() bool {
+		return slices.Equal(d.sideNews.docksSeen(), []string{"left left", "left right", "left left", "left none"})
+	})
+}

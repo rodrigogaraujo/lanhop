@@ -24,7 +24,7 @@ func fallBackAtTheEdge(hand edgeHand, log io.Writer, stayed func(), why error) {
 }
 
 func reportTheDragStayed(log io.Writer, stayed func(), why error) {
-	fmt.Fprintf(log, "The file drag that left this machine did not reach the window of lanhop at the edge, so lanhop pressed Escape and released the button here, and told the machine with the keyboard that the drag ended: %s\n", forTheLog(why))
+	fmt.Fprintf(log, "The file drag that left this machine did not reach the window of lanhop at the edge, so lanhop pressed Escape and released the button here, and asked the machine with the keyboard to cancel the drop: %s\n", forTheLog(why))
 	if stayed != nil {
 		stayed()
 	}
@@ -32,13 +32,17 @@ func reportTheDragStayed(log io.Writer, stayed func(), why error) {
 
 type cursorShield func(ctx context.Context) (io.Closer, error)
 
-func endTheSourceDragUnderAShield(ctx context.Context, shield cursorShield, end func() error, hand *dropReplay, log io.Writer) error {
+func endTheSourceDragUnderAShield(ctx context.Context, shield cursorShield, end func() error, hand *dropReplay, log io.Writer, stayed func()) error {
 	guard, err := shield(ctx)
 	if err != nil {
 		fmt.Fprintf(log, "lanhop could not put its window under the cursor before it ended the file drag that left this machine, and ends it anyway: %s\n", forTheLog(err))
 	}
 	ended := end()
-	if ended != nil {
+	switch {
+	case ended != nil && stayed != nil:
+		fmt.Fprintf(log, "The file drag that left this machine could not be ended here, so lanhop asks the machine with the keyboard to cancel the drop: %s\n", forTheLog(ended))
+		stayed()
+	case ended != nil:
 		fmt.Fprintf(log, "The file drag that left this machine could not be ended here: %s\n", forTheLog(ended))
 	}
 	if guard != nil {

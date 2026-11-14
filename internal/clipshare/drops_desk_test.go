@@ -116,6 +116,12 @@ func newDropDesk(t *testing.T, sideNames ...string) *deskUnderTest {
 	return newDeskWith(t, deskSetup{board: board, open: opening(takingFiles{board}), files: true, drops: true}, sideNames...)
 }
 
+func newRelayingDesk(t *testing.T, sideNames ...string) *deskUnderTest {
+	t.Helper()
+	board := holding("what the central held before")
+	return newDeskWith(t, deskSetup{board: board, open: opening(takingFiles{board}), files: true, drops: true, relaysOnly: true}, sideNames...)
+}
+
 func newSlowDropDesk(t *testing.T, bytesPerSecond int, sideNames ...string) *deskUnderTest {
 	t.Helper()
 	board := holding("what the central held before")
@@ -170,7 +176,7 @@ func (d *deskUnderTest) waitUntilTakingDrops(sides ...*sideUnderTest) {
 			})
 		})
 		eventually(d.t, side.name+" seeing the central take drops", func() bool {
-			return askSide(d.t, side.runtime, func() bool { return side.runtime.centralDrops })
+			return askSide(d.t, side.runtime, func() bool { return side.runtime.centralDrags })
 		})
 	}
 }

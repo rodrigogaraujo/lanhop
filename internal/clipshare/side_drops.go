@@ -57,7 +57,7 @@ func (s *Side) takesDrops() bool {
 }
 
 func (s *Side) describesDrags() bool {
-	return s.current != nil && s.centralDrops && s.takesDrops() && (s.on & s.centralTakes).Has(clipboard.Files)
+	return s.current != nil && s.centralDrags && s.takesDrops() && (s.on & s.centralTakes).Has(clipboard.Files)
 }
 
 func (s *Side) describeDrag(files clipboard.FileCopy, dock edge.Side) (described bool) {
@@ -76,6 +76,16 @@ func (s *Side) describeDrag(files clipboard.FileCopy, dock edge.Side) (described
 	s.dragDescribed, s.dockTold = true, dock
 	s.send(event.DragFiles(int32(files.FilesAndFolders), int32(dock)), event.DragFilesSize(kibibytesRoundedUp(files.Bytes)))
 	return true
+}
+
+func carriesDrags(featuresValue int32) bool {
+	return clipboard.DropsIn(featuresValue) || clipboard.RelaysDragsIn(featuresValue)
+}
+
+func (s *Side) dragStayed() {
+	if s.centralDrags {
+		s.send(event.DragStayed())
+	}
 }
 
 func (s *Side) dockIs(dock edge.Side) {
@@ -108,7 +118,7 @@ func (s *Side) openDropData(l *link, wire int, sideSends bool) {
 		return
 	}
 	s.followTheSwitch()
-	if !s.centralDrops || !s.takesDrops() {
+	if !s.centralDrags || !s.takesDrops() {
 		fmt.Fprintln(s.config.Log, "The machine with the keyboard asked to move dragged files, and they do not move, because this machine does not take dragged files now.")
 		s.send(event.DataStop(int32(wire)))
 		return

@@ -105,6 +105,12 @@ func (c Config) announcing(kinds clipboard.Kinds) *features.Set {
 	return c.Features
 }
 
+func (c Config) announcingAsCentral(kinds clipboard.Kinds) *features.Set {
+	announced := c.announcing(kinds)
+	announced.Turn(features.RelaysDrags, kinds.Has(clipboard.Files))
+	return announced
+}
+
 func (c Config) takesDrops(kinds clipboard.Kinds) bool {
 	return kinds.Has(clipboard.Files) && c.Drops != nil && c.dragsOn()
 }

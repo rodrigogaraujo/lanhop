@@ -3,35 +3,12 @@ package clipshare
 import (
 	"errors"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 )
-
-type reportedDock struct {
-	machine string
-	dock    edge.Side
-}
-
-type reportedDocks struct {
-	mutex   sync.Mutex
-	reports []reportedDock
-}
-
-func (r *reportedDocks) reported(machine string, dock edge.Side) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.reports = append(r.reports, reportedDock{machine, dock})
-}
-
-func (r *reportedDocks) seen() []reportedDock {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	return slices.Clone(r.reports)
-}
 
 func (r *rawDragSide) drags(t *testing.T, files int32, dock edge.Side) {
 	t.Helper()
@@ -153,36 +130,4 @@ func TestADragThatLeftItsSideMachineStaysCrossableAfterThatMachineEndsItsSourceD
 	})
 	raw.dragEnds(t)
 	eventually(t, "the central forgetting the third drag, which never left", func() bool { return !d.seesADragOn(rawSide) })
-}
-
-func TestTheCentralTellsTheDockOfASideMachineThatTakesDraggedFiles(t *testing.T) {
-	d := newDropDesk(t, "raw", "plain")
-	raw := d.rawSideAnnouncing("raw", textFilesAndDrags)
-	plain := d.rawSideAnnouncing("plain", textAndFiles)
-	docks := &reportedDocks{}
-	askCentral(t, d.runtime, func() bool {
-		d.runtime.OnSideDock(docks.reported)
-		return true
-	})
-
-	for _, dock := range []edge.Side{edge.Left, edge.Bottom} {
-		if err := raw.conn.Send(event.DragFiles(0, int32(dock))); err != nil {
-			t.Fatalf("Send: %v", err)
-		}
-	}
-	if err := plain.conn.Send(event.DragFiles(0, int32(edge.Right))); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
-	raw.drags(t, 2, edge.Top)
-	raw.dragEnds(t)
-
-	want := []reportedDock{{"raw", edge.Left}, {"raw", edge.Bottom}, {"raw", 0}}
-	eventually(t, "the central telling every dock raw reported", func() bool { return len(docks.seen()) >= len(want) })
-	time.Sleep(settling)
-	if got := docks.seen(); !slices.Equal(got, want) {
-		t.Errorf("the central told the docks %+v, want %+v", got, want)
-	}
-	if starts, _ := d.described.seen(); !slices.Equal(starts, []SideDrag{{Origin: "raw", Files: 2, Dock: edge.Top}}) {
-		t.Errorf("the central told the drags %+v, want the drag of raw with its dock at the top", starts)
-	}
 }

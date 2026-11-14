@@ -312,8 +312,8 @@ func TestTheDragsOfSideMachinesAndTheirDocksReachTheSharer(t *testing.T) {
 	h.sideDragStarted(clipshare.SideDrag{Origin: "desk", Files: 3, Dock: edge.Left})
 	h.sideDragStarted(clipshare.SideDrag{Origin: "laptop", Files: 1})
 	h.sideDragEnded("desk")
-	h.dockOf("tablet", edge.Right)
-	h.dockOf("tablet", 0)
+	h.sideDock("tablet", edge.Right)
+	h.sideDock("tablet", 0)
 
 	h.expectCalls(t, "drags and docks of side machines",
 		"sharer: drag started {Origin:desk Files:3 Dock:left}",
@@ -321,7 +321,19 @@ func TestTheDragsOfSideMachinesAndTheirDocksReachTheSharer(t *testing.T) {
 		"sharer: drag started {Origin:laptop Files:1 Dock:unknown}",
 		"sharer: the source drag ended on desk",
 		"sharer: the dock of tablet is at right",
+		"sharer: the dock of tablet is at unknown",
 	)
+}
+
+func TestADragThatStayedOnTheSideMachineItLeftIsCancelled(t *testing.T) {
+	h := newDragsHarness()
+
+	h.sideDragStayed("desk")
+
+	h.expectCalls(t, "a drag that stayed on desk", "sharer: drag cancelled", "central: drag cancelled")
+	if !strings.Contains(h.output.String(), `The file drag that left "desk" stayed there`) {
+		t.Errorf("the log says %q, want the drag that stayed", h.output.String())
+	}
 }
 
 func TestTheDockOfTheCentralIsToldOnlyWhenItIsKnown(t *testing.T) {
@@ -370,10 +382,10 @@ func TestEndingASourceDragUnderAShieldOnTheCentralSaysWhetherItEnded(t *testing.
 	missed := func(context.Context) (io.Closer, error) { return nil, errors.New("the window did not take the mouse") }
 	log := &screen{}
 
-	if err := endTheSourceDragUnderAShield(context.Background(), missed, func() error { return nil }, nil, log); err != nil {
+	if err := endTheSourceDragUnderAShield(context.Background(), missed, func() error { return nil }, nil, log, nil); err != nil {
 		t.Errorf("a source drag ended after the shield missed gave %v, want no error", err)
 	}
-	if err := endTheSourceDragUnderAShield(context.Background(), missed, func() error { return errPostingRefused }, nil, log); !errors.Is(err, errPostingRefused) {
+	if err := endTheSourceDragUnderAShield(context.Background(), missed, func() error { return errPostingRefused }, nil, log, nil); !errors.Is(err, errPostingRefused) {
 		t.Errorf("a source drag that could not be ended gave %v, want %v", err, errPostingRefused)
 	}
 	if !strings.Contains(log.String(), "and ends it anyway") {

@@ -1,13 +1,6 @@
 package clipshare
 
-import (
-	"github.com/rodrigogaraujo/lanhop/internal/edge"
-	"github.com/rodrigogaraujo/lanhop/internal/event"
-)
-
-func (c *Central) OnSideDock(reported func(machine string, dock edge.Side)) {
-	c.sideDock = reported
-}
+import "github.com/rodrigogaraujo/lanhop/internal/event"
 
 func (c *Central) DragLeaves(origin string) error {
 	select {
@@ -36,12 +29,4 @@ func (c *Central) dragLeaves(origin string) error {
 	}
 	machine.dragCrossed = true
 	return nil
-}
-
-func (c *Central) dockOn(l *link, dock edge.Side) {
-	machine := c.sides[l]
-	if machine == nil || c.sideDock == nil || !c.takesDraggedFilesOf(machine) {
-		return
-	}
-	c.sideDock(l.name, dock)
 }

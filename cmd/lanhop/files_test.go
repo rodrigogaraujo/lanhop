@@ -327,7 +327,7 @@ func TestShareAnnouncesFilesOnlyWhileBothSwitchesAreOnAndItHasAFolderForThem(t *
 			name:      "files on",
 			files:     "on",
 			folder:    func(t *testing.T) { useArrivalFolders(t, filepath.Join(t.TempDir(), "arrived")) },
-			announced: textAndFiles,
+			announced: textAndFiles | 1<<features.RelaysDrags,
 		},
 		{
 			name:      "files switched off",

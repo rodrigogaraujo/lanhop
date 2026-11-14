@@ -28,6 +28,7 @@ type sideMachine struct {
 	dragging    bool
 	drag        clipboard.FileCopy
 	dragCrossed bool
+	dock        edge.Side
 }
 
 type answerDue struct {
@@ -72,7 +73,8 @@ type Central struct {
 
 	sideDragStarted func(SideDrag)
 	sideDragEnded   func(origin string)
-	sideDock        func(machine string, dock edge.Side)
+	sideDragStayed  func(origin string)
+	sideDock        func(origin string, dock edge.Side)
 }
 
 func NewCentral(config Config) *Central {
@@ -179,6 +181,14 @@ func (c *Central) OnSideDrags(started func(SideDrag), ended func(origin string))
 	c.sideDragStarted, c.sideDragEnded = started, ended
 }
 
+func (c *Central) OnSideDragStayed(stayed func(origin string)) {
+	c.sideDragStayed = stayed
+}
+
+func (c *Central) OnSideDock(dock func(origin string, dock edge.Side)) {
+	c.sideDock = dock
+}
+
 func (c *Central) DragCrossed(origin, to string) error {
 	select {
 	case <-c.started:
@@ -271,13 +281,13 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 		wire := frame.Value
 		c.tell(func() { c.dataStopFrom(l, wire) })
 	case event.ControlDragFiles:
-		if l.dragDescribed(frame.Value) {
-			_, dock := event.SplitDragFiles(frame.Value)
-			c.tell(func() {
+		gone, dock := l.dragDescribed(frame.Value)
+		c.tell(func() {
+			c.dockOn(l, dock)
+			if gone {
 				c.dragGoneOn(l)
-				c.dockOn(l, dockEdgeIn(dock))
-			})
-		}
+			}
+		})
 	case event.ControlDragFilesSize:
 		if files, dock, described := l.dragSized(frame.Value); described {
 			c.tell(func() { c.dragOn(l, files, dock) })
@@ -285,6 +295,8 @@ func (c *Central) heardFrom(l *link, frame event.Event) {
 	case event.ControlDropTaken:
 		wire := frame.Value
 		c.tell(func() { c.dropTakenOn(l, wire) })
+	case event.ControlDragStayed:
+		c.tell(func() { c.dragStayedOn(l) })
 	}
 }
 
@@ -536,7 +548,7 @@ func (c *Central) do(actions []clipboard.Action[*link]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			action.To.announce(c.config.announcing(action.Takes))
+			action.To.announce(c.config.announcingAsCentral(action.Takes))
 		case clipboard.Send:
 			if !action.To.sendNewestCopy(action.Text) {
 				c.desk.SendStopped(action.To)

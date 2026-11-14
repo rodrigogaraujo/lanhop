@@ -34,7 +34,7 @@ type Side struct {
 	moving      sync.WaitGroup
 	filesNotice filesNotice
 
-	centralDrops  bool
+	centralDrags  bool
 	dragWatch     dragWatch
 	dragged       []string
 	dragDescribed bool
@@ -114,6 +114,10 @@ func (s *Side) DragGone() {
 	s.inbox.put(s.dragGone)
 }
 
+func (s *Side) DragStayed() {
+	s.inbox.put(s.dragStayed)
+}
+
 func (s *Side) DockIs(dock edge.Side) {
 	s.inbox.put(func() { s.dockIs(dock) })
 }
@@ -132,8 +136,8 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 	switch frame.Code {
 	case event.ControlFeatures:
 		takes := clipboard.KindsIn(frame.Value)
-		drops := clipboard.DropsIn(frame.Value)
-		s.inbox.put(func() { s.centralSays(l, takes, drops) })
+		drags := carriesDrags(frame.Value)
+		s.inbox.put(func() { s.centralSays(l, takes, drags) })
 	case event.ControlClipboard, event.ControlClipboardData:
 		text, progress, err := l.take(frame)
 		if progress == clipboard.Arrived {
@@ -162,7 +166,7 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 func (s *Side) connected(l *link) {
 	s.followTheSwitch()
 	s.current = l
-	s.centralTakes, s.centralDrops = 0, false
+	s.centralTakes, s.centralDrags = 0, false
 	s.forgetDraggedFiles()
 	s.do(s.machine.Connected())
 	s.noticeDescribing()
@@ -205,11 +209,11 @@ func (s *Side) reachAgainIfLost() {
 	}
 }
 
-func (s *Side) centralSays(l *link, takes clipboard.Kinds, drops bool) {
+func (s *Side) centralSays(l *link, takes clipboard.Kinds, drags bool) {
 	if l != s.current {
 		return
 	}
-	s.centralTakes, s.centralDrops = takes, drops
+	s.centralTakes, s.centralDrags = takes, drags
 	if !s.describesDrags() {
 		s.forgetDraggedFiles()
 	}
@@ -330,7 +334,7 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 		case clipboard.CancelDrop:
 			s.cancelDrop(action.Transfer)
 		case clipboard.DropTaken:
-			if s.centralDrops {
+			if s.centralDrags {
 				s.send(event.DropTaken(int32(action.Transfer)))
 			}
 		}
