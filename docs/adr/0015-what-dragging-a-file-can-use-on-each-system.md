@@ -51,6 +51,7 @@ A third way, letting the real release reach X before lanhop takes the mouse, doe
 
 - A Linux machine that receives ends the source drag at the crossing by releasing button 1 through lanhop's own virtual device over an XdndAware window of lanhop at the edge, which takes the drop with copy. Nothing moves on the source, and the window also hands lanhop the list of the dragged files.
 - A Linux machine that is the central, whose physical mouse drives the drag, does not let a file drag cross in the first release. The central says so once per run in its log and in `lanhop status`, as for a machine in a Wayland session, and copying and pasting the file works instead.
+- This holds for a drag that starts on the Linux central, or that would end on it. A drag between the side machines that a Linux central controls is relayed, because every up-to-date central announces Features bit 3, "relays drags", whatever its system. Bit 3 is added to ADR 13 with the stage B wiring. Bit 2 keeps meaning that a machine can host a drop.
 
 ## Consequences
 
