@@ -14,7 +14,7 @@ const (
 	DragPollInterval = 20 * time.Millisecond
 	shortestDragPoll = time.Millisecond
 	longestDragPoll  = time.Second
-	readsPerChange   = 5
+	readsPerChange   = 6
 	dragEventQueue   = 8
 
 	escapeKeyCode   uint16 = 0x35
@@ -50,11 +50,38 @@ type dragSource struct {
 	leftHeld func() bool
 }
 
+type readKind int
+
+const (
+	readFiles readKind = iota + 1
+	readNoFiles
+	readRefused
+)
+
+type dragRead struct {
+	kind  readKind
+	paths []string
+}
+
+func readOf(paths []string, err error) dragRead {
+	switch {
+	case err == nil:
+		return dragRead{kind: readFiles, paths: paths}
+	case errors.Is(err, clipboard.ErrNotFiles):
+		return dragRead{kind: readNoFiles}
+	}
+	return dragRead{kind: readRefused}
+}
+
+func (r dragRead) agrees(other dragRead) bool {
+	return r.kind == other.kind && slices.Equal(r.paths, other.paths)
+}
+
 type dragTracker struct {
 	mark      int64
 	dragging  bool
 	paths     []string
-	candidate []string
+	candidate dragRead
 	readsLeft int
 }
 
@@ -64,7 +91,7 @@ func (d *dragTracker) poll(source dragSource) []DragEvent {
 	changed := mark != d.mark
 	d.mark = mark
 	if !held {
-		d.readsLeft, d.candidate = 0, nil
+		d.readsLeft = 0
 		if !d.dragging {
 			return nil
 		}
@@ -72,34 +99,52 @@ func (d *dragTracker) poll(source dragSource) []DragEvent {
 		return []DragEvent{{Kind: DragEnded}}
 	}
 	if changed {
-		d.readsLeft, d.candidate = readsPerChange, nil
+		d.readsLeft, d.candidate = readsPerChange, dragRead{}
 	}
 	if d.readsLeft == 0 {
 		return nil
 	}
 	d.readsLeft--
-	paths, err := source.board.ReadFiles()
-	if d.dragging && err == nil && slices.Equal(paths, d.paths) {
-		d.readsLeft, d.candidate = 0, nil
-		return nil
-	}
-	var seen []DragEvent
+	read := readOf(source.board.ReadFiles())
 	if d.dragging {
-		d.dragging, d.paths = false, nil
-		seen = append(seen, DragEvent{Kind: DragEnded})
+		return d.duringTheDrag(read)
 	}
 	switch {
-	case err == nil && d.candidate != nil && slices.Equal(paths, d.candidate):
-		d.dragging, d.paths, d.candidate, d.readsLeft = true, paths, nil, 0
-		seen = append(seen, DragEvent{Kind: DragStarted, Paths: slices.Clone(paths)})
-	case err == nil:
-		d.candidate = paths
-	case errors.Is(err, clipboard.ErrNotFiles):
-		d.candidate = nil
+	case read.kind == readFiles && read.agrees(d.candidate):
+		return []DragEvent{d.start(read.paths)}
+	case read.kind == readFiles:
+		d.candidate = read
+	case read.kind == readNoFiles:
+		d.candidate = dragRead{}
 	default:
-		d.candidate, d.readsLeft = nil, 0
+		d.readsLeft = 0
+	}
+	return nil
+}
+
+func (d *dragTracker) duringTheDrag(read dragRead) []DragEvent {
+	if read.agrees(dragRead{kind: readFiles, paths: d.paths}) {
+		d.readsLeft = 0
+		return nil
+	}
+	if !read.agrees(d.candidate) {
+		d.candidate = read
+		return nil
+	}
+	d.dragging, d.paths = false, nil
+	seen := []DragEvent{{Kind: DragEnded}}
+	switch read.kind {
+	case readFiles:
+		seen = append(seen, d.start(read.paths))
+	case readRefused:
+		d.readsLeft = 0
 	}
 	return seen
+}
+
+func (d *dragTracker) start(paths []string) DragEvent {
+	d.dragging, d.paths, d.readsLeft = true, paths, 0
+	return DragEvent{Kind: DragStarted, Paths: slices.Clone(paths)}
 }
 
 func (d *dragTracker) reset(mark int64) {
