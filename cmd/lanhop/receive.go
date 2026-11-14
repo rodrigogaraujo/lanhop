@@ -152,10 +152,11 @@ func receive(args []string, stdout io.Writer) (err error) {
 		restarting.Store(true)
 		stopReceiving()
 	}, stdout)
-	clipboard, stopSharingTheClipboard := clipboardOfThisSide(receiving, directory, announced, stdout)
+	toTheSharer := transport.Config{Identity: local}
+	clipboard, stopSharingTheClipboard := clipboardOfThisSide(receiving, directory, announced, dataConnectionsTo(sharer, toTheSharer), stdout)
 	defer stopSharingTheClipboard()
 	err = receiver.Run(receiving, receiver.Config{
-		Transport: transport.Config{Identity: local},
+		Transport: toTheSharer,
 		Sharer:    sharer,
 		Replay:    replay,
 		Clipboard: receiver.Together(clipboard, follower),

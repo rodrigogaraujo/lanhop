@@ -2,29 +2,72 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/arrival"
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
 	"github.com/rodrigogaraujo/lanhop/internal/trust"
 )
 
+var errNoArrivalFolderInThisTest = errors.New("this test opens no arrival folder")
+
 func TestMain(m *testing.M) {
 	openClipboard = nil
+	openArrivals = func() (*arrival.Folder, error) { return nil, errNoArrivalFolderInThisTest }
 	os.Exit(m.Run())
 }
 
 type clipboardOfTheTest struct {
 	mutex      sync.Mutex
 	text       string
+	paths      []string
+	filesPut   [][]string
 	mark       int64
 	marksTaken int
+}
+
+type fileClipboardOfTheTest struct {
+	*clipboardOfTheTest
+}
+
+func (f fileClipboardOfTheTest) ReadFiles() ([]string, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if f.paths == nil {
+		return nil, clipboard.ErrNotFiles
+	}
+	return slices.Clone(f.paths), nil
+}
+
+func (f fileClipboardOfTheTest) WriteFiles(paths []string) (int64, error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.text, f.paths = "", slices.Clone(paths)
+	f.filesPut = append(f.filesPut, slices.Clone(paths))
+	f.mark++
+	return f.mark, nil
+}
+
+func (c *clipboardOfTheTest) personCopiesFiles(paths ...string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.text, c.paths = "", slices.Clone(paths)
+	c.mark++
+}
+
+func (c *clipboardOfTheTest) filesWritten() [][]string {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return slices.Clone(c.filesPut)
 }
 
 func (c *clipboardOfTheTest) Mark() int64 {
@@ -43,7 +86,7 @@ func (c *clipboardOfTheTest) Read() (string, error) {
 func (c *clipboardOfTheTest) Write(text string) (int64, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	c.text = text
+	c.text, c.paths = text, nil
 	c.mark++
 	return c.mark, nil
 }
@@ -51,7 +94,7 @@ func (c *clipboardOfTheTest) Write(text string) (int64, error) {
 func (c *clipboardOfTheTest) personCopies(text string) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	c.text = text
+	c.text, c.paths = text, nil
 	c.mark++
 }
 
@@ -94,7 +137,7 @@ func TestTheClipboardCommandSwitchesSharingOffAndOnWithAFileInTheConfigurationDi
 	switchFile := filepath.Join(directory, clipboardSwitchFileName)
 
 	said, _ := clipboardCommand(t, "off")
-	if !strings.Contains(said, "Copies of text no longer move to or from this machine") {
+	if !strings.Contains(said, "Copies of text and files no longer move to or from this machine") {
 		t.Errorf("lanhop clipboard off printed %q", said)
 	}
 	if contents, err := os.ReadFile(switchFile); err != nil || string(contents) != "off\n" {
@@ -105,13 +148,13 @@ func TestTheClipboardCommandSwitchesSharingOffAndOnWithAFileInTheConfigurationDi
 	}
 
 	said, _ = clipboardCommand(t, "on")
-	if !strings.Contains(said, "Copies of text move to and from this machine") {
+	if !strings.Contains(said, "Copies of text and files move to and from this machine") {
 		t.Errorf("lanhop clipboard on printed %q", said)
 	}
 	if _, err := os.Stat(switchFile); !os.IsNotExist(err) {
 		t.Errorf("the switch file is still there after on: %v", err)
 	}
-	if said, _ := clipboardCommand(t, "on"); !strings.Contains(said, "Copies of text move to and from this machine") {
+	if said, _ := clipboardCommand(t, "on"); !strings.Contains(said, "Copies of text and files move to and from this machine") {
 		t.Errorf("lanhop clipboard on, when already on, printed %q", said)
 	}
 }
@@ -123,7 +166,7 @@ func TestTheClipboardSwitchFileIsReadWithoutCareForCaseOrSpaces(t *testing.T) {
 		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
-		if on := clipboardSwitchedOn(path); on != wantOn {
+		if on := switchFileSaysOn(path); on != wantOn {
 			t.Errorf("a switch file holding %q reads as on = %v, want %v", contents, on, wantOn)
 		}
 	}

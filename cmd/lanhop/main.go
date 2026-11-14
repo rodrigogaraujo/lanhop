@@ -29,8 +29,11 @@ Usage:
   lanhop layout          show where the layout file is and how lanhop understands it
   lanhop layout --edit   arrange the machines on the desk by dragging them, in a browser
   lanhop clipboard       say whether copies of text move between this machine and the others: on or off
-  lanhop clipboard off   keep copies of text from leaving or reaching this machine
+  lanhop clipboard off   keep copies of text and files from leaving or reaching this machine
   lanhop clipboard on    let copies of text move again, as after a new install
+  lanhop files           say whether copies of files move between this machine and the others: on or off
+  lanhop files off       keep copies of files from leaving or reaching this machine, while text still moves
+  lanhop files on        let copies of files move again, as after a new install
   lanhop devices         list the input devices this machine can read
   lanhop version         print the version
 
@@ -58,8 +61,8 @@ screen reaches the machine on that side. Each line is a row of machines, from
 left to right, by the names "lanhop peers" lists, with a dot for an empty place.
 
 lanhop keeps the key of this machine, the list of trusted machines, the
-layout and the clipboard switch in its configuration directory. Set
-LANHOP_CONFIG_DIR to use another directory.
+layout, the clipboard switch and the files switch in its configuration
+directory. Set LANHOP_CONFIG_DIR to use another directory.
 `
 
 type usageError string
@@ -129,6 +132,8 @@ func dispatch(command string, args []string, stdin io.Reader, stdout io.Writer) 
 		return showLayout(args, stdout)
 	case "clipboard":
 		return switchClipboard(args, stdout)
+	case "files":
+		return switchFiles(args, stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil

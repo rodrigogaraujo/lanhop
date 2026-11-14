@@ -2,7 +2,7 @@
 
 Share one keyboard and mouse across the computers on your desk, over the local network.
 
-> **Status: v0.1.1.** On macOS, lanhop is now an app, `lanhop.app`, with an identifier of its own, so that macOS can apply the Local Network permission to it. The installer now checks lanhop as it runs at login: on a Mac it opens the pane of each permission that is missing, Accessibility and Local Network, and it ends when the machine is connected or says what is still missing. The `lanhop.app`, `lanhop status` and the installer of this version have been checked only by automated tests, and no person has run them on a real machine yet. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. On `main`, not in a release yet: [adding a machine with one line](#adding-a-machine) and [`lanhop update`](#updating). They have passed only automated tests. `lanhop update` does not work yet: the release keys of the project do not exist yet. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
+> **Status: v0.1.1.** On macOS, lanhop is now an app, `lanhop.app`, with an identifier of its own, so that macOS can apply the Local Network permission to it. The installer now checks lanhop as it runs at login: on a Mac it opens the pane of each permission that is missing, Accessibility and Local Network, and it ends when the machine is connected or says what is still missing. The `lanhop.app`, `lanhop status` and the installer of this version have been checked only by automated tests, and no person has run them on a real machine yet. The automated tests do not run the macOS build for x86-64. Tried on real machines so far: a Mac shared its keyboard and trackpad with a Linux machine, by hotkey and through the screen edge. On 2026-11-13, an x86-64 machine running macOS ran the 0.1.0 build as the machine with the keyboard, and three Macs and a Linux machine each connected to it. The three Macs ran the 0.1.0 program inside a `lanhop.app` made by hand, started at login. Not tried by a person yet: typing into a Mac controlled from another machine, a Linux machine sharing its keyboard and mouse, and switching across three or more machines. On `main`, not in a release yet: [adding a machine with one line](#adding-a-machine), [`lanhop update`](#updating) and [copy and paste](#copy-and-paste). They have passed only automated tests. `lanhop update` does not work yet: the release keys of the project do not exist yet. Expect rough edges, and please [report](https://github.com/rodrigogaraujo/lanhop/issues) what you find. See [Roadmap](#roadmap) for what is built.
 
 ## Why another one
 
@@ -116,6 +116,24 @@ lanhop update
 - **Versions in the status.** `lanhop status` on the machine with the keyboard shows the version of each side machine, such as `connected, v0.1.3, follows`.
 - **Machines that do not update by themselves.** Machines on a release without the keys of the project, 0.1.1 and older today, need the installer line typed on each once.
 
+## Copy and paste
+
+> Built on `main`, not in a release yet. This has passed only automated tests.
+
+Copy on one machine, move focus to another, and paste there. Copies of text and copies of files move this way, over the encrypted connection between paired machines.
+
+- **Where files land.** Files that arrive wait in a folder of lanhop, `~/.cache/lanhop/arrived` on Linux and `~/Library/Caches/lanhop/arrived` on macOS, and a paste copies them from there. lanhop removes them a day after they arrived, and keeps the folder under 8 GiB by removing the oldest first.
+- **Switching copies off.** Each machine has two switches, both on after a new install:
+
+  | Command | What it does |
+  |---|---|
+  | `lanhop clipboard off` | Keeps copies of text and files from leaving or reaching this machine |
+  | `lanhop files off` | Keeps copies of files from leaving or reaching this machine, while text still moves |
+  | `lanhop clipboard on`, `lanhop files on` | Lets them move again |
+
+  Files move only while both switches are on. `lanhop clipboard` and `lanhop files` say what is on. A running `lanhop share` or `lanhop receive` follows a switch the next time focus moves.
+- **When files cannot move.** lanhop says why in its log, once, for example when it cannot open the folder for files that arrive.
+
 ## Roadmap
 
 - [x] Wire format for input events
@@ -130,7 +148,7 @@ lanhop update
     - [ ] A hotkey that locks focus, and settings for the push time, the corner size and the cursor speed
 - [ ] Windows
 - [ ] Automatic discovery on the local network
-- [ ] Clipboard sharing ([spec 005](specs/005-clipboard-sharing/spec.md)): the messages that carry a copy are built; lanhop does not use them yet, so nothing is copied between machines
+- [ ] Clipboard sharing ([spec 005](specs/005-clipboard-sharing/spec.md)) and file sharing ([spec 011](specs/011-file-sharing/spec.md)): [copy and paste](#copy-and-paste) of text and of files is built on `main` and has passed only automated tests; dragging a file across an edge is not built yet
 - [ ] Packages ([spec 006](specs/006-packages/spec.md))
   - [ ] Release builds and an installer with the systemd unit, the udev rule and the launch agent: built; the installer of 0.1.0 ran on Macs and did not get them connected, which spec 008 is meant to fix
   - [ ] lanhop as an app on macOS, and an installer that checks every permission ([spec 008](specs/008-permissions-checked/spec.md)): built; the 0.1.0 program in a `lanhop.app` made by hand connected at login on three Macs; the app of a release and the installer have not run on a real Mac yet
