@@ -644,6 +644,46 @@ func TestALateAnswerDoesNotStandForTheAnswerToALaterLeave(t *testing.T) {
 	expect(t, "B had nothing new", d.UnchangedOn("B"))
 }
 
+func TestAReadOfTheCentralThatEndsAfterTheAnswerToALaterLeaveDoesNotReplaceIt(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	expect(t, "focus to A", d.FocusOn("A"), read())
+	expect(t, "focus from A to B", d.FocusOn("B"))
+
+	expect(t, "the copy of A arrives before the read of the central ends", d.CopyFrom("A", "copied on A"))
+	expect(t, "the read of the central ends", readGave(t, d, "copied on the central before"), send("B", "copied on A"))
+}
+
+func TestAnAnswerThatArrivesAfterTheReadOfALaterLeaveDoesNotReplaceIt(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	d.FocusOn("A")
+	d.ReadUnchanged()
+	d.FocusOnCentral()
+	expect(t, "focus to B", d.FocusOn("B"), read())
+
+	expect(t, "the read of the central ends before the copy of A arrives", readGave(t, d, "copied on the central after"))
+	expect(t, "the copy of A arrives", d.CopyFrom("A", "copied on A before"), send("B", "copied on the central after"))
+}
+
+func TestAnAnswerThatArrivesAfterTheAnswerToALaterLeaveDoesNotReplaceIt(t *testing.T) {
+	d := deskWith(t, "A", "B", "C")
+	d.FocusOn("A")
+	d.ReadUnchanged()
+	d.FocusOn("B")
+	expect(t, "focus from B to C", d.FocusOn("C"))
+
+	expect(t, "the copy of B arrives before the copy of A", d.CopyFrom("B", "copied on B"))
+	expect(t, "the copy of A arrives", d.CopyFrom("A", "copied on A before"), send("C", "copied on B"))
+}
+
+func TestAReadOfTheCentralThatEndsAfterTheCentralGaveUpOnALaterLeaveIsNotHandedOut(t *testing.T) {
+	d := deskWith(t, "A", "B")
+	expect(t, "focus to A", d.FocusOn("A"), read())
+	expect(t, "focus from A to B", d.FocusOn("B"))
+	expect(t, "the central gives up on A", d.GaveUpOn("A"))
+
+	expect(t, "the read of the central ends", readGave(t, d, "copied on the central before"))
+}
+
 func TestGivingUpWritesOffOnlyOneAnswer(t *testing.T) {
 	d := deskWith(t, "A", "B")
 	copyOnTheCentralGoesTo(t, d, "A", "x")

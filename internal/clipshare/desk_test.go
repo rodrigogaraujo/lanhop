@@ -540,6 +540,29 @@ func (d *deskUnderTest) waitUntilTheCentralIs(on bool) {
 	})
 }
 
+func (d *deskUnderTest) waitUntilTheCentralHasTheAnswerOf(side *sideUnderTest) {
+	d.t.Helper()
+	eventually(d.t, "the central taking the answer of "+side.name, func() bool {
+		answer := make(chan bool, 1)
+		d.runtime.tell(func() {
+			focusedOnTheSide := !d.runtime.focusHere && d.runtime.focused.name == side.name
+			owed := false
+			for l, machine := range d.runtime.sides {
+				if l.name == side.name {
+					owed = len(machine.answers) > 0 || machine.stale > 0
+				}
+			}
+			answer <- !focusedOnTheSide && !owed
+		})
+		select {
+		case taken := <-answer:
+			return taken
+		case <-time.After(testPatience):
+			return false
+		}
+	})
+}
+
 func namesTakingPart(t *testing.T, c *Central) []string {
 	t.Helper()
 	answer := make(chan []string, 1)

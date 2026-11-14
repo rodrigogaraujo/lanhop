@@ -73,7 +73,7 @@ type sideMachine struct {
 }
 
 type owed struct {
-	due   int
+	due   []int
 	late  int
 	stale int
 }
@@ -118,8 +118,10 @@ type Desk[M comparable] struct {
 	hasCopy        bool
 	centralHolds   int
 	answers        map[M]*owed
-	readsDue       int
+	readsDue       []int
 	staleReads     int
+	leaves         int
+	lastLeave      int
 	moving         *transfer[M]
 	transfers      int
 	endedThisVisit int
@@ -149,8 +151,9 @@ func (d *Desk[M]) Lost(side M) []Action[M] {
 }
 
 func (d *Desk[M]) GaveUpOn(side M) []Action[M] {
-	if owing := d.answers[side]; owing != nil && owing.due > 0 {
-		owing.due--
+	if owing := d.answers[side]; owing != nil && len(owing.due) > 0 {
+		d.lastLeave = max(d.lastLeave, owing.due[0])
+		owing.due = owing.due[1:]
 		owing.late++
 		d.withdraw()
 	}
@@ -190,8 +193,8 @@ func (d *Desk[M]) Switch(on Kinds) []Action[M] {
 		d.withdraw()
 	}
 	if on == 0 {
-		d.staleReads += d.readsDue
-		d.readsDue = 0
+		d.staleReads += len(d.readsDue)
+		d.readsDue = nil
 	}
 	for side, machine := range d.sides {
 		if d.shares(machine) == 0 {
@@ -212,9 +215,10 @@ func (d *Desk[M]) FocusOn(side M) []Action[M] {
 	if d.focusOnSide && d.focused == side {
 		return nil
 	}
+	d.leaves++
 	var actions []Action[M]
 	if !d.focusOnSide && d.takingPart() {
-		d.readsDue++
+		d.readsDue = append(d.readsDue, d.leaves)
 		actions = append(actions, Action[M]{Do: Read})
 	}
 	d.awaitTheSideThatLostFocus()
@@ -227,6 +231,7 @@ func (d *Desk[M]) FocusOnCentral() []Action[M] {
 	if !d.focusOnSide {
 		return nil
 	}
+	d.leaves++
 	d.awaitTheSideThatLostFocus()
 	var nobody M
 	d.focused, d.focusOnSide = nobody, false
@@ -302,8 +307,12 @@ func (d *Desk[M]) TransferEnded(transfer int) {
 }
 
 func (d *Desk[M]) readGave(read deskCopy[M], readErr error) ([]Action[M], error) {
-	if current := d.readArrived(); !current || d.on == 0 {
+	current, leave := d.readArrived()
+	if !current || d.on == 0 {
 		return nil, nil
+	}
+	if !d.takesTheResultOf(leave) {
+		return d.deliverToFocused(), nil
 	}
 	if readErr == nil && !d.sharedKinds().Has(read.kind()) {
 		readErr = notShared(read.kind())
@@ -320,9 +329,9 @@ func (d *Desk[M]) readGave(read deskCopy[M], readErr error) ([]Action[M], error)
 }
 
 func (d *Desk[M]) answer(side M, answer deskCopy[M], refusal error) ([]Action[M], error) {
-	current := d.answerArrived(side)
+	current, leave := d.answerArrived(side)
 	machine, connected := d.sides[side]
-	if !current || !connected || d.shares(machine) == 0 {
+	if !current || !connected || d.shares(machine) == 0 || !d.takesTheResultOf(leave) {
 		return d.deliverToFocused(), nil
 	}
 	if refusal == nil && !d.shares(machine).Has(answer.kind()) {
@@ -372,35 +381,37 @@ func (d *Desk[M]) awaitTheSideThatLostFocus() {
 	if d.shares(machine) == 0 {
 		owing.stale++
 	} else {
-		owing.due++
+		owing.due = append(owing.due, d.leaves)
 	}
 }
 
 func (d *Desk[M]) stopWaitingFor(side M) {
 	if owing := d.answers[side]; owing != nil {
-		owing.stale += owing.due + owing.late
-		owing.due, owing.late = 0, 0
+		owing.stale += len(owing.due) + owing.late
+		owing.due, owing.late = nil, 0
 	}
 }
 
-func (d *Desk[M]) answerArrived(side M) (current bool) {
+func (d *Desk[M]) answerArrived(side M) (current bool, leave int) {
 	owing := d.answers[side]
 	switch {
 	case owing == nil:
-		return true
+		return true, d.lastLeave
 	case owing.stale > 0:
 		owing.stale--
-		return false
+		return false, 0
 	case owing.late > 0:
 		owing.late--
-	case owing.due > 0:
-		owing.due--
+		return true, d.lastLeave
+	case len(owing.due) > 0:
+		leave, owing.due = owing.due[0], owing.due[1:]
+		return true, leave
 	}
-	return true
+	return true, d.lastLeave
 }
 
 func (d *Desk[M]) writeOffAnswersOf(side M) {
-	if owing := d.answers[side]; owing != nil && owing.due > 0 {
+	if owing := d.answers[side]; owing != nil && len(owing.due) > 0 {
 		d.withdraw()
 	}
 	delete(d.answers, side)
@@ -416,18 +427,29 @@ func (d *Desk[M]) filesAreOn(side M) bool {
 	return d.hasCopy && d.last.filesOnASide && d.last.filesOn == side
 }
 
-func (d *Desk[M]) readArrived() (current bool) {
+func (d *Desk[M]) readArrived() (current bool, leave int) {
 	if d.staleReads > 0 {
 		d.staleReads--
+		return false, 0
+	}
+	if len(d.readsDue) == 0 {
+		return true, d.lastLeave
+	}
+	leave, d.readsDue = d.readsDue[0], d.readsDue[1:]
+	return true, leave
+}
+
+func (d *Desk[M]) takesTheResultOf(leave int) bool {
+	if leave < d.lastLeave {
 		return false
 	}
-	d.readsDue = max(d.readsDue-1, 0)
+	d.lastLeave = leave
 	return true
 }
 
 func (d *Desk[M]) answersStillDue() bool {
 	for _, owing := range d.answers {
-		if owing.due > 0 {
+		if len(owing.due) > 0 {
 			return true
 		}
 	}
@@ -447,7 +469,7 @@ func (d *Desk[M]) withdraw() {
 
 func (d *Desk[M]) deliverToFocused() []Action[M] {
 	actions := d.stopTransferNoLongerWanted()
-	if d.on == 0 || !d.hasCopy || d.readsDue > 0 || d.answersStillDue() {
+	if d.on == 0 || !d.hasCopy || len(d.readsDue) > 0 || d.answersStillDue() {
 		return actions
 	}
 	kind := d.last.kind()
