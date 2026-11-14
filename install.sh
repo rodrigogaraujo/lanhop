@@ -309,7 +309,7 @@ install_app() {
       *) earlier_program=$command_link ;;
     esac
   fi
-  if signed_with_a_certificate "$unpacked" && { [ -n "$earlier_program" ] || { [ -e "$app" ] && ! signed_with_a_certificate "$app"; }; }; then
+  if signed_with_a_certificate "$unpacked" && replaces_a_lanhop_without_the_certificate; then
     signature_becomes_stable=yes
   fi
   mkdir -p "$app_directory" "$install_directory"
@@ -629,14 +629,35 @@ signed_with_a_certificate() {
   codesign -d -r- "$1" 2>/dev/null | grep -q 'certificate leaf'
 }
 
-explain_accessibility_of_the_app() {
-  if [ "$signature_becomes_stable" = yes ]; then
-    cat <<EOF
+replaces_a_lanhop_without_the_certificate() {
+  replaced=
+  if [ -e "$app" ]; then
+    replaced=$app
+  else
+    linked=$(readlink "$command_link" 2>/dev/null || true)
+    case $linked in
+      */lanhop.app/Contents/MacOS/lanhop) replaced=${linked%/Contents/MacOS/lanhop} ;;
+    esac
+  fi
+  if [ -z "$replaced" ]; then
+    [ -n "$earlier_program" ]
+  elif [ ! -e "$replaced" ] || signed_with_a_certificate "$replaced"; then
+    return 1
+  fi
+}
+
+explain_the_last_question() {
+  if [ "$signature_becomes_stable" != yes ]; then
+    return 0
+  fi
+  cat <<EOF
 
 From this release on, lanhop.app is signed with a certificate of the project. macOS asks
-for Accessibility this one last time, and later updates keep the permission.
+for Accessibility this one last time: lanhop update keeps the permission from now on.
 EOF
-  fi
+}
+
+explain_accessibility_of_the_app() {
   cat <<EOF
 
 macOS lets a program read and control the keyboard and mouse only after you allow it
@@ -1009,6 +1030,7 @@ install_lanhop() {
   install_binary
   advise_about_path
   explain_earlier_program
+  explain_the_last_question
   choose_role
   if [ -z "$role" ]; then
     explain_what_is_left
