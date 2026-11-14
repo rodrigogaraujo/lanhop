@@ -3,6 +3,7 @@ package macos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -10,11 +11,35 @@ import (
 	"time"
 )
 
+type journal struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (j *journal) note(format string, args ...any) {
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.entries = append(j.entries, fmt.Sprintf(format, args...))
+}
+
+func (j *journal) read() []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.entries)
+}
+
+var mouseActionNames = map[MouseAction]string{MouseMoved: "moved", MouseDragged: "dragged", MouseDown: "down", MouseUp: "up"}
+
 type dropScreen struct {
-	mu     sync.Mutex
-	cursor Point
-	posted []MouseEvent
-	onPost func(MouseEvent)
+	mu      sync.Mutex
+	cursor  Point
+	posted  []MouseEvent
+	keys    []KeyPress
+	onPost  func(MouseEvent)
+	journal *journal
 }
 
 func (s *dropScreen) PostMouse(mouse MouseEvent) {
@@ -23,9 +48,23 @@ func (s *dropScreen) PostMouse(mouse MouseEvent) {
 	s.cursor = mouse.At
 	react := s.onPost
 	s.mu.Unlock()
+	s.journal.note("%s %v,%v", mouseActionNames[mouse.Action], mouse.At.X, mouse.At.Y)
 	if react != nil {
 		react(mouse)
 	}
+}
+
+func (s *dropScreen) PostKey(key KeyPress) {
+	s.mu.Lock()
+	s.keys = append(s.keys, key)
+	s.mu.Unlock()
+	s.journal.note("key %#x down %v", key.Code, key.Down)
+}
+
+func (s *dropScreen) keysPosted() []KeyPress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.keys)
 }
 
 func (s *dropScreen) Cursor() Point {
@@ -512,5 +551,288 @@ func TestAPromiseIsNotWrittenForABadAskOrAfterTheDropClosed(t *testing.T) {
 	}
 	if got := writes.calls(); len(got) != 0 {
 		t.Errorf("writes = %+v, want none", got)
+	}
+}
+
+func TestTheStartWaitsThroughAWindowCoveredForAMoment(t *testing.T) {
+	s := startOnTheLeftEdge(appKitAnswers{window: windowReady, seesDown: true, begins: true})
+	var mu sync.Mutex
+	states := []windowState{windowCovered, windowCovered, windowMissesTheCursor, windowReady}
+	s.start.window = func() windowState {
+		mu.Lock()
+		defer mu.Unlock()
+		state := states[0]
+		if len(states) > 1 {
+			states = states[1:]
+		}
+		return state
+	}
+
+	if err := s.start.run(context.Background()); err != nil {
+		t.Fatalf("a window covered for a moment, then ready, gave %v", err)
+	}
+	expectEvents(t, s.screen.events(), append([]MouseEvent{postedDown(leftEdge)}, stepsRightOf(leftEdge)...)...)
+}
+
+type fakeDropWindow struct {
+	mu         sync.Mutex
+	answers    []bool
+	refuseLate bool
+	takeLate   bool
+	closeLate  bool
+	journal    *journal
+	onTake     func(call int)
+	onClose    func()
+	refused    bool
+	movedTo    []Point
+	closed     int
+}
+
+func (w *fakeDropWindow) state() windowState {
+	return windowReady
+}
+
+func (w *fakeDropWindow) refuseDrops() error {
+	w.journal.note("refuse")
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.refuseLate {
+		return ErrMainThreadLate
+	}
+	w.refused = true
+	return nil
+}
+
+func (w *fakeDropWindow) takeTheMouseAt(at Point) (bool, error) {
+	w.journal.note("move %v,%v", at.X, at.Y)
+	w.mu.Lock()
+	w.movedTo = append(w.movedTo, at)
+	call := len(w.movedTo)
+	taken := len(w.answers) > 0 && w.answers[0]
+	if len(w.answers) > 1 {
+		w.answers = w.answers[1:]
+	}
+	late, react := w.takeLate, w.onTake
+	w.mu.Unlock()
+	if react != nil {
+		react(call)
+	}
+	if late {
+		return false, ErrMainThreadLate
+	}
+	return taken, nil
+}
+
+func (w *fakeDropWindow) close() error {
+	w.mu.Lock()
+	w.closed++
+	late, react := w.closeLate, w.onClose
+	w.mu.Unlock()
+	if late {
+		return ErrMainThreadLate
+	}
+	if react != nil {
+		react()
+	}
+	return nil
+}
+
+func (w *fakeDropWindow) seen() (refused bool, movedTo []Point, closed int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.refused, slices.Clone(w.movedTo), w.closed
+}
+
+var (
+	finderUnderTheCursor = Point{X: 803, Y: 250}
+	mailUnderTheCursor   = Point{X: 900, Y: 300}
+	nudgedFurther        = Point{X: 910, Y: 305}
+)
+
+type endUnderTest struct {
+	screen  *dropScreen
+	window  *fakeDropWindow
+	button  *heldDown
+	ended   *latch
+	journal *journal
+	mu      sync.Mutex
+	logged  []string
+	end     sessionEnd
+}
+
+func (e *endUnderTest) logf(format string, args ...any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.logged = append(e.logged, fmt.Sprintf(format, args...))
+}
+
+func (e *endUnderTest) logLines() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.logged)
+}
+
+func runningSessionOver(window *fakeDropWindow) *endUnderTest {
+	record := &journal{}
+	screen := &dropScreen{cursor: leftEdge}
+	e := &endUnderTest{screen: screen, window: window, button: newHeldDown(screen, leftEdge), ended: newLatch(), journal: record}
+	e.button.press()
+	e.button.drag(Point{X: 3, Y: 400})
+	screen.moveTo(finderUnderTheCursor)
+	screen.journal = record
+	window.journal = record
+	screen.onPost = func(mouse MouseEvent) {
+		if mouse.Action == MouseUp {
+			e.ended.fire()
+		}
+	}
+	e.end = sessionEnd{
+		button:       e.button,
+		window:       window,
+		ended:        e.ended.done,
+		downAtEnd:    func() bool { return false },
+		releaseLimit: 50 * time.Millisecond,
+		releasePoll:  5 * time.Millisecond,
+		endLimit:     time.Second,
+		logf:         e.logf,
+	}
+	return e
+}
+
+func spot(p Point) string {
+	return fmt.Sprintf("%v,%v", p.X, p.Y)
+}
+
+func escaped() []string {
+	return []string{fmt.Sprintf("key %#x down true", macOSEscape), fmt.Sprintf("key %#x down false", macOSEscape)}
+}
+
+func movesUntilTheEnd(entries []string) int {
+	count := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, "move ") {
+			count++
+		}
+	}
+	return count
+}
+
+func TestAClosedSessionRefusesDropsThenReleasesOverTheWindowAfterADrag(t *testing.T) {
+	e := runningSessionOver(&fakeDropWindow{answers: []bool{true}})
+
+	e.end.run()
+
+	want := []string{"refuse", "move " + spot(finderUnderTheCursor), "dragged " + spot(finderUnderTheCursor), "up " + spot(finderUnderTheCursor)}
+	if got := e.journal.read(); !slices.Equal(got, want) {
+		t.Errorf("Close did %q, want %q", got, want)
+	}
+	if got := e.screen.keysPosted(); len(got) != 0 {
+		t.Errorf("keys %+v were posted when lanhop's window took the mouse", got)
+	}
+	if got := e.logLines(); len(got) != 0 {
+		t.Errorf("logged %q when lanhop's window took the mouse", got)
+	}
+}
+
+func TestAClosedSessionReleasesOnlyOnceTheWindowTakesTheMouse(t *testing.T) {
+	e := runningSessionOver(&fakeDropWindow{answers: []bool{false, false, true}})
+
+	e.end.run()
+
+	under := spot(finderUnderTheCursor)
+	want := []string{"refuse", "move " + under, "move " + under, "move " + under, "dragged " + under, "up " + under}
+	if got := e.journal.read(); !slices.Equal(got, want) {
+		t.Errorf("Close did %q, want %q", got, want)
+	}
+}
+
+func TestAClosedSessionWhoseWindowNeverTakesTheMouseEscapesBeforeTheRelease(t *testing.T) {
+	e := runningSessionOver(&fakeDropWindow{answers: []bool{false}})
+
+	e.end.run()
+
+	got := e.journal.read()
+	if len(got) < 6 || got[0] != "refuse" || movesUntilTheEnd(got) < 2 {
+		t.Fatalf("Close did %q, want a refusal, then moves until the limit", got)
+	}
+	under := spot(finderUnderTheCursor)
+	if tail, want := got[len(got)-4:], append(escaped(), "dragged "+under, "up "+under); !slices.Equal(tail, want) {
+		t.Errorf("Close ended with %q, want %q", tail, want)
+	}
+	if lines := e.logLines(); len(lines) != 1 || !strings.Contains(lines[0], "another window takes the mouse there") || !strings.Contains(lines[0], "Escape was posted") || !strings.HasSuffix(lines[0], "with drops refused") {
+		t.Errorf("logged %q", lines)
+	}
+}
+
+func TestARefusalTheMainThreadAnsweredLateIsSaidAndTheReleaseStillGoesOverTheWindow(t *testing.T) {
+	e := runningSessionOver(&fakeDropWindow{answers: []bool{true}, refuseLate: true})
+
+	e.end.run()
+
+	under := spot(finderUnderTheCursor)
+	if got, want := e.journal.read(), []string{"refuse", "move " + under, "dragged " + under, "up " + under}; !slices.Equal(got, want) {
+		t.Errorf("Close did %q, want %q", got, want)
+	}
+	if lines := e.logLines(); len(lines) != 1 || !strings.Contains(lines[0], "not told to refuse drops") || !strings.Contains(lines[0], ErrMainThreadLate.Error()) {
+		t.Errorf("logged %q", lines)
+	}
+}
+
+func TestAMoveTheMainThreadAnsweredLateEndsInEscapeAndSaysDropsWereNotRefused(t *testing.T) {
+	e := runningSessionOver(&fakeDropWindow{answers: []bool{true}, refuseLate: true, takeLate: true})
+
+	e.end.run()
+
+	got := e.journal.read()
+	under := spot(finderUnderTheCursor)
+	if tail, want := got[len(got)-4:], append(escaped(), "dragged "+under, "up "+under); !slices.Equal(tail, want) {
+		t.Errorf("Close ended with %q, want %q", tail, want)
+	}
+	lines := e.logLines()
+	if len(lines) != 2 || !strings.Contains(lines[1], ErrMainThreadLate.Error()) || !strings.HasSuffix(lines[1], "without drops refused") {
+		t.Errorf("logged %q", lines)
+	}
+}
+
+func TestAClosedSessionFollowsTheCursorAndReleasesWhereTheWindowTookTheMouse(t *testing.T) {
+	window := &fakeDropWindow{answers: []bool{false, true}}
+	e := runningSessionOver(window)
+	window.onTake = func(call int) {
+		if call == 1 {
+			e.screen.moveTo(mailUnderTheCursor)
+		} else {
+			e.screen.moveTo(nudgedFurther)
+		}
+	}
+
+	e.end.run()
+
+	want := []string{"refuse", "move " + spot(finderUnderTheCursor), "move " + spot(mailUnderTheCursor), "dragged " + spot(mailUnderTheCursor), "up " + spot(mailUnderTheCursor)}
+	if got := e.journal.read(); !slices.Equal(got, want) {
+		t.Errorf("Close did %q, want %q", got, want)
+	}
+}
+
+func TestAClosedSessionThatEndsWhileTheWindowMovesPostsNothingMore(t *testing.T) {
+	window := &fakeDropWindow{answers: []bool{false}}
+	e := runningSessionOver(window)
+	window.onTake = func(int) { e.ended.fire() }
+
+	e.end.run()
+
+	if got, want := e.journal.read(), []string{"refuse", "move " + spot(finderUnderTheCursor)}; !slices.Equal(got, want) {
+		t.Errorf("Close did %q after the session ended, want %q", got, want)
+	}
+}
+
+func TestAClosedSessionThatAlreadyEndedWithTheButtonDownIsReleasedWhereTheCursorIs(t *testing.T) {
+	e := runningSessionOver(&fakeDropWindow{answers: []bool{true}})
+	e.ended.fire()
+	e.end.downAtEnd = func() bool { return true }
+
+	e.end.run()
+
+	if got, want := e.journal.read(), []string{"up " + spot(finderUnderTheCursor)}; !slices.Equal(got, want) {
+		t.Errorf("Close did %q, want %q", got, want)
 	}
 }
