@@ -93,8 +93,36 @@ func showStatus(args []string, stdout io.Writer) error {
 		if trusted, err := openTrusted(); err == nil {
 			fmt.Fprint(stdout, describeDesk(trusted.Peers(), report, time.Now()))
 		}
+		fmt.Fprint(stdout, describeDrags(report))
 	}
 	return nil
+}
+
+func aboutABlockedDrag(blocked sharer.BlockedDrag) string {
+	switch blocked.Block {
+	case sharer.DragCannotLeave:
+		return "A file dragged on this machine cannot leave it. Copying the file and pasting it on the other machine works instead."
+	case sharer.FilesOffThere:
+		return fmt.Sprintf("Dragging a file cannot reach %q: file sharing is off on that machine.", blocked.Machine)
+	}
+	return fmt.Sprintf("Dragging a file cannot reach %q. Copying the file and pasting it there works instead.", blocked.Machine)
+}
+
+func describeDrags(report status.Report) string {
+	var notices []string
+	if report.DragCannotLeave {
+		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Block: sharer.DragCannotLeave}))
+	}
+	for _, machine := range report.DragCannotReach {
+		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Machine: machine, Block: sharer.DragCannotReach}))
+	}
+	for _, machine := range report.DragFilesOff {
+		notices = append(notices, aboutABlockedDrag(sharer.BlockedDrag{Machine: machine, Block: sharer.FilesOffThere}))
+	}
+	if len(notices) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(notices, "\n") + "\n"
 }
 
 func describeDesk(peers []trust.Peer, report status.Report, now time.Time) string {

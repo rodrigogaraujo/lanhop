@@ -1,6 +1,10 @@
 package edge
 
-import "time"
+import (
+	"time"
+
+	"github.com/rodrigogaraujo/lanhop/internal/event"
+)
 
 type Side int
 
@@ -42,6 +46,11 @@ type Settings struct {
 	CornerSize int
 }
 
+const (
+	shortestDragPush       = 600 * time.Millisecond
+	dragPushBeyondPushTime = 300 * time.Millisecond
+)
+
 func DefaultSettings() Settings {
 	return Settings{
 		PushTime:   150 * time.Millisecond,
@@ -51,9 +60,14 @@ func DefaultSettings() Settings {
 	}
 }
 
+func (s Settings) dragPushTime() time.Duration {
+	return max(shortestDragPush, s.PushTime+dragPushBeyondPushTime)
+}
+
 type Crossing struct {
 	Side       Side
 	Proportion float64
+	Dragging   bool
 }
 
 type push struct {
@@ -61,11 +75,17 @@ type push struct {
 	latest    time.Time
 }
 
+type drag struct {
+	on   bool
+	dock Side
+}
+
 type Watcher struct {
 	settings Settings
 	bounds   Bounds
 	buttons  map[uint16]struct{}
 	pushes   map[Side]push
+	drag     drag
 }
 
 func New(settings Settings) *Watcher {
@@ -87,19 +107,42 @@ func (w *Watcher) SetBounds(bounds Bounds) {
 func (w *Watcher) Button(code uint16, pressed bool) {
 	if !pressed {
 		delete(w.buttons, code)
+		if code == event.ButtonLeft {
+			w.DragEnded()
+		}
 		return
 	}
 	w.buttons[code] = struct{}{}
 	clear(w.pushes)
 }
 
+func (w *Watcher) DragStarted(dock Side) {
+	if _, held := w.buttons[event.ButtonLeft]; !held {
+		return
+	}
+	dragging := drag{on: true, dock: dock}
+	if w.drag == dragging {
+		return
+	}
+	w.drag = dragging
+	clear(w.pushes)
+}
+
+func (w *Watcher) DragEnded() {
+	if !w.drag.on {
+		return
+	}
+	w.drag = drag{}
+	clear(w.pushes)
+}
+
 func (w *Watcher) Move(now time.Time, x, y, dx, dy int) (Crossing, bool) {
-	if len(w.buttons) > 0 || w.bounds.empty() {
+	if w.buttonsBlock() || w.bounds.empty() {
 		return Crossing{}, false
 	}
 	for _, side := range sides {
 		c := w.bounds.contact(side, x, y, dx, dy)
-		if !c.atEdge || c.outward < 0 || c.inCorner(w.settings.CornerSize) {
+		if !c.atEdge || c.outward < 0 || c.inCorner(w.settings.CornerSize) || w.dockSitsOn(side) {
 			delete(w.pushes, side)
 			continue
 		}
@@ -108,10 +151,30 @@ func (w *Watcher) Move(now time.Time, x, y, dx, dy int) (Crossing, bool) {
 		}
 		if w.pushedLongEnough(side, now) {
 			clear(w.pushes)
-			return Crossing{Side: side, Proportion: c.proportion()}, true
+			return Crossing{Side: side, Proportion: c.proportion(), Dragging: w.drag.on}, true
 		}
 	}
 	return Crossing{}, false
+}
+
+func (w *Watcher) buttonsBlock() bool {
+	for code := range w.buttons {
+		if code != event.ButtonLeft || !w.drag.on {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Watcher) dockSitsOn(side Side) bool {
+	return w.drag.on && w.drag.dock == side
+}
+
+func (w *Watcher) pushTime() time.Duration {
+	if w.drag.on {
+		return w.settings.dragPushTime()
+	}
+	return w.settings.PushTime
 }
 
 func (w *Watcher) pushedLongEnough(side Side, now time.Time) bool {
@@ -124,7 +187,7 @@ func (w *Watcher) pushedLongEnough(side Side, now time.Time) bool {
 	}
 	p.latest = now
 	w.pushes[side] = p
-	return p.pushedFor >= w.settings.PushTime
+	return p.pushedFor >= w.pushTime()
 }
 
 type contact struct {

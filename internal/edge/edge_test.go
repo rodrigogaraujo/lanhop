@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	buttonLeft  uint16 = 0x110
-	buttonRight uint16 = 0x111
+	buttonLeft   uint16 = 0x110
+	buttonRight  uint16 = 0x111
+	buttonMiddle uint16 = 0x112
 )
 
 var (
@@ -87,15 +88,20 @@ func script(parts ...[]step) []step {
 }
 
 func play(w *Watcher, steps []step) []crossed {
+	crossings, _ := playTellingDrags(w, steps)
+	return crossings
+}
+
+func playTellingDrags(w *Watcher, steps []step) (crossings []crossed, dragging []bool) {
 	start := time.Date(2026, time.November, 12, 9, 0, 0, 0, time.UTC)
-	var crossings []crossed
 	for _, s := range steps {
 		now := start.Add(time.Duration(s.atMs) * time.Millisecond)
 		if crossing, ok := s.apply(w, now); ok {
 			crossings = append(crossings, crossed{s.atMs, crossing.Side, crossing.Proportion})
+			dragging = append(dragging, crossing.Dragging)
 		}
 	}
-	return crossings
+	return crossings, dragging
 }
 
 func playOnDesk(settings Settings, steps []step) []crossed {
@@ -739,5 +745,230 @@ func TestSidesHaveNames(t *testing.T) {
 		if got := side.String(); got != want {
 			t.Errorf("Side(%d).String() = %q, want %q", int(side), got, want)
 		}
+	}
+}
+
+func dragStarts(atMs int, dock Side) []step {
+	return []step{{atMs, func(w *Watcher, _ time.Time) (Crossing, bool) {
+		w.DragStarted(dock)
+		return Crossing{}, false
+	}}}
+}
+
+func dragEnds(atMs int) []step {
+	return []step{{atMs, func(w *Watcher, _ time.Time) (Crossing, bool) {
+		w.DragEnded()
+		return Crossing{}, false
+	}}}
+}
+
+func fileDraggedFrom(atMs int, dock Side) []step {
+	return script(press(atMs, buttonLeft), dragStarts(atMs, dock))
+}
+
+const noDock Side = 0
+
+func TestSequencesDuringAFileDrag(t *testing.T) {
+	const ms = time.Millisecond
+	cases := []struct {
+		name     string
+		settings *Settings
+		steps    []step
+		want     []crossed
+		dragging bool
+	}{
+		{
+			name:     "a file drag crosses with the left button held after a push of 600 ms",
+			steps:    script(fileDraggedFrom(0, noDock), repeat(pushRight, 0, 700)),
+			want:     []crossed{{600, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name:  "a push of a file drag that stops just before 600 ms does not cross",
+			steps: script(fileDraggedFrom(0, noDock), repeat(pushRight, 0, 590)),
+			want:  none,
+		},
+		{
+			name:     "the push time plus 300 ms when that is longer than 600 ms",
+			settings: &Settings{PushTime: 500 * ms, PushGap: 50 * ms, PushPause: 700 * ms, CornerSize: 32},
+			steps:    script(fileDraggedFrom(0, noDock), repeat(pushRight, 0, 900)),
+			want:     []crossed{{800, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name:     "a push time of zero still needs 600 ms with a file",
+			settings: &Settings{PushTime: 0, PushGap: 50 * ms, PushPause: 700 * ms, CornerSize: 32},
+			steps:    script(fileDraggedFrom(0, noDock), repeat(pushRight, 0, 700)),
+			want:     []crossed{{600, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name:     "the Dock on another edge leaves this one crossing",
+			steps:    script(fileDraggedFrom(0, Bottom), repeat(pushRight, 0, 700)),
+			want:     []crossed{{600, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name:  "the right button held with the left one keeps blocking",
+			steps: script(fileDraggedFrom(0, noDock), press(0, buttonRight), repeat(pushRight, 0, 2000)),
+			want:  none,
+		},
+		{
+			name:  "the middle button pressed during the drag keeps blocking",
+			steps: script(fileDraggedFrom(0, noDock), press(100, buttonMiddle), repeat(pushRight, 0, 2000)),
+			want:  none,
+		},
+		{
+			name: "another button pressed and released during the drag starts the count over",
+			steps: script(
+				fileDraggedFrom(0, noDock),
+				repeat(pushRight, 0, 300),
+				press(305, buttonRight),
+				release(308, buttonRight),
+				repeat(pushRight, 310, 1000),
+			),
+			want:     []crossed{{910, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name:  "a drag told with only the right button held is no file drag",
+			steps: script(press(0, buttonRight), dragStarts(0, noDock), repeat(pushRight, 0, 2000)),
+			want:  none,
+		},
+		{
+			name:  "a drag told before the button is pressed is ignored",
+			steps: script(dragStarts(0, noDock), press(5, buttonLeft), repeat(pushRight, 10, 2000)),
+			want:  none,
+		},
+		{
+			name: "the drag ending before the push time blocks again while the button stays held",
+			steps: script(
+				fileDraggedFrom(0, noDock),
+				repeat(pushRight, 0, 300),
+				dragEnds(305),
+				repeat(pushRight, 310, 2000),
+			),
+			want: none,
+		},
+		{
+			name: "releasing the button ends the drag and the cursor alone needs a full push again",
+			steps: script(
+				fileDraggedFrom(0, noDock),
+				repeat(pushRight, 0, 500),
+				release(505, buttonLeft),
+				repeat(pushRight, 510, 660),
+			),
+			want: []crossed{{660, Right, 0.5}},
+		},
+		{
+			name: "a drag told while the button already pushes counts from when it was told",
+			steps: script(
+				press(0, buttonLeft),
+				repeat(pushRight, 0, 300),
+				dragStarts(300, noDock),
+				repeat(pushRight, 310, 1000),
+			),
+			want:     []crossed{{910, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name: "the drag told again with the same Dock keeps the count",
+			steps: script(
+				fileDraggedFrom(0, Top),
+				repeat(pushRight, 0, 300),
+				dragStarts(305, Top),
+				repeat(pushRight, 310, 700),
+			),
+			want:     []crossed{{600, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name: "the drag told again with the Dock on another edge starts the count over",
+			steps: script(
+				fileDraggedFrom(0, Top),
+				repeat(pushRight, 0, 300),
+				dragStarts(305, Bottom),
+				repeat(pushRight, 310, 1000),
+			),
+			want:     []crossed{{910, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name:     "a second crossing during the same drag needs a full new push of 600 ms",
+			steps:    script(fileDraggedFrom(0, noDock), repeat(pushRight, 0, 1300)),
+			want:     []crossed{{600, Right, 0.5}, {1210, Right, 0.5}},
+			dragging: true,
+		},
+		{
+			name: "the end of a drag told when there is none keeps the push of the cursor alone",
+			steps: script(
+				repeat(pushRight, 0, 100),
+				dragEnds(105),
+				repeat(pushRight, 110, 150),
+			),
+			want: []crossed{{150, Right, 0.5}},
+		},
+		{
+			name:     "a diagonal push with a file crosses where the cursor is when the longer push ends",
+			steps:    script(fileDraggedFrom(0, noDock), drift(motion{x: 2000, y: 100, dx: 5, dy: 1}, 0, 1, 0, 600)),
+			want:     []crossed{{600, Right, 0.16}},
+			dragging: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			settings := DefaultSettings()
+			if c.settings != nil {
+				settings = *c.settings
+			}
+			w := New(settings)
+			w.SetBounds(desk)
+			got, dragging := playTellingDrags(w, c.steps)
+			expectCrossings(t, got, c.want)
+			for i, withTheFile := range dragging {
+				if withTheFile != c.dragging {
+					t.Errorf("crossing %d says Dragging = %v, want %v", i, withTheFile, c.dragging)
+				}
+			}
+		})
+	}
+}
+
+func TestAFileDragInACornerNeverCrosses(t *testing.T) {
+	for _, e := range deskEdges {
+		for _, along := range []int{0, 31, e.length - 31, e.length} {
+			t.Run(fmt.Sprintf("%v edge at %d of %d", e.side, along, e.length), func(t *testing.T) {
+				got := playOnDesk(DefaultSettings(), script(fileDraggedFrom(0, noDock), repeat(e.push(along), 0, 2000)))
+				expectCrossings(t, got, none)
+			})
+		}
+	}
+}
+
+func TestAFileDragNeverCrossesTheEdgeWhereTheDockSits(t *testing.T) {
+	for _, e := range deskEdges {
+		t.Run(fmt.Sprintf("the Dock on the %v edge", e.side), func(t *testing.T) {
+			got := playOnDesk(DefaultSettings(), script(fileDraggedFrom(0, e.side), repeat(e.push(e.length/2), 0, 2000)))
+			expectCrossings(t, got, none)
+		})
+	}
+}
+
+func TestTheDockBlocksOnlyDuringAFileDrag(t *testing.T) {
+	got := playOnDesk(DefaultSettings(), script(
+		fileDraggedFrom(0, Right),
+		repeat(pushRight, 0, 1000),
+		release(1005, buttonLeft),
+		repeat(pushRight, 1010, 1160),
+	))
+	expectCrossings(t, got, []crossed{{1160, Right, 0.5}})
+}
+
+func TestAFileDragCrossesEachEdgeWithoutTheDock(t *testing.T) {
+	for _, e := range deskEdges {
+		t.Run(e.side.String(), func(t *testing.T) {
+			got := playOnDesk(DefaultSettings(), script(fileDraggedFrom(0, noDock), repeat(e.push(e.length/2), 0, 600)))
+			expectCrossings(t, got, []crossed{{600, e.side, 0.5}})
+		})
 	}
 }

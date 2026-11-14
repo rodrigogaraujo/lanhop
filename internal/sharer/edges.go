@@ -5,6 +5,7 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/layout"
 )
 
@@ -27,10 +28,12 @@ func DefaultSpeed() Speed {
 }
 
 type EdgeSwitching struct {
-	Name   string
-	Layout func() *layout.Layout
-	Speed  Speed
-	Watch  edge.Settings
+	Name          string
+	Layout        func() *layout.Layout
+	Speed         Speed
+	Watch         edge.Settings
+	Features      *features.Set
+	DragsStayHere bool
 }
 
 type CursorCapture interface {
@@ -161,6 +164,9 @@ func (s *Sharer) observeKeysAndButtons(captured event.Event) {
 	pressed := captured.Value == event.KeyPressed
 	s.ownEdges.Button(captured.Code, pressed)
 	s.remoteEdges.Button(captured.Code, pressed)
+	if captured.Code == event.ButtonLeft && !pressed {
+		s.endDrag()
+	}
 }
 
 func (s *Sharer) watchOwnScreen(captured event.Event) error {
@@ -181,6 +187,7 @@ func (s *Sharer) watchOwnScreen(captured event.Event) error {
 		return nil
 	}
 	s.ownEdges.SetBounds(desktop)
+	s.armForTheDrag(s.ownEdges)
 	if crossing, pushedThrough := s.ownEdges.Move(s.now(), x, y, moved.dx, moved.dy); pushedThrough {
 		return s.cross(crossing)
 	}
@@ -198,6 +205,7 @@ func (s *Sharer) endReport() error {
 		return err
 	}
 	x, y := s.remoteCursor.at()
+	s.armForTheDrag(s.remoteEdges)
 	if crossing, pushedThrough := s.remoteEdges.Move(s.now(), x, y, moved.dx, moved.dy); pushedThrough {
 		return s.cross(crossing)
 	}
@@ -209,22 +217,26 @@ func (s *Sharer) cross(crossing edge.Crossing) error {
 	if desk == nil || s.focusedIsANamesakeOfThisMachine() {
 		return nil
 	}
-	neighbour, found := desk.Neighbour(s.nameOfFocused(), onTheDesk(crossing.Side))
+	from := s.nameOfFocused()
+	neighbour, found := desk.Neighbour(from, onTheDesk(crossing.Side))
 	if !found {
 		return nil
 	}
+	arrival := acrossFrom(crossing)
 	if neighbour == s.edges.Name {
-		return s.comeBack(acrossFrom(crossing))
+		if crossing.Dragging && !s.dragMayEnter(neighbour, s.announcedHere()) {
+			return nil
+		}
+		return s.crossOver(crossing.Dragging, from, neighbour, nil, func(how leaving) error { return s.comeBack(arrival, how) })
 	}
 	receiver, connected := s.receiverNamed(neighbour)
-	if !connected || s.wouldLeaveAKeyHeldHere() {
+	if !connected || s.wouldLeaveAKeyHeldHere(crossing.Dragging) {
 		return nil
 	}
-	return s.enter(receiver, acrossFrom(crossing))
-}
-
-func (s *Sharer) wouldLeaveAKeyHeldHere() bool {
-	return s.focused == nil && len(s.heldHere.Held()) > 0
+	if crossing.Dragging && !s.dragMayEnter(neighbour, s.announced[receiver]) {
+		return nil
+	}
+	return s.crossOver(crossing.Dragging, from, neighbour, receiver, func(how leaving) error { return s.enter(receiver, arrival, how) })
 }
 
 func (s *Sharer) focusedIsANamesakeOfThisMachine() bool {
@@ -247,11 +259,11 @@ func (s *Sharer) receiverNamed(name string) (Conn, bool) {
 	return nil, false
 }
 
-func (s *Sharer) comeBack(arrival arrival) error {
+func (s *Sharer) comeBack(arrival arrival, how leaving) error {
 	if s.focused == nil {
 		return nil
 	}
-	s.bringFocusBack()
+	s.bringFocusBack(how)
 	if err := s.giveBack(); err != nil {
 		return err
 	}
