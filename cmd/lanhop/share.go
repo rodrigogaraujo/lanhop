@@ -23,6 +23,7 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/follow"
 	"github.com/rodrigogaraujo/lanhop/internal/hotkey"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
+	"github.com/rodrigogaraujo/lanhop/internal/layout"
 	"github.com/rodrigogaraujo/lanhop/internal/pairing"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 	"github.com/rodrigogaraujo/lanhop/internal/status"
@@ -220,6 +221,27 @@ func tellBlockedDrags(log io.Writer, report *deskStatus) func(sharer.BlockedDrag
 	}
 }
 
+type dragNotices interface {
+	OnBlockedDrag(blocked func(sharer.BlockedDrag))
+	OnDragUnblocked(unblocked func(sharer.BlockedDrag))
+}
+
+func reportBlockedDrags(machine dragNotices, report *deskStatus, log io.Writer) {
+	machine.OnBlockedDrag(tellBlockedDrags(log, report))
+	machine.OnDragUnblocked(report.unblockedDrag)
+}
+
+func edgesOfTheCentral(name string, desk func() *layout.Layout, announced *features.Set, system string) sharer.EdgeSwitching {
+	return sharer.EdgeSwitching{
+		Name:          name,
+		Layout:        desk,
+		Speed:         sharer.DefaultSpeed(),
+		Watch:         edge.DefaultSettings(),
+		Features:      announced,
+		DragsStayHere: system == "linux",
+	}
+}
+
 func (d *deskStatus) write() {
 	if d.stopped {
 		return
@@ -278,20 +300,12 @@ func shareUntil(done context.Context, capture sharer.Capture, address string, st
 		stdout:    stdout,
 	}
 	announced := new(features.Set)
-	machine := sharer.New(capture, trusted, detector, sharer.EdgeSwitching{
-		Name:          own,
-		Layout:        desk.Layout,
-		Speed:         sharer.DefaultSpeed(),
-		Watch:         edge.DefaultSettings(),
-		Features:      announced,
-		DragsStayHere: runtime.GOOS == "linux",
-	})
+	machine := sharer.New(capture, trusted, detector, edgesOfTheCentral(own, desk.Layout, announced, runtime.GOOS))
 	desk.ownEdges = machine.OwnScreenHasEdges()
 	report := newDeskStatus(openStatus(), time.Now, trusted)
 	defer report.stop()
 	machine.OnReceivers(report.receivers)
-	machine.OnBlockedDrag(tellBlockedDrags(stdout, report))
-	machine.OnDragUnblocked(report.unblockedDrag)
+	reportBlockedDrags(machine, report, stdout)
 	defer shareTheClipboard(done, machine, directory, listener.AwaitData, announced, followerOfTheCentral(report.seatsChanged), stdout)()
 	go func() {
 		for {
