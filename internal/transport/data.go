@@ -57,9 +57,18 @@ type DataConn struct {
 	told       bool
 
 	acknowledged atomic.Int32
+	sending      sync.Mutex
+	written      int64
+	blocksSent   int32
+	sentAt       []sentBlock
 	arrived      chan struct{}
 	ended        chan struct{}
 	endedBy      error
+}
+
+type sentBlock struct {
+	block int32
+	at    time.Time
 }
 
 func newDataConn(secured *tls.Conn, peer trust.Peer, transfer int32, pace *Pace, release func()) *DataConn {
@@ -135,16 +144,57 @@ func (d *DataConn) readAcks() {
 		if err != nil {
 			d.endedBy = err
 			d.secured.Close()
+			d.pace.forget(d)
 			close(d.ended)
 			return
 		}
 		blocks, all := event.SplitDataAck(frame.Value)
 		if all {
+			d.pace.forget(d)
 			close(d.arrived)
 			return
 		}
 		d.acknowledged.Store(blocks)
+		if sent, found := d.sentWhen(blocks); found {
+			d.pace.observe(d, time.Since(sent))
+		}
 	}
+}
+
+func (d *DataConn) untilTheNextBlock() int {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	return ackedBlock - int(d.written)
+}
+
+func (d *DataConn) noteTheBlockGoingOut() {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	next := (d.blocksSent + 1) & event.TransferNumberMax
+	d.sentAt = append(d.sentAt, sentBlock{block: next, at: time.Now()})
+}
+
+func (d *DataConn) noteWritten(bytes int) {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	d.written += int64(bytes)
+	for d.written >= ackedBlock {
+		d.written -= ackedBlock
+		d.blocksSent = (d.blocksSent + 1) & event.TransferNumberMax
+	}
+}
+
+func (d *DataConn) sentWhen(block int32) (time.Time, bool) {
+	d.sending.Lock()
+	defer d.sending.Unlock()
+	for len(d.sentAt) > 0 {
+		oldest := d.sentAt[0]
+		d.sentAt = d.sentAt[1:]
+		if oldest.block == block {
+			return oldest.at, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (d *DataConn) TellAllArrived() error {
@@ -182,9 +232,15 @@ func (d *DataConn) Write(data []byte) (int, error) {
 	defer d.writing.Unlock()
 	written := 0
 	for written < len(data) {
-		slice := data[written:min(len(data), written+pacedSlice)]
-		d.pace.wait(len(slice))
+		toBoundary := d.untilTheNextBlock()
+		size := min(len(data)-written, pacedSlice, toBoundary)
+		slice := data[written : written+size]
+		d.pace.wait(size)
+		if size == toBoundary {
+			d.noteTheBlockGoingOut()
+		}
 		n, err := d.secured.Write(slice)
+		d.noteWritten(n)
 		written += n
 		if err != nil {
 			return written, err
