@@ -4,11 +4,14 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
+	"github.com/rodrigogaraujo/lanhop/internal/features"
 )
 
 type reportedDock struct {
@@ -184,5 +187,22 @@ func TestTheCentralTellsTheDockOfASideMachineThatTakesDraggedFiles(t *testing.T)
 	}
 	if starts, _ := d.described.seen(); !slices.Equal(starts, []SideDrag{{Origin: "raw", Files: 2, Dock: edge.Top}}) {
 		t.Errorf("the central told the drags %+v, want the drag of raw with its dock at the top", starts)
+	}
+}
+
+func TestTheDragBitFollowsWhetherDragsAreOn(t *testing.T) {
+	dragBit := int32(1) << features.Drag
+	var on atomic.Bool
+	config := Config{Drops: &fakeDrops{}, DragsOn: on.Load}.withDefaults()
+
+	if got := config.announcing(clipboard.Text|clipboard.Files).Value() & dragBit; got != 0 {
+		t.Error("a machine with drags off announced the drag bit")
+	}
+	on.Store(true)
+	if got := config.announcing(clipboard.Text|clipboard.Files).Value() & dragBit; got == 0 {
+		t.Error("a machine with drags on, files and a drop session did not announce the drag bit")
+	}
+	if got := config.announcing(clipboard.Text).Value() & dragBit; got != 0 {
+		t.Error("a machine with drags on and files off announced the drag bit")
 	}
 }
