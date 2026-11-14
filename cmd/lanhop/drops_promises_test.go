@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -351,5 +352,70 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func TestAFolderWhoseOwnMarkFailsIsRemovedLikeAFile(t *testing.T) {
+	arrived := t.TempDir()
+	writeTestFile(t, filepath.Join(arrived, "a.txt"), "a")
+	destination := filepath.Join(t.TempDir(), "folder")
+	failing := errors.New("mark refused")
+
+	err := copyEntry(context.Background(), arrived, destination, func(_, to string) error {
+		if to == destination {
+			return failing
+		}
+		return nil
+	})
+
+	if !errors.Is(err, failing) {
+		t.Errorf("copyEntry = %v, want %v", err, failing)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the folder whose mark failed was left behind: %v", err)
+	}
+}
+
+func TestAFolderIsNeverCopiedIntoOrRemovedWhereAFolderOfTheSameNameIsAlready(t *testing.T) {
+	arrived := t.TempDir()
+	writeTestFile(t, filepath.Join(arrived, "a.txt"), "a")
+	destination := filepath.Join(t.TempDir(), "folder")
+	writeTestFile(t, filepath.Join(destination, "mine.txt"), "mine")
+
+	if err := copyEntry(context.Background(), arrived, destination, nil); err == nil {
+		t.Error("a folder was copied over a folder of the same name")
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, "mine.txt")); err != nil || string(got) != "mine" {
+		t.Errorf("the folder already there holds %q, %v, want it untouched", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a file was copied into the folder already there: %v", err)
+	}
+}
+
+func TestATakenDropWhoseFilesAreNeverAllWrittenIsClosedAfterItsBoundAndTellsWhichFailed(t *testing.T) {
+	d := newPromiseDesk(t)
+	said := &screen{}
+	d.drops.log, d.drops.keptLimit = said, 50*time.Millisecond
+	session, drop, write := d.startADrop(t, clipshare.DroppedFile{Name: "report.txt"})
+	arrived := filepath.Join(t.TempDir(), "report.txt")
+	writeTestFile(t, arrived, "new")
+	destination := filepath.Join(t.TempDir(), "report.txt")
+	writeTestFile(t, destination, "old")
+	session.Arrived([]string{arrived})
+	if err := write(context.Background(), 0, destination); err == nil {
+		t.Fatal("the promise replaced a file at its destination")
+	}
+
+	drop.end(true)
+	closedWithin(t, "the drop being taken", session.Taken())
+
+	for deadline := time.Now().Add(testPatience); drop.timesClosed() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the taken drop whose promise failed was never closed")
+		}
+	}
+	if !strings.Contains(said.String(), "these files were not written") || !strings.Contains(said.String(), "report.txt") {
+		t.Errorf("the log says %q, want the file that was not written", said.String())
 	}
 }

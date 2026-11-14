@@ -8,12 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 )
 
-const copyChunk = 1 << 20
+const (
+	copyChunk         = 1 << 20
+	promisesKeptLimit = 2 * time.Minute
+)
 
 var (
 	errDropsClosed       = errors.New("lanhop is stopping, so it starts no more drops")
@@ -35,18 +40,19 @@ type startPromisedDrop func(ctx context.Context, files []clipshare.DroppedFile, 
 type markCopy func(source, destination string) error
 
 type promiseDrops struct {
-	start    startPromisedDrop
-	hand     *dropReplay
-	mark     markCopy
-	log      io.Writer
-	starting sync.Mutex
-	mutex    sync.Mutex
-	open     map[*promiseSession]struct{}
-	closed   bool
+	start     startPromisedDrop
+	hand      *dropReplay
+	mark      markCopy
+	log       io.Writer
+	keptLimit time.Duration
+	starting  sync.Mutex
+	mutex     sync.Mutex
+	open      map[*promiseSession]struct{}
+	closed    bool
 }
 
 func newPromiseDrops(start startPromisedDrop, hand *dropReplay, mark markCopy, log io.Writer) *promiseDrops {
-	return &promiseDrops{start: start, hand: hand, mark: mark, log: log, open: make(map[*promiseSession]struct{})}
+	return &promiseDrops{start: start, hand: hand, mark: mark, log: log, keptLimit: promisesKeptLimit, open: make(map[*promiseSession]struct{})}
 }
 
 func (p *promiseDrops) StartDrop(ctx context.Context, files []clipshare.DroppedFile) (clipshare.DropSession, error) {
@@ -61,6 +67,7 @@ func (p *promiseDrops) StartDrop(ctx context.Context, files []clipshare.DroppedF
 		return nil, errDropsClosed
 	}
 	session := newPromiseSession(p.hand, p.mark, p.forget)
+	session.log, session.keptLimit = p.log, p.keptLimit
 	p.hand.dropStarts()
 	held := p.hand.holdBack()
 	drop, err := p.start(ctx, files, session.write)
@@ -126,6 +133,8 @@ type promiseSession struct {
 	hand        *dropReplay
 	mark        markCopy
 	forget      func(*promiseSession)
+	log         io.Writer
+	keptLimit   time.Duration
 	drop        promisedDrop
 	arrived     chan struct{}
 	arriving    sync.Once
@@ -136,6 +145,7 @@ type promiseSession struct {
 	ending      sync.Once
 	state       sync.Mutex
 	tookTheDrop bool
+	unwritten   []string
 }
 
 func newPromiseSession(hand *dropReplay, mark markCopy, forget func(*promiseSession)) *promiseSession {
@@ -184,7 +194,13 @@ func (s *promiseSession) write(ctx context.Context, file int, destination string
 	if file < 0 || file >= len(s.paths) {
 		return fmt.Errorf("%w: %d of %d", errNoSuchDroppedFile, file, len(s.paths))
 	}
-	return copyEntry(ctx, s.paths[file], destination, s.mark)
+	err := copyEntry(ctx, s.paths[file], destination, s.mark)
+	if err != nil {
+		s.state.Lock()
+		s.unwritten = append(s.unwritten, fmt.Sprintf("%s (%s)", filepath.Base(s.paths[file]), forTheLog(err)))
+		s.state.Unlock()
+	}
+	return err
 }
 
 func (s *promiseSession) follow() {
@@ -203,11 +219,30 @@ func (s *promiseSession) follow() {
 	s.state.Unlock()
 	s.hand.dropSettled()
 	close(s.taken)
+	bound := time.NewTimer(s.keptLimit)
+	defer bound.Stop()
 	select {
 	case <-s.drop.Kept():
-		s.end()
 	case <-s.ended:
+		return
+	case <-bound.C:
+		s.tellUnwritten()
 	}
+	s.end()
+}
+
+func (s *promiseSession) tellUnwritten() {
+	s.state.Lock()
+	unwritten := slices.Clone(s.unwritten)
+	s.state.Unlock()
+	if s.log == nil {
+		return
+	}
+	if len(unwritten) == 0 {
+		fmt.Fprintln(s.log, "The drop on this machine was taken, and its destination never asked for every file, so lanhop ends it.")
+		return
+	}
+	fmt.Fprintf(s.log, "The drop on this machine was taken, and these files were not written, so lanhop ends it: %s\n", strings.Join(unwritten, ", "))
 }
 
 func (s *promiseSession) end() {
@@ -242,11 +277,14 @@ func copyFolder(ctx context.Context, from, to string, info os.FileInfo, mark mar
 	if err := os.Mkdir(to, info.Mode().Perm()|0o700); err != nil {
 		return err
 	}
-	if err := fillFolder(ctx, from, to, mark); err != nil {
-		os.RemoveAll(to)
-		return err
+	err := fillFolder(ctx, from, to, mark)
+	if err == nil {
+		err = finishCopy(from, to, info, mark)
 	}
-	return finishCopy(from, to, info, mark)
+	if err != nil {
+		os.RemoveAll(to)
+	}
+	return err
 }
 
 func fillFolder(ctx context.Context, from, to string, mark markCopy) error {
