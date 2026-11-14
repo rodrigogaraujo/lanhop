@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"syscall"
@@ -99,18 +100,19 @@ func endSourceDragHere() error {
 	return macos.EndSourceDrag()
 }
 
-func dragLeavesHandler(hand *dropReplay, log io.Writer, stayed func()) func(context.Context) {
+func dragLeavesHandler(hand *dropReplay, log io.Writer, stayed func(), described func() bool) func(context.Context) {
 	return func(ctx context.Context) {
-		endTheSourceDragUnderAShield(ctx, shieldTheCursor, endTheReplayedSourceDrag, hand, log, stayed)
+		end := func(under io.Closer) error { return endTheReplayedSourceDrag(under, described(), log) }
+		endTheSourceDragUnderAShield(ctx, shieldTheCursor, end, hand, log, stayed)
 	}
 }
 
-func endTheReplayedSourceDrag(under io.Closer) error {
-	at := macos.Quartz{}.Cursor()
+func endTheReplayedSourceDrag(under io.Closer, described bool, log io.Writer) error {
 	if shield, shielded := under.(*macos.Shield); shielded {
-		at = shield.At()
+		return macos.EndReplayedSourceDragUnder(shield.At(), described)
 	}
-	return macos.EndReplayedSourceDrag(at)
+	fmt.Fprintln(log, "With no window of lanhop under the cursor, lanhop posts no release at the HID tap, so this Mac may read the left button as held until the next click.")
+	return macos.EndReplayedSourceDragUnshielded(described)
 }
 
 func shieldTheCursor(ctx context.Context) (io.Closer, error) {

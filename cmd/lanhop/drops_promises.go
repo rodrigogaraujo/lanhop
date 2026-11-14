@@ -239,10 +239,10 @@ func (s *promiseSession) tellUnwritten() {
 		return
 	}
 	if len(unwritten) == 0 {
-		fmt.Fprintln(s.log, "The drop on this machine was taken, and its destination never asked for every file, so lanhop ends it.")
+		fmt.Fprintln(s.log, "The drop on this machine was taken, and its files were not all written within 2 minutes, so lanhop ends it.")
 		return
 	}
-	fmt.Fprintf(s.log, "The drop on this machine was taken, and these files were not written, so lanhop ends it: %s\n", strings.Join(unwritten, ", "))
+	fmt.Fprintf(s.log, "The drop on this machine was taken, and its files were not all written within 2 minutes, so lanhop ends it. These files failed: %s\n", strings.Join(unwritten, ", "))
 }
 
 func (s *promiseSession) end() {

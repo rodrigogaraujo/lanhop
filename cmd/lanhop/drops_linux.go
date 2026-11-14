@@ -89,7 +89,7 @@ func endSourceDragHere() error {
 	return errSourceDragStays
 }
 
-func dragLeavesHandler(hand *dropReplay, log io.Writer, stayed func()) func(context.Context) {
+func dragLeavesHandler(hand *dropReplay, log io.Writer, stayed func(), _ func() bool) func(context.Context) {
 	return func(ctx context.Context) {
 		drags, release, err := sharedDrags.hold()
 		if err != nil {

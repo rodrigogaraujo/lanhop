@@ -415,7 +415,7 @@ func TestATakenDropWhoseFilesAreNeverAllWrittenIsClosedAfterItsBoundAndTellsWhic
 			t.Fatal("the taken drop whose promise failed was never closed")
 		}
 	}
-	if !strings.Contains(said.String(), "these files were not written") || !strings.Contains(said.String(), "report.txt") {
+	if !strings.Contains(said.String(), "These files failed") || !strings.Contains(said.String(), "report.txt") {
 		t.Errorf("the log says %q, want the file that was not written", said.String())
 	}
 }

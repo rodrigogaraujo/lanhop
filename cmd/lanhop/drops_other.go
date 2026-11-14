@@ -26,6 +26,6 @@ func endSourceDragHere() error {
 	return errSourceDragStays
 }
 
-func dragLeavesHandler(*dropReplay, io.Writer, func()) func(context.Context) {
+func dragLeavesHandler(*dropReplay, io.Writer, func(), func() bool) func(context.Context) {
 	return nil
 }

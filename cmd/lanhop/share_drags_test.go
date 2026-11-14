@@ -49,6 +49,7 @@ type fakeCentralDrops struct {
 	calls   *dragCalls
 	crossed error
 	leaves  error
+	gone    func()
 }
 
 func (f *fakeCentralDrops) DragSeen(paths []string) {
@@ -57,6 +58,9 @@ func (f *fakeCentralDrops) DragSeen(paths []string) {
 
 func (f *fakeCentralDrops) DragGone() {
 	f.calls.note("central: drag gone")
+	if f.gone != nil {
+		f.gone()
+	}
 }
 
 func (f *fakeCentralDrops) DragCrossed(origin, to string) error {
@@ -119,6 +123,7 @@ func newDragsHarness() *dragsHarness {
 	h.dragsOfTheCentral.central = h.central
 	h.dragsOfTheCentral.machine = fakeSharerDrags{calls: calls}
 	h.dragsOfTheCentral.reset = func() { calls.note(localDragsReset) }
+	h.central.gone = h.dragsOfTheCentral.ownDragGone
 	return h
 }
 
@@ -199,8 +204,8 @@ func TestADragThatCannotBeEndedOnTheCentralCrossesNoFurther(t *testing.T) {
 		sourceDragEndedHere,
 		"sharer: drag cancelled",
 		"central: drag cancelled",
-		"sharer: the source drag ended on studio",
 		"central: drag gone",
+		"sharer: the source drag ended on studio",
 	)
 	if !strings.Contains(h.output.String(), "is cancelled, and nothing is dropped, because lanhop could not end it here: posting refused") {
 		t.Errorf("the log says %q, want why the drag did not cross", h.output.String())
@@ -263,10 +268,10 @@ func TestEscapeOnTheCentralCancelsADropNotTakenAndADragInProgress(t *testing.T) 
 	h := newDragsHarness()
 
 	h.escape(false)
-	h.expectCalls(t, "Escape outside a drag", "central: drag cancelled")
+	h.expectCalls(t, "Escape outside a drag", "central: drag cancelled", "central: drag gone", "sharer: the source drag ended on studio", localDragsReset)
 
 	h.escape(true)
-	h.expectCalls(t, "Escape during a drag", "central: drag cancelled", localDragsReset, "sharer: drag cancelled")
+	h.expectCalls(t, "Escape during a drag", "central: drag cancelled", "central: drag gone", "sharer: the source drag ended on studio", localDragsReset, "sharer: drag cancelled")
 }
 
 func TestEveryPressAndReleaseOfTheLeftButtonResetsTheWatchOfDrags(t *testing.T) {
@@ -288,16 +293,16 @@ func TestADragOnTheCentralStartsInTheSharerOnlyOnceItsFilesAreCounted(t *testing
 	h.DragGone()
 	h.expectCalls(t, "the count of that drag and its end",
 		"sharer: drag started {Origin:studio Files:2 Dock:bottom}",
-		"sharer: the source drag ended on studio",
 		"central: drag gone",
+		"sharer: the source drag ended on studio",
 	)
 
 	h.DragSeen([]string{"/too-many"}, edge.Left)
 	h.DragGone()
 	h.expectCalls(t, "a drag whose count never came",
 		`central: drag seen ["/too-many"]`,
-		"sharer: the source drag ended on studio",
 		"central: drag gone",
+		"sharer: the source drag ended on studio",
 	)
 
 	h.DragSeen([]string{"/a"}, 0)
@@ -310,8 +315,8 @@ func TestADragOnTheCentralStartsInTheSharerOnlyOnceItsFilesAreCounted(t *testing
 		"sharer: drag started {Origin:studio Files:1 Dock:unknown}",
 		sourceDragEndedHere,
 		"central: drag crossed from studio to desk",
-		"sharer: the source drag ended on studio",
 		"central: drag gone",
+		"sharer: the source drag ended on studio",
 		"central: drag over",
 	)
 }
@@ -416,6 +421,10 @@ func (c *hookedCentral) OnOwnDragCounted(counted func(files int)) {
 	c.counted = counted
 }
 
+func (c *hookedCentral) OnOwnDragGone(gone func()) {
+	c.fakeCentralDrops.gone = gone
+}
+
 func (c *hookedCentral) OnSideDrags(started func(clipshare.SideDrag), ended func(origin string)) {
 	c.started, c.ended = started, ended
 }
@@ -466,6 +475,7 @@ func TestWiringTheCentralSetsEveryHookOfTheClipboardAndTheSharer(t *testing.T) {
 
 	drags.wire(machine, central, func() bool { return true })
 	central.counted(2)
+	central.DragGone()
 	central.started(clipshare.SideDrag{Origin: "desk", Files: 1})
 	central.ended("desk")
 	central.stayed("desk")
@@ -478,6 +488,8 @@ func TestWiringTheCentralSetsEveryHookOfTheClipboardAndTheSharer(t *testing.T) {
 
 	if got, want := calls.take(), []string{
 		"sharer: drag started {Origin:studio Files:2 Dock:unknown}",
+		"central: drag gone",
+		"sharer: the source drag ended on studio",
 		"sharer: drag started {Origin:desk Files:1 Dock:unknown}",
 		"sharer: the source drag ended on desk",
 		"sharer: drag cancelled",
@@ -487,6 +499,9 @@ func TestWiringTheCentralSetsEveryHookOfTheClipboardAndTheSharer(t *testing.T) {
 		"central: drag crossed from desk to laptop",
 		"central: drag over",
 		"central: drag cancelled",
+		"central: drag gone",
+		"sharer: the source drag ended on studio",
+		localDragsReset,
 		localDragsReset,
 	}; !slices.Equal(got, want) {
 		t.Errorf("the hooks led to:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

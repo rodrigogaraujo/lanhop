@@ -199,5 +199,5 @@ type localDragSide interface {
 func dragsOfThisSide(done context.Context, side localDragSide, hand *dropReplay, stdout io.Writer) (dragLeaves func(context.Context), stop func()) {
 	follower := newLocalDragFollower(side, stdout)
 	side.OnDescribingDrags(follower.describing)
-	return dragLeavesHandler(hand, stdout, side.DragStayed), runUntilStopped(done, follower.run)
+	return dragLeavesHandler(hand, stdout, side.DragStayed, follower.describedADrag), runUntilStopped(done, follower.run)
 }

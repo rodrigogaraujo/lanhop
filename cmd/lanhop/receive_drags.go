@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
@@ -69,6 +70,11 @@ type localDragFollower struct {
 	every   time.Duration
 	log     io.Writer
 	changes chan bool
+	told    atomic.Bool
+}
+
+func (f *localDragFollower) describedADrag() bool {
+	return f.told.Load()
 }
 
 func newLocalDragFollower(side dragDescriber, log io.Writer) *localDragFollower {
@@ -150,6 +156,7 @@ func (f *localDragFollower) run(ctx context.Context) {
 			}
 			if drag.Started {
 				state.dragging = true
+				f.told.Store(true)
 				f.side.DragSeen(drag.Paths, state.dock)
 				continue
 			}
@@ -180,6 +187,7 @@ func (f *localDragFollower) startWatching(ctx context.Context, state *localDragS
 func (f *localDragFollower) endTheDrag(state *localDragState) {
 	if state.dragging {
 		state.dragging = false
+		f.told.Store(false)
 		f.side.DragGone()
 	}
 }

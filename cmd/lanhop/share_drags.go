@@ -54,6 +54,7 @@ func newDragsOfTheCentral(name string, drops clipshare.Drops, endHere func() err
 type hooksOfTheCentral interface {
 	dropsOfTheCentral
 	OnOwnDragCounted(counted func(files int))
+	OnOwnDragGone(gone func())
 	OnSideDrags(started func(clipshare.SideDrag), ended func(origin string))
 	OnSideDragStayed(stayed func(origin string))
 	OnSideDock(dock func(origin string, dock edge.Side))
@@ -71,6 +72,7 @@ type hooksOfTheSharer interface {
 func (d *dragsOfTheCentral) wire(machine hooksOfTheSharer, central hooksOfTheCentral, allowed func() bool) {
 	d.central, d.machine, d.allowed = central, machine, allowed
 	central.OnOwnDragCounted(d.ownDragCounted)
+	central.OnOwnDragGone(d.ownDragGone)
 	central.OnSideDrags(d.sideDragStarted, d.sideDragEnded)
 	central.OnSideDragStayed(d.sideDragStayed)
 	central.OnSideDock(d.sideDock)
@@ -122,8 +124,11 @@ func (d *dragsOfTheCentral) ownDragCounted(files int) {
 }
 
 func (d *dragsOfTheCentral) DragGone() {
-	d.machine.SourceDragEnded(d.name)
 	d.central.DragGone()
+}
+
+func (d *dragsOfTheCentral) ownDragGone() {
+	d.machine.SourceDragEnded(d.name)
 }
 
 func (d *dragsOfTheCentral) DockIs(dock edge.Side) {
@@ -202,11 +207,11 @@ func (d *dragsOfTheCentral) dragEnded(sharer.Drag) {
 
 func (d *dragsOfTheCentral) escape(duringADrag bool) {
 	d.central.DragCancelled()
-	if !duringADrag {
-		return
-	}
+	d.central.DragGone()
 	d.resetLocalDrags()
-	d.machine.DragCancelled()
+	if duringADrag {
+		d.machine.DragCancelled()
+	}
 }
 
 func (d *dragsOfTheCentral) leftButton(bool) {
