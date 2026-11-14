@@ -41,6 +41,10 @@ type Side struct {
 	dragEnded     time.Time
 	remover       remover
 	drops         map[int]*dropRun
+	describing    bool
+	onDescribing  func(describing bool)
+	dock          edge.Side
+	dockTold      edge.Side
 }
 
 func NewSide(config Config) *Side {
@@ -109,6 +113,17 @@ func (s *Side) DragGone() {
 	s.inbox.put(s.dragGone)
 }
 
+func (s *Side) DockIs(dock edge.Side) {
+	s.inbox.put(func() { s.dockIs(dock) })
+}
+
+func (s *Side) OnDescribingDrags(changed func(describing bool)) {
+	s.inbox.put(func() {
+		s.onDescribing = changed
+		changed(s.describing)
+	})
+}
+
 func (s *Side) heardFrom(l *link, frame event.Event) {
 	if !frame.IsControl() {
 		return
@@ -149,6 +164,7 @@ func (s *Side) connected(l *link) {
 	s.centralTakes, s.centralDrops = 0, false
 	s.forgetDraggedFiles()
 	s.do(s.machine.Connected())
+	s.noticeDescribing()
 }
 
 func (s *Side) lost() {
@@ -159,6 +175,7 @@ func (s *Side) lost() {
 	s.forgetDraggedFiles()
 	s.endEveryTransfer(errControlLost)
 	s.endEveryDrop()
+	s.noticeDescribing()
 }
 
 func (s *Side) stopEverything() {
@@ -196,6 +213,7 @@ func (s *Side) centralSays(l *link, takes clipboard.Kinds, drops bool) {
 		s.forgetDraggedFiles()
 	}
 	s.do(s.machine.CentralSays(takes))
+	s.noticeDescribing()
 }
 
 func (s *Side) copyFromCentral(l *link, text string) {
@@ -237,6 +255,7 @@ func (s *Side) followTheSwitch() {
 	}
 	s.on = on
 	s.do(s.machine.Switch(on))
+	s.noticeDescribing()
 }
 
 func (s *Side) readDone(l *link, result readResult) {

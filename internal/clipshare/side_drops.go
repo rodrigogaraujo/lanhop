@@ -68,13 +68,39 @@ func (s *Side) describeDrag(files clipboard.FileCopy, dock edge.Side) (described
 	if files.FilesAndFolders == 0 {
 		if s.dragDescribed {
 			s.dragDescribed = false
-			s.send(event.DragFiles(0, 0))
+			s.dockTold = s.dock
+			s.send(event.DragFiles(0, int32(s.dock)))
 		}
 		return false
 	}
-	s.dragDescribed = true
+	s.dragDescribed, s.dockTold = true, dock
 	s.send(event.DragFiles(int32(files.FilesAndFolders), int32(dock)), event.DragFilesSize(kibibytesRoundedUp(files.Bytes)))
 	return true
+}
+
+func (s *Side) dockIs(dock edge.Side) {
+	s.dock = dockEdgeIn(int32(dock))
+	s.tellTheDock()
+}
+
+func (s *Side) tellTheDock() {
+	if !s.describing || s.dragDescribed || s.dock == s.dockTold {
+		return
+	}
+	s.dockTold = s.dock
+	s.send(event.DragFiles(0, int32(s.dock)))
+}
+
+func (s *Side) noticeDescribing() {
+	describing := s.describesDrags()
+	if describing == s.describing {
+		return
+	}
+	s.describing, s.dockTold = describing, 0
+	s.tellTheDock()
+	if s.onDescribing != nil {
+		s.onDescribing(describing)
+	}
 }
 
 func (s *Side) openDropData(l *link, wire int, sideSends bool) {

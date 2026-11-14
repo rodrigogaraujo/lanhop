@@ -85,3 +85,11 @@ func dragLeavesHandler(hand *dropReplay, log io.Writer, _ func()) func(context.C
 		endTheSourceDragUnderAShield(ctx, shieldTheCursor, endSourceDragHere, hand, log)
 	}
 }
+
+func shieldTheCursor(ctx context.Context) (io.Closer, error) {
+	shield, err := macos.ShieldCursor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return shield, nil
+}
