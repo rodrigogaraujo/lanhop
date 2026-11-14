@@ -153,12 +153,12 @@ Copy on one machine, move focus to another, and paste there. Copies of text and 
 
 Drag a file or a folder on one machine, push it through the edge of the screen toward the next machine with the button still held, and drop it in a folder or a window there. The [layout](#layout) says which machine is behind each edge. lanhop always copies: the file stays where it was on the machine you dragged it from.
 
-- **Where it works.** Mac to Mac, Mac to Linux, Linux to a Mac, and Linux to Linux. Here a Linux machine is one that receives the keyboard and mouse, in an X11 session. In every case, the machine with the keyboard is a Mac. A drag can cross more than one edge on its way.
+- **Where it works.** Mac to Mac, Mac to Linux, Linux to a Mac, and Linux to Linux. The machine where a drag starts, and the one where it ends, must each be a Mac or a Linux machine in an X11 session that receives the keyboard and mouse. The machine with the keyboard passes a drag from one of its side machines to another, whatever its system. A drag can cross more than one edge on its way.
 - **How it crosses.** A dragged file crosses after you push it against the edge for 600 ms, longer than the cursor alone needs. It never crosses in a corner, nor through the edge where the Dock of macOS or the dock of Ubuntu sits, so that a file dragged to the Trash or to the dock stays on its machine.
 - **Changing your mind.** Drag the file back across the edge, or press Escape, and nothing is dropped. What had arrived of the file is removed.
 - **Waiting for the file.** The file starts to travel when it crosses, while you still hold the button, and the drop waits for it. On Linux, a drop waits at most about 2 minutes for the files after you let go of the button. Copy and paste very large files instead.
 - **Where it does not work.** Copying the file and pasting it there works instead:
-  - A Linux machine with the keyboard lets no dragged file cross: not from its own screen, and not between the machines it controls ([ADR 15](docs/adr/0015-what-dragging-a-file-can-use-on-each-system.md)).
+  - A drag that starts on a Linux machine with the keyboard, or that would end on it, does not cross ([ADR 15](docs/adr/0015-what-dragging-a-file-can-use-on-each-system.md)). A drag between the machines it controls does.
   - A Linux machine in a Wayland session takes no dragged files, and gives none.
 - **Switching it off.** `lanhop files off` or `lanhop clipboard off` keeps dragged files from leaving or reaching that machine too.
 - **What lanhop says.** When a dragged file cannot cross, the machine with the keyboard says why in its log and in `lanhop status`, once per run of lanhop and per machine. `<machine>` is the name of the other machine. Nothing appears on the screen.
@@ -166,10 +166,10 @@ Drag a file or a folder on one machine, push it through the edge of the screen t
   | When | Line |
   |---|---|
   | A file is dragged on a Linux machine with the keyboard | `A file dragged on this machine cannot leave it. Copying the file and pasting it on the other machine works instead.` |
-  | The other machine takes copies of files but not dragged files, such as Linux in a Wayland session | `Dragging a file cannot reach "<machine>". Copying the file and pasting it there works instead.` |
+  | The other machine takes copies of files but not dragged files: a Linux machine in a Wayland session, or a Linux machine with the keyboard | `Dragging a file cannot reach "<machine>". Copying the file and pasting it there works instead.` |
   | Copies of files are off on the other machine | `Dragging a file cannot reach "<machine>": file sharing is off on that machine.` |
 
-- **Linux to Linux.** It has passed only in containers, between lanhop and small test programs, not with a real file manager on two machines. If you have two Linux machines in an X11 session and a Mac to share the keyboard and mouse, please try it and [report](https://github.com/rodrigogaraujo/lanhop/issues) what happens.
+- **Linux to Linux.** It has passed only in containers, between lanhop and small test programs, not with a real file manager on two machines. If you have two Linux machines in an X11 session, and a third machine with the keyboard and mouse, please try it and [report](https://github.com/rodrigogaraujo/lanhop/issues) what happens.
 
 ## Roadmap
 
