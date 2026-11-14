@@ -143,11 +143,10 @@ func receive(args []string, stdout io.Writer) (err error) {
 		return err
 	}
 	hand := newDropReplay(replay, resetLocalDrags)
-	drops, closeDrops, whyNoDrops := openDropsFor(false, hand, stdout)
+	drops, closeDrops := openDropsUntilTheyOpen(interrupted, func() (clipshare.Drops, func(), error) {
+		return openDropsFor(false, hand, stdout)
+	}, dropsRetryInterval, stdout)
 	defer closeDrops()
-	if whyNoDrops != nil {
-		fmt.Fprintf(stdout, "A file dragged from another machine cannot be dropped on this one, and one dragged here cannot leave: %s\n", forTheLog(whyNoDrops))
-	}
 
 	fmt.Fprintf(stdout, "Receiving from %q at %s. Press Ctrl+C to stop.\n", sharer.Name, sharer.Address)
 	report.connecting()
@@ -163,8 +162,9 @@ func receive(args []string, stdout io.Writer) (err error) {
 	defer stopSharingTheClipboard()
 	config.Replay = hand
 	if side != nil && drops != nil {
-		config.DragLeaves = dragLeavesHandler(hand, stdout, side.DragStayed)
-		defer followLocalDrags(receiving, side, stdout)()
+		dragLeaves, stopFollowing := dragsOfThisSide(receiving, side, hand, stdout)
+		config.DragLeaves = dragLeaves
+		defer stopFollowing()
 	}
 	config.Clipboard = receiver.Together(config.Clipboard, follower)
 	config.OnConnect, config.OnFailure = report.connected, report.failed
@@ -190,8 +190,14 @@ func receivingWithDrops(done context.Context, sharer trust.Peer, local *identity
 	return config, side, stopSharingTheClipboard
 }
 
-func followLocalDrags(done context.Context, side *clipshare.Side, stdout io.Writer) (stop func()) {
+type localDragSide interface {
+	dragDescriber
+	OnDescribingDrags(changed func(describing bool))
+	DragStayed()
+}
+
+func dragsOfThisSide(done context.Context, side localDragSide, hand *dropReplay, stdout io.Writer) (dragLeaves func(context.Context), stop func()) {
 	follower := newLocalDragFollower(side, stdout)
 	side.OnDescribingDrags(follower.describing)
-	return runUntilStopped(done, follower.run)
+	return dragLeavesHandler(hand, stdout, side.DragStayed), runUntilStopped(done, follower.run)
 }

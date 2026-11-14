@@ -127,7 +127,7 @@ func (r replayHand) Release() error {
 }
 
 func (r replayHand) Escape() error {
-	return r.hand.emitForLanhop(event.Key(keyEscape, event.KeyPressed), event.Sync(), event.Key(keyEscape, event.KeyReleased), event.Sync())
+	return r.hand.emitForLanhop(event.Key(event.KeyEsc, event.KeyPressed), event.Sync(), event.Key(event.KeyEsc, event.KeyReleased), event.Sync())
 }
 
 type dragsHolder struct {
@@ -165,16 +165,24 @@ func (h *dragsHolder) release() {
 }
 
 func waylandSession() bool {
-	if os.Getenv("WAYLAND_DISPLAY") != "" || strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland") {
+	return waylandSessionIn(os.Getenv, environmentOfTheUserManager)
+}
+
+func waylandSessionIn(getenv func(string) string, userEnvironment func() ([]byte, error)) bool {
+	if getenv("WAYLAND_DISPLAY") != "" {
 		return true
 	}
-	if os.Getenv("DISPLAY") != "" {
-		return false
+	if session := getenv("XDG_SESSION_TYPE"); session != "" {
+		return strings.EqualFold(session, "wayland")
 	}
+	environment, err := userEnvironment()
+	return err == nil && saysWayland(environment)
+}
+
+func environmentOfTheUserManager() ([]byte, error) {
 	asking, cancel := context.WithTimeout(context.Background(), sessionLookupLimit)
 	defer cancel()
-	environment, err := exec.CommandContext(asking, "systemctl", "--user", "show-environment").Output()
-	return err == nil && saysWayland(environment)
+	return exec.CommandContext(asking, "systemctl", "--user", "show-environment").Output()
 }
 
 func saysWayland(environment []byte) bool {

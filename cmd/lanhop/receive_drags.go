@@ -95,6 +95,7 @@ type localDragState struct {
 	stopWatch func()
 	ticker    *time.Ticker
 	dock      edge.Side
+	reading   bool
 	dragging  bool
 	failure   string
 }
@@ -102,6 +103,7 @@ type localDragState struct {
 func (f *localDragFollower) run(ctx context.Context) {
 	var state localDragState
 	defer f.stop(&state)
+	docks := make(chan edge.Side, 1)
 	for {
 		var poll <-chan time.Time
 		if state.ticker != nil {
@@ -123,13 +125,26 @@ func (f *localDragFollower) run(ctx context.Context) {
 			f.readTheDock(&state)
 			f.startWatching(ctx, &state)
 		case <-poll:
-			f.readTheDock(&state)
+			if !state.reading {
+				state.reading = true
+				go func() { docks <- f.dock() }()
+			}
 			if state.drags == nil {
 				f.startWatching(ctx, &state)
+			}
+		case dock := <-docks:
+			state.reading = false
+			if state.wanted {
+				state.dock = dock
+				f.side.DockIs(dock)
 			}
 		case drag, open := <-state.drags:
 			if !open {
 				state.drags = nil
+				if state.stopWatch != nil {
+					state.stopWatch()
+					state.stopWatch = nil
+				}
 				f.endTheDrag(&state)
 				continue
 			}

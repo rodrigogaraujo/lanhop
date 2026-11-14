@@ -245,3 +245,62 @@ func TestAWatchThatCannotStartIsSaidOnceAndTriedAgain(t *testing.T) {
 		t.Errorf("the failure was said %d times, want once: %q", times, said.String())
 	}
 }
+
+func TestAWatchThatEndsByItselfIsStoppedAndStartedAgain(t *testing.T) {
+	watches := &localWatches{}
+	follower, _, _ := followerForTheTest(t, 10*time.Millisecond, watches, &screen{})
+
+	follower.describing(true)
+	waitUntil(t, "the watch to start", func() bool { started, _ := watches.counts(); return started == 1 })
+	close(watches.current())
+
+	waitUntil(t, "the watch that ended to be stopped", func() bool { _, stopped := watches.counts(); return stopped == 1 })
+	waitUntil(t, "a new watch to start", func() bool { started, _ := watches.counts(); return started == 2 })
+}
+
+func TestAReadingOfTheDockThatTakesLongDoesNotHoldBackTheDrags(t *testing.T) {
+	watches := &localWatches{}
+	side := &describedLocally{}
+	slow := make(chan struct{})
+	readings := 0
+	var reading sync.Mutex
+	dock := func() edge.Side {
+		reading.Lock()
+		readings++
+		first := readings == 1
+		reading.Unlock()
+		if !first {
+			<-slow
+		}
+		return edge.Left
+	}
+	follower := &localDragFollower{side: side, watch: watches.watch, dock: dock, every: 5 * time.Millisecond, log: &screen{}, changes: make(chan bool, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		follower.run(ctx)
+	}()
+	t.Cleanup(func() {
+		close(slow)
+		cancel()
+		<-stopped
+	})
+
+	follower.describing(true)
+	waitUntil(t, "the watch to start", func() bool { started, _ := watches.counts(); return started == 1 })
+	waitUntil(t, "a second reading of the Dock to begin", func() bool { reading.Lock(); defer reading.Unlock(); return readings >= 2 })
+	drags := watches.current()
+	sent := make(chan struct{})
+	go func() {
+		drags <- localDrag{Started: true, Paths: []string{"/home/me/a.txt"}}
+		close(sent)
+	}()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("the drag waited for the reading of the Dock")
+	}
+
+	waitUntil(t, "the drag told while the Dock is read", func() bool { return slices.Contains(side.entries(), "seen /home/me/a.txt dock left") })
+}

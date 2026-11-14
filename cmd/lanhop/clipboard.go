@@ -180,7 +180,7 @@ func sideOfThisMachine(done context.Context, directory string, announced *featur
 	}
 	config.DialData = dialData
 	config.Drops = drops
-	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), drops) }
+	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), dropsOpenNow(drops)) }
 	side := clipshare.NewSide(config)
 	return side, inTurn(runUntilStopped(done, side.Run), release)
 }
