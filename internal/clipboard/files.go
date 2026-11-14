@@ -22,6 +22,10 @@ func DropsIn(featuresValue int32) bool {
 	return featuresValue&(1<<features.Drag) != 0
 }
 
+func RelaysDragsIn(featuresValue int32) bool {
+	return featuresValue&(1<<features.RelaysDrags) != 0
+}
+
 func (k Kinds) Has(kind Kinds) bool {
 	return k&kind == kind
 }

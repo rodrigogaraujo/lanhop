@@ -169,7 +169,7 @@ func watchDrags(source dragSource, interval time.Duration) (*DragWatch, error) {
 		source:  source,
 		tracker: dragTracker{mark: source.board.Mark()},
 		events:  make(chan DragEvent),
-		resets:  make(chan struct{}),
+		resets:  make(chan struct{}, 1),
 		stop:    make(chan struct{}),
 		stopped: make(chan struct{}),
 	}
@@ -183,7 +183,14 @@ func (w *DragWatch) run(interval time.Duration) {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	var pending []DragEvent
+	told := false
+	reset := func() { pending = w.forget(told) }
 	for {
+		select {
+		case <-w.resets:
+			reset()
+		default:
+		}
 		var send chan<- DragEvent
 		var next DragEvent
 		if len(pending) > 0 {
@@ -193,16 +200,23 @@ func (w *DragWatch) run(interval time.Duration) {
 		case <-w.stop:
 			return
 		case <-w.resets:
-			pending = nil
-			w.tracker.reset(w.source.board.Mark())
+			reset()
 		case send <- next:
-			pending = pending[1:]
+			pending, told = pending[1:], next.Kind == DragStarted
 		case <-tick.C:
 			if len(pending) < dragEventQueue {
 				pending = append(pending, w.tracker.poll(w.source)...)
 			}
 		}
 	}
+}
+
+func (w *DragWatch) forget(told bool) []DragEvent {
+	w.tracker.reset(w.source.board.Mark())
+	if told {
+		return []DragEvent{{Kind: DragEnded}}
+	}
+	return nil
 }
 
 func (w *DragWatch) Events() <-chan DragEvent {
@@ -212,7 +226,7 @@ func (w *DragWatch) Events() <-chan DragEvent {
 func (w *DragWatch) Reset() {
 	select {
 	case w.resets <- struct{}{}:
-	case <-w.stopped:
+	default:
 	}
 }
 
@@ -231,7 +245,43 @@ type dragEnder interface {
 	PostMouseAtSessionTap(mouse MouseEvent)
 }
 
+type replayedDragEnder interface {
+	dragEnder
+	PostMouse(mouse MouseEvent)
+}
+
+const hidReleaseAfterTheEnd = 150 * time.Millisecond
+
 var endingSourceDrag sync.Mutex
+
+type replayedDrag struct {
+	described bool
+	shielded  bool
+	under     Point
+}
+
+func endReplayedSourceDrag(screen replayedDragEnder, canPost func() bool, pause func(time.Duration), drag replayedDrag) error {
+	endingSourceDrag.Lock()
+	defer endingSourceDrag.Unlock()
+	if !canPost() {
+		return ErrCannotEndDrag
+	}
+	held := screen.ButtonDown(leftMouseButton)
+	if held || drag.described {
+		screen.PostKey(KeyPress{Code: escapeKeyCode, Down: true})
+		screen.PostKey(KeyPress{Code: escapeKeyCode})
+		pause(escapeToRelease)
+		screen.PostMouseAtSessionTap(MouseEvent{Action: MouseUp, At: screen.Cursor(), Button: leftMouseButton, Clicks: 1})
+	}
+	if !drag.shielded {
+		return nil
+	}
+	if held {
+		pause(hidReleaseAfterTheEnd)
+	}
+	screen.PostMouse(MouseEvent{Action: MouseUp, At: drag.under, Button: leftMouseButton, Clicks: 1})
+	return nil
+}
 
 func endSourceDrag(screen dragEnder, canPost func() bool, pause func(time.Duration)) error {
 	endingSourceDrag.Lock()

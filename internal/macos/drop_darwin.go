@@ -152,19 +152,7 @@ func appIsActive() bool {
 }
 
 func StartDrop(ctx context.Context, files []PromisedFile, write WriteFile) (*Drop, error) {
-	if err := checkPromisedFiles(files, clipboard.FilesAndFoldersLimit); err != nil {
-		return nil, err
-	}
-	if write == nil {
-		return nil, ErrNoWriter
-	}
-	if !mainThreadIsServed() {
-		return nil, ErrNoMainThread
-	}
-	if !CanPost() {
-		return nil, ErrCannotPost
-	}
-	if err := startAppKit(); err != nil {
+	if err := readyToDrop(files, write); err != nil {
 		return nil, err
 	}
 	screen := Quartz{}
@@ -178,6 +166,38 @@ func StartDrop(ctx context.Context, files []PromisedFile, write WriteFile) (*Dro
 		return nil, err
 	}
 	return drop, nil
+}
+
+func StartDropUnderTheCursor(ctx context.Context, files []PromisedFile, write WriteFile) (*Drop, error) {
+	if err := readyToDrop(files, write); err != nil {
+		return nil, err
+	}
+	screen := Quartz{}
+	drop, err := registerDrop(len(files), write, newHeldDownByThePerson(screen))
+	if err != nil {
+		return nil, err
+	}
+	if err := drop.startUnderTheCursor(ctx, files, screen); err != nil {
+		drop.Close()
+		return nil, err
+	}
+	return drop, nil
+}
+
+func readyToDrop(files []PromisedFile, write WriteFile) error {
+	if err := checkPromisedFiles(files, clipboard.FilesAndFoldersLimit); err != nil {
+		return err
+	}
+	if write == nil {
+		return ErrNoWriter
+	}
+	if !mainThreadIsServed() {
+		return ErrNoMainThread
+	}
+	if !CanPost() {
+		return ErrCannotPost
+	}
+	return startAppKit()
 }
 
 func registerDrop(count int, write WriteFile, button *heldDown) (*Drop, error) {
@@ -239,6 +259,49 @@ func (d *Drop) start(ctx context.Context, files []PromisedFile, plan dragPlan) e
 		began:    d.began.done,
 		timing:   timingOfTheProbe,
 	}.run(ctx)
+}
+
+type openedWindow struct {
+	window dropWindow
+	err    error
+}
+
+func (d *Drop) startUnderTheCursor(ctx context.Context, files []PromisedFile, screen Quartz) error {
+	bounded, stop := context.WithTimeout(ctx, startUnderTheCursorLimit)
+	defer stop()
+	opening := make(chan openedWindow, 1)
+	go func() {
+		window, err := openDropWindow(d.id, files, screen.Cursor())
+		opening <- openedWindow{window, err}
+	}()
+	var window dropWindow
+	select {
+	case opened := <-opening:
+		if opened.err != nil {
+			return opened.err
+		}
+		window = opened.window
+	case <-bounded.Done():
+		go closeWhenOpened(opening)
+		return ErrDropWindowNotShown
+	}
+	d.window = window
+	return startUnderTheCursor{
+		button:   d.button,
+		window:   window,
+		cursor:   screen.Cursor,
+		plan:     func(at Point) dragPlan { return planDrag(at, screen.Displays()) },
+		downSeen: d.downSeen.done,
+		began:    d.began.done,
+		timing:   timingOfTheProbe,
+		limit:    startUnderTheCursorLimit,
+	}.run(bounded)
+}
+
+func closeWhenOpened(opening <-chan openedWindow) {
+	if opened := <-opening; opened.err == nil {
+		opened.window.close()
+	}
 }
 
 func (d *Drop) Ended() <-chan struct{} {

@@ -131,11 +131,12 @@ type Sharer struct {
 	docks              map[string]edge.Side
 	drag               *dragInProgress
 	toldBlocked        map[BlockedDrag]bool
-	onDragCrossing     func(DragCrossing)
+	onDragCrossing     func(DragCrossing) error
 	onDragEntered      func(DragCrossing)
 	onDragEnded        func(Drag)
 	onBlockedDrag      func(BlockedDrag)
 	onDragUnblocked    func(BlockedDrag)
+	keys               keyHooks
 }
 
 func New(capture Capture, trusted Trusted, detector *hotkey.Detector, edges EdgeSwitching) *Sharer {
@@ -229,7 +230,8 @@ func (s *Sharer) handle(captured event.Event) error {
 	s.readInbox()
 	verdict := s.detector.Feed(captured)
 	s.observeKeysAndButtons(captured)
-	if !verdict.Swallow {
+	s.tellLeftButton(captured)
+	if !verdict.Swallow && !s.escapeStaysHere(captured) {
 		if err := s.follow(captured); err != nil {
 			return err
 		}

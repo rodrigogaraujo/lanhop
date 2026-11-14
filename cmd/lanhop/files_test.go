@@ -315,19 +315,33 @@ func TestFilesTakePartOnlyWhileTheClipboardSwitchAndTheFilesSwitchAreBothOn(t *t
 	expect("with the clipboard switched off", false, false)
 }
 
+func dragBitOfACentralHere(t *testing.T) int32 {
+	t.Helper()
+	drops, closeDrops, err := openDrops(true)
+	if closeDrops != nil {
+		defer closeDrops()
+	}
+	if err != nil || drops == nil {
+		return 0
+	}
+	return 1 << features.Drag
+}
+
 func TestShareAnnouncesFilesOnlyWhileBothSwitchesAreOnAndItHasAFolderForThem(t *testing.T) {
 	cases := []struct {
 		name      string
 		files     string
 		folder    func(t *testing.T)
 		announced int32
+		dropsHere bool
 		logged    []string
 	}{
 		{
 			name:      "files on",
 			files:     "on",
 			folder:    func(t *testing.T) { useArrivalFolders(t, filepath.Join(t.TempDir(), "arrived")) },
-			announced: textAndFiles,
+			announced: textAndFiles | 1<<features.RelaysDrags,
+			dropsHere: true,
 		},
 		{
 			name:      "files switched off",
@@ -363,8 +377,12 @@ func TestShareAnnouncesFilesOnlyWhileBothSwitchesAreOnAndItHasAFolderForThem(t *
 			}
 			defer conn.Close()
 
-			if got := received(t, conn, 1); got[0] != event.Features(c.announced) {
-				t.Errorf("the paired machine first received %+v, want %+v", got[0], event.Features(c.announced))
+			announced := c.announced
+			if c.dropsHere {
+				announced |= dragBitOfACentralHere(t)
+			}
+			if got := received(t, conn, 1); got[0] != event.Features(announced) {
+				t.Errorf("the paired machine first received %+v, want %+v", got[0], event.Features(announced))
 			}
 			for _, line := range c.logged {
 				share.output.waitUntilShown(t, line)

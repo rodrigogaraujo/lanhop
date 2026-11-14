@@ -53,11 +53,11 @@ func (s *Side) offersDraggedFiles(now time.Time) bool {
 }
 
 func (s *Side) takesDrops() bool {
-	return s.config.takesDrops(s.on)
+	return s.dragsOn && s.config.takesDrops(s.on)
 }
 
 func (s *Side) describesDrags() bool {
-	return s.current != nil && s.centralDrops && s.takesDrops() && (s.on & s.centralTakes).Has(clipboard.Files)
+	return s.current != nil && s.centralDrags && s.takesDrops() && (s.on & s.centralTakes).Has(clipboard.Files)
 }
 
 func (s *Side) describeDrag(files clipboard.FileCopy, dock edge.Side) (described bool) {
@@ -68,13 +68,49 @@ func (s *Side) describeDrag(files clipboard.FileCopy, dock edge.Side) (described
 	if files.FilesAndFolders == 0 {
 		if s.dragDescribed {
 			s.dragDescribed = false
-			s.send(event.DragFiles(0, 0))
+			s.dockTold = s.dock
+			s.send(event.DragFiles(0, int32(s.dock)))
 		}
 		return false
 	}
-	s.dragDescribed = true
+	s.dragDescribed, s.dockTold = true, dock
 	s.send(event.DragFiles(int32(files.FilesAndFolders), int32(dock)), event.DragFilesSize(kibibytesRoundedUp(files.Bytes)))
 	return true
+}
+
+func carriesDrags(featuresValue int32) bool {
+	return clipboard.DropsIn(featuresValue) || clipboard.RelaysDragsIn(featuresValue)
+}
+
+func (s *Side) dragStayed() {
+	if s.centralDrags {
+		s.send(event.DragStayed())
+	}
+}
+
+func (s *Side) dockIs(dock edge.Side) {
+	s.dock = dockEdgeIn(int32(dock))
+	s.tellTheDock()
+}
+
+func (s *Side) tellTheDock() {
+	if !s.describing || s.dragDescribed || s.dock == s.dockTold {
+		return
+	}
+	s.dockTold = s.dock
+	s.send(event.DragFiles(0, int32(s.dock)))
+}
+
+func (s *Side) noticeDescribing() {
+	describing := s.describesDrags()
+	if describing == s.describing {
+		return
+	}
+	s.describing, s.dockTold = describing, 0
+	s.tellTheDock()
+	if s.onDescribing != nil {
+		s.onDescribing(describing)
+	}
 }
 
 func (s *Side) openDropData(l *link, wire int, sideSends bool) {
@@ -82,7 +118,7 @@ func (s *Side) openDropData(l *link, wire int, sideSends bool) {
 		return
 	}
 	s.followTheSwitch()
-	if !s.centralDrops || !s.takesDrops() {
+	if !s.centralDrags || !s.takesDrops() {
 		fmt.Fprintln(s.config.Log, "The machine with the keyboard asked to move dragged files, and they do not move, because this machine does not take dragged files now.")
 		s.send(event.DataStop(int32(wire)))
 		return

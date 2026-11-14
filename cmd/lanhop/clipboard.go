@@ -12,7 +12,6 @@ import (
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
-	"github.com/rodrigogaraujo/lanhop/internal/receiver"
 	"github.com/rodrigogaraujo/lanhop/internal/sharer"
 )
 
@@ -37,6 +36,14 @@ func copySwitchesIn(directory string) copySwitches {
 
 func (s copySwitches) filesMove() bool {
 	return s.clipboard && s.files
+}
+
+func dragsSwitchedOn(switches copySwitches) bool {
+	return switches.filesMove()
+}
+
+func dragsAllowed(switches copySwitches, drops clipshare.Drops) bool {
+	return drops != nil && dragsSwitchedOn(switches)
 }
 
 func (s copySwitches) clipboardState() string {
@@ -151,24 +158,29 @@ func clipboardConfigIn(done context.Context, directory string, announced *featur
 	}, release, true
 }
 
-func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory string, awaitData clipshare.AwaitData, announced *features.Set, alongside sharer.Clipboard, stdout io.Writer) (stop func()) {
+func shareTheClipboard(done context.Context, machine *sharer.Sharer, directory string, awaitData clipshare.AwaitData, announced *features.Set, alongside sharer.Clipboard, drags *dragsOfTheCentral, stdout io.Writer) (stop func()) {
 	config, release, supported := clipboardConfigIn(done, directory, announced, stdout)
 	if !supported {
 		machine.ShareClipboard(alongside)
 		return func() {}
 	}
 	config.AwaitData = awaitData
+	config.Name, config.Drops = drags.name, drags.drops
+	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), drags.drops) }
 	central := clipshare.NewCentral(config)
+	drags.wire(machine, central, func() bool { return dragsSwitchedOn(copySwitchesIn(directory)) })
 	machine.ShareClipboard(sharer.Together(central, alongside))
 	return inTurn(runUntilStopped(done, central.Run), release)
 }
 
-func clipboardOfThisSide(done context.Context, directory string, announced *features.Set, dialData clipshare.DialData, stdout io.Writer) (receiver.Clipboard, func()) {
+func sideOfThisMachine(done context.Context, directory string, announced *features.Set, dialData clipshare.DialData, drops clipshare.Drops, stdout io.Writer) (*clipshare.Side, func()) {
 	config, release, supported := clipboardConfigIn(done, directory, announced, stdout)
 	if !supported {
 		return nil, func() {}
 	}
 	config.DialData = dialData
+	config.Drops = drops
+	config.DragsOn = func() bool { return dragsAllowed(copySwitchesIn(directory), dropsOpenNow(drops)) }
 	side := clipshare.NewSide(config)
 	return side, inTurn(runUntilStopped(done, side.Run), release)
 }

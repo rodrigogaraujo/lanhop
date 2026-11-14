@@ -31,12 +31,18 @@ func (c *Central) dragCounted(count dragCount) {
 		return
 	}
 	c.dragging, c.drag, c.dragged = true, count.files, count.paths
+	if c.ownDragCounted != nil {
+		c.ownDragCounted(count.files.FilesAndFolders)
+	}
 }
 
 func (c *Central) dragGone() {
 	c.dragWatch.gone()
 	if !c.ownDragCrossed {
 		c.forgetOwnDrag()
+	}
+	if c.ownDragGone != nil {
+		c.ownDragGone()
 	}
 }
 
@@ -65,6 +71,25 @@ func (c *Central) dragOn(l *link, files clipboard.FileCopy, dock edge.Side) {
 	if c.sideDragStarted != nil {
 		c.sideDragStarted(SideDrag{Origin: l.name, Files: files.FilesAndFolders, Dock: dock})
 	}
+}
+
+func (c *Central) dockOn(l *link, dock edge.Side) {
+	machine := c.sides[l]
+	if machine == nil || !machine.drops || machine.dock == dock {
+		return
+	}
+	machine.dock = dock
+	if c.sideDock != nil {
+		c.sideDock(l.name, dock)
+	}
+}
+
+func (c *Central) dragStayedOn(l *link) {
+	machine := c.sides[l]
+	if machine == nil || !machine.drops || c.sideDragStayed == nil {
+		return
+	}
+	c.sideDragStayed(l.name)
 }
 
 func (c *Central) dragGoneOn(l *link) {

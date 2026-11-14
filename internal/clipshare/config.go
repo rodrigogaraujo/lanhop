@@ -70,6 +70,7 @@ type Config struct {
 	Log              io.Writer
 	Features         *features.Set
 	Drops            Drops
+	DragsOn          func() bool
 }
 
 func (c Config) withDefaults() Config {
@@ -104,8 +105,18 @@ func (c Config) announcing(kinds clipboard.Kinds) *features.Set {
 	return c.Features
 }
 
+func (c Config) announcingAsCentral(kinds clipboard.Kinds) *features.Set {
+	announced := c.announcing(kinds)
+	announced.Turn(features.RelaysDrags, kinds.Has(clipboard.Files))
+	return announced
+}
+
 func (c Config) takesDrops(kinds clipboard.Kinds) bool {
-	return kinds.Has(clipboard.Files) && c.Drops != nil
+	return kinds.Has(clipboard.Files) && c.Drops != nil && c.dragsOn()
+}
+
+func (c Config) dragsOn() bool {
+	return c.DragsOn == nil || c.DragsOn()
 }
 
 func (c Config) whyNoFiles(clipboardHoldsFiles, opensDataConnections bool) error {

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/rodrigogaraujo/lanhop/internal/clipshare"
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 	"github.com/rodrigogaraujo/lanhop/internal/identity"
 	"github.com/rodrigogaraujo/lanhop/internal/receiver"
@@ -141,6 +142,11 @@ func receive(args []string, stdout io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+	hand := newDropReplay(replay, resetLocalDrags)
+	drops, closeDrops := openDropsUntilTheyOpen(interrupted, func() (clipshare.Drops, func(), error) {
+		return openDropsFor(false, hand, stdout)
+	}, dropsRetryInterval, stdout)
+	defer closeDrops()
 
 	fmt.Fprintf(stdout, "Receiving from %q at %s. Press Ctrl+C to stop.\n", sharer.Name, sharer.Address)
 	report.connecting()
@@ -152,9 +158,14 @@ func receive(args []string, stdout io.Writer) (err error) {
 		restarting.Store(true)
 		stopReceiving()
 	}, stdout)
-	config, stopSharingTheClipboard := receivingFrom(receiving, sharer, local, directory, announced, stdout)
+	config, side, stopSharingTheClipboard := receivingWithDrops(receiving, sharer, local, directory, announced, drops, stdout)
 	defer stopSharingTheClipboard()
-	config.Replay = replay
+	config.Replay = hand
+	if side != nil && drops != nil {
+		dragLeaves, stopFollowing := dragsOfThisSide(receiving, side, hand, stdout)
+		config.DragLeaves = dragLeaves
+		defer stopFollowing()
+	}
 	config.Clipboard = receiver.Together(config.Clipboard, follower)
 	config.OnConnect, config.OnFailure = report.connected, report.failed
 	err = receiver.Run(receiving, config)
@@ -165,7 +176,28 @@ func receive(args []string, stdout io.Writer) (err error) {
 }
 
 func receivingFrom(done context.Context, sharer trust.Peer, local *identity.Identity, directory string, announced *features.Set, stdout io.Writer) (receiver.Config, func()) {
+	config, _, stopSharingTheClipboard := receivingWithDrops(done, sharer, local, directory, announced, nil, stdout)
+	return config, stopSharingTheClipboard
+}
+
+func receivingWithDrops(done context.Context, sharer trust.Peer, local *identity.Identity, directory string, announced *features.Set, drops clipshare.Drops, stdout io.Writer) (receiver.Config, *clipshare.Side, func()) {
 	toTheSharer := transport.Config{Identity: local}
-	clipboard, stopSharingTheClipboard := clipboardOfThisSide(done, directory, announced, dataConnectionsTo(sharer, toTheSharer), stdout)
-	return receiver.Config{Transport: toTheSharer, Sharer: sharer, Clipboard: clipboard}, stopSharingTheClipboard
+	side, stopSharingTheClipboard := sideOfThisMachine(done, directory, announced, dataConnectionsTo(sharer, toTheSharer), drops, stdout)
+	config := receiver.Config{Transport: toTheSharer, Sharer: sharer}
+	if side != nil {
+		config.Clipboard = side
+	}
+	return config, side, stopSharingTheClipboard
+}
+
+type localDragSide interface {
+	dragDescriber
+	OnDescribingDrags(changed func(describing bool))
+	DragStayed()
+}
+
+func dragsOfThisSide(done context.Context, side localDragSide, hand *dropReplay, stdout io.Writer) (dragLeaves func(context.Context), stop func()) {
+	follower := newLocalDragFollower(side, stdout)
+	side.OnDescribingDrags(follower.describing)
+	return dragLeavesHandler(hand, stdout, side.DragStayed, follower.describedADrag), runUntilStopped(done, follower.run)
 }

@@ -64,7 +64,7 @@ func (s *Sharer) SetDock(machine string, dock edge.Side) {
 	s.inbox.put(func() { s.docks[machine] = dock })
 }
 
-func (s *Sharer) OnDragCrossing(crossing func(DragCrossing)) {
+func (s *Sharer) OnDragCrossing(crossing func(DragCrossing) error) {
 	s.onDragCrossing = crossing
 }
 
@@ -148,7 +148,10 @@ func (s *Sharer) crossOver(dragging bool, from, to string, onto Conn, move func(
 		return nil
 	}
 	crossing := DragCrossing{Origin: s.drag.Origin, From: from, To: to, Files: s.drag.Files, Button: event.ButtonLeft}
-	s.onDragCrossing(crossing)
+	if s.onDragCrossing(crossing) != nil {
+		s.endDrag()
+		return nil
+	}
 	how := releasingEverything
 	if s.focused != nil && s.focused == s.drag.origin {
 		how = leavingTheButtonToTheOrigin

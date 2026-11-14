@@ -151,6 +151,11 @@ type rawCentral struct {
 
 func newRawCentralWithASide(t *testing.T) *rawCentral {
 	t.Helper()
+	return newRawCentralWithASideWhere(t, func(*Config) {})
+}
+
+func newRawCentralWithASideWhere(t *testing.T, adjust func(*Config)) *rawCentral {
+	t.Helper()
 	central, side := newIdentity(t), newIdentity(t)
 	listener, err := transport.Listen("127.0.0.1:0", transportFor(central), pairedMachines{{Name: "laptop", Fingerprint: side.Fingerprint}})
 	if err != nil {
@@ -164,7 +169,7 @@ func newRawCentralWithASide(t *testing.T) *rawCentral {
 	dialing.DataPace = transport.NewPace(0)
 	drops := &fakeDrops{}
 	log := &logBook{}
-	runtime := NewSide(Config{
+	config := Config{
 		Open:     opening(takingFiles{board}),
 		FilesOn:  func() bool { return true },
 		Arrivals: arrivals,
@@ -174,7 +179,9 @@ func newRawCentralWithASide(t *testing.T) *rawCentral {
 		SilenceLimit: testSilenceLimit,
 		Log:          log,
 		Drops:        drops,
-	})
+	}
+	adjust(&config)
+	runtime := NewSide(config)
 	ctx, stop := context.WithCancel(context.Background())
 	var running sync.WaitGroup
 	running.Add(2)
@@ -207,7 +214,7 @@ func (r *rawCentral) announces(value int32) {
 	}
 	eventually(r.t, "the side machine hearing what the central takes", func() bool {
 		return askSide(r.t, r.runtime, func() bool {
-			return r.runtime.centralTakes == clipboard.KindsIn(value) && r.runtime.centralDrops == clipboard.DropsIn(value)
+			return r.runtime.centralTakes == clipboard.KindsIn(value) && r.runtime.centralDrags == carriesDrags(value)
 		})
 	})
 }

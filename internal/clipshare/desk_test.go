@@ -339,6 +339,7 @@ type deskUnderTest struct {
 	pace        *transport.Pace
 	drops       *fakeDrops
 	described   *describedDrags
+	sideNews    *sideNews
 	log         *logBook
 	capture     *fakeCapture
 	runtime     *Central
@@ -355,6 +356,7 @@ type deskSetup struct {
 	bytesPerSecond int
 	dataSilence    time.Duration
 	drops          bool
+	relaysOnly     bool
 	holdData       <-chan struct{}
 }
 
@@ -431,13 +433,16 @@ func newDeskWith(t *testing.T, setup deskSetup, sideNames ...string) *deskUnderT
 		config.Arrivals = d.arrivals
 		config.AwaitData = heldUntil(setup.holdData, listener.AwaitData)
 	}
-	if setup.drops {
-		d.drops = &fakeDrops{}
+	d.drops = &fakeDrops{}
+	if setup.drops && !setup.relaysOnly {
 		config.Drops = d.drops
 	}
 	d.runtime = NewCentral(config)
 	d.described = &describedDrags{}
 	d.runtime.OnSideDrags(d.described.started, d.described.ended)
+	d.sideNews = &sideNews{}
+	d.runtime.OnSideDragStayed(d.sideNews.stayed)
+	d.runtime.OnSideDock(d.sideNews.dockMoved)
 	machine.ShareClipboard(d.runtime)
 
 	ctx, stop := context.WithCancel(context.Background())
