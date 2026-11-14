@@ -456,8 +456,9 @@ func TestAnAppThatFailsItsCheckIsRefusedAndNothingIsLeft(t *testing.T) {
 	if _, err := source.Prepare(context.Background(), target, newer, false); !errors.Is(err, refusal) {
 		t.Fatalf("Prepare with an app that fails its check = %v, want that refusal", err)
 	}
-	if filepath.Base(checked) != "lanhop.app" || filepath.Dir(filepath.Dir(checked)) == filepath.Dir(target.Program) {
-		t.Errorf("the check looked at %q, want the new lanhop.app in the staging folder", checked)
+	staged := filepath.Join(filepath.Dir(target.Program), stagingPattern, target.archiveRoot(), "lanhop.app")
+	if matched, err := filepath.Match(staged, checked); err != nil || !matched {
+		t.Errorf("the check looked at %q, want the new lanhop.app in the staging folder, %s", checked, staged)
 	}
 	expectUntouched(t, target)
 }

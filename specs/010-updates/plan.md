@@ -80,7 +80,7 @@ The central writes, for each side machine, its name, its version, and one of:
 | Mark | Meaning |
 |---|---|
 | `follows` | It set bit 8, and the central can update it |
-| `does not follow` | It sent a Version without bit 8: updates are off, it runs by hand, or it is not a release |
+| `does not follow` | It sent a Version without bit 8: updates are off, it runs by hand, it is not a release, or it is a Mac whose lanhop cannot check a new app |
 | `needs the installer` | It sent no Version within 5 seconds of connecting (0.1.1 or older), or its version is below the central's `from` |
 
 `lanhop status` on the central shows the list. After the restart, `lanhop update` on the central reads it, prints each machine with the version noted before and the one it comes back with, and stops waiting after 90 seconds, with a line for each machine that did not come back.

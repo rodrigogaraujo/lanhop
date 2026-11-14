@@ -97,7 +97,7 @@ func TestTheSecurityFrameworkChecksTheRequirement(t *testing.T) {
 	if err := check(throughAnArchive(t, filepath.Join(apps, "project.app"))); err != nil {
 		t.Errorf("the app signed with the certificate of the project was refused after it went through an archive: %v", err)
 	}
-	for _, refused := range []string{"other.app", "ad-hoc.app", "other-identifier.app", "tampered.app"} {
+	for _, refused := range []string{"other.app", "ad-hoc.app", "other-identifier.app", "tampered.app", "changed-program.app", "extra-file.app"} {
 		if err := check(filepath.Join(apps, refused)); !errors.Is(err, ErrAppNotOurs) {
 			t.Errorf("check of %s = %v, want ErrAppNotOurs", refused, err)
 		}
