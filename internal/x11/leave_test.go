@@ -13,10 +13,17 @@ import (
 )
 
 const (
-	xtestKeyPress   = 2
-	xtestKeyRelease = 3
-	escapeKeycode   = 9
+	fakeKeyPress   = 2
+	fakeKeyRelease = 3
+	escapeKeycode  = 9
 )
+
+func boundedContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
 
 type steps struct {
 	mutex sync.Mutex
@@ -121,7 +128,7 @@ func TestADragLeavesThroughTheCatcherTheNudgeTheAcceptanceAndThenTheRelease(t *t
 	}}
 	catch.dropped <- EdgeDrop{Paths: arrivedPaths}
 
-	paths, err := endAtEdge(context.Background(), catchingWith(s, catch), hand, rightEdge, time.Second)
+	paths, err := endAtEdge(boundedContext(t), catchingWith(s, catch), hand, rightEdge, time.Second)
 
 	if err != nil || !slices.Equal(paths, arrivedPaths) {
 		t.Errorf("endAtEdge = %q, %v, want the dragged paths", paths, err)
@@ -135,7 +142,7 @@ func TestADragThatNeverReachesTheCatcherIsEscapedAndReleasedWithoutTheCatcher(t 
 	s := &steps{}
 	catch := newFakeCatch(s)
 
-	_, err := endAtEdge(context.Background(), catchingWith(s, catch), &recordedHand{steps: s}, rightEdge, 20*time.Millisecond)
+	_, err := endAtEdge(boundedContext(t), catchingWith(s, catch), &recordedHand{steps: s}, rightEdge, 20*time.Millisecond)
 
 	if !errors.Is(err, ErrDragStayed) {
 		t.Errorf("endAtEdge = %v, want %v", err, ErrDragStayed)
@@ -151,7 +158,7 @@ func TestADragThatWasAcceptedAndLeftTheCatcherIsNotReleasedOverIt(t *testing.T) 
 	catch.over = false
 	catch.accept()
 
-	_, err := endAtEdge(context.Background(), catchingWith(s, catch), &recordedHand{steps: s}, rightEdge, time.Second)
+	_, err := endAtEdge(boundedContext(t), catchingWith(s, catch), &recordedHand{steps: s}, rightEdge, time.Second)
 
 	if !errors.Is(err, ErrDragStayed) {
 		t.Errorf("endAtEdge = %v, want %v", err, ErrDragStayed)
@@ -165,7 +172,7 @@ func TestACatcherThatCannotOpenLeavesTheDragEscapedAndReleased(t *testing.T) {
 	s := &steps{}
 	refused := errors.New("no window")
 
-	_, err := endAtEdge(context.Background(), func() (edgeCatcher, error) { return nil, refused }, &recordedHand{steps: s}, rightEdge, time.Second)
+	_, err := endAtEdge(boundedContext(t), func() (edgeCatcher, error) { return nil, refused }, &recordedHand{steps: s}, rightEdge, time.Second)
 
 	if !errors.Is(err, ErrDragStayed) || !errors.Is(err, refused) {
 		t.Errorf("endAtEdge = %v, want %v and %v", err, ErrDragStayed, refused)
@@ -250,8 +257,8 @@ func (h xtestHand) Release() error {
 
 func (h xtestHand) Escape() error {
 	h.steps.add("escape")
-	h.input.fake(h.t, xtestKeyPress, escapeKeycode, atomNone, 0, 0)
-	h.input.fake(h.t, xtestKeyRelease, escapeKeycode, atomNone, 0, 0)
+	h.input.fake(h.t, fakeKeyPress, escapeKeycode, atomNone, 0, 0)
+	h.input.fake(h.t, fakeKeyRelease, escapeKeycode, atomNone, 0, 0)
 	return nil
 }
 
@@ -315,7 +322,7 @@ func TestADragThatIsNoXdndDragIsEscapedAndReleasedAtTheEdge(t *testing.T) {
 	input.press(t, 1)
 	s := &steps{}
 
-	_, err := edge.EndDragAtEdge(context.Background(), xtestHand{t: t, input: input, steps: s})
+	_, err := edge.EndDragAtEdge(boundedContext(t), xtestHand{t: t, input: input, steps: s})
 
 	if !errors.Is(err, ErrDragStayed) {
 		t.Errorf("EndDragAtEdge = %v, want %v", err, ErrDragStayed)
