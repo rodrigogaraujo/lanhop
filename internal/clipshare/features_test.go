@@ -10,25 +10,34 @@ import (
 	"github.com/rodrigogaraujo/lanhop/internal/features"
 )
 
-func TestTurningTheClipboardKeepsEveryOtherFeatureOfThisProcess(t *testing.T) {
+func TestAnnouncingKindsTurnsTheirBitsAndKeepsEveryOtherFeatureOfThisProcess(t *testing.T) {
 	shared := new(features.Set)
 	shared.Turn(8, true)
 	config := Config{Features: shared}.withDefaults()
+	filesBit := int32(1) << features.Files
 
-	if got := config.turnTheClipboard(true).Value(); got != event.FeatureClipboard|1<<8 {
-		t.Errorf("turning the clipboard on left %#x, want %#x", got, event.FeatureClipboard|1<<8)
-	}
-	if got := config.turnTheClipboard(false).Value(); got != 1<<8 {
-		t.Errorf("turning the clipboard off left %#x, want %#x", got, 1<<8)
+	for _, announced := range []struct {
+		kinds clipboard.Kinds
+		want  int32
+	}{
+		{clipboard.Text, event.FeatureClipboard | 1<<8},
+		{clipboard.Text | clipboard.Files, event.FeatureClipboard | filesBit | 1<<8},
+		{clipboard.Files, filesBit | 1<<8},
+		{0, 1 << 8},
+	} {
+		if got := config.announcing(announced.kinds).Value(); got != announced.want {
+			t.Errorf("announcing %#x left %#x, want %#x", announced.kinds, got, announced.want)
+		}
 	}
 }
 
-func TestOnlyTheClipboardBitSaysWhetherTheOtherEndTakesCopies(t *testing.T) {
-	if takesCopies(event.Features(1 << 8)) {
-		t.Error("a machine that announced only another feature counts as taking copies")
+func TestOnlyTheBitsOfTextAndFilesSayWhatTheOtherEndTakes(t *testing.T) {
+	if got := clipboard.KindsIn(event.Features(1 << 8).Value); got != 0 {
+		t.Errorf("a machine that announced only another feature takes %#x, want nothing", got)
 	}
-	if !takesCopies(event.Features(event.FeatureClipboard | 1<<8)) {
-		t.Error("a machine that announced the clipboard and another feature does not count as taking copies")
+	both := event.Features(event.FeatureClipboard | 1<<features.Files | 1<<8)
+	if got := clipboard.KindsIn(both.Value); got != clipboard.Text|clipboard.Files {
+		t.Errorf("a machine that announced text, files and another feature takes %#x, want text and files", got)
 	}
 }
 

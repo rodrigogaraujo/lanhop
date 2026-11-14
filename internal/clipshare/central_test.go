@@ -77,7 +77,7 @@ func TestAnAnswerThatOvertakesTheNewsOfWhereFocusWentStillCountsAsTheAnswerToTha
 
 func centralIsOn(c *Central) bool {
 	answer := make(chan bool, 1)
-	c.tell(func() { answer <- c.on })
+	c.tell(func() { answer <- c.on != 0 })
 	return <-answer
 }
 

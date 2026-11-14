@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/event"
@@ -18,14 +19,21 @@ type Side struct {
 	inbox  *mailbox[func()]
 	keeper *keeper
 
-	machine   *clipboard.Side
-	on        bool
-	reachable bool
-	current   *link
+	machine      *clipboard.Side
+	on           clipboard.Kinds
+	centralTakes clipboard.Kinds
+	reachable    bool
+	current      *link
+
+	ctx         context.Context
+	described   []string
+	transfers   map[int]*sideTransfer
+	moving      sync.WaitGroup
+	filesNotice filesNotice
 }
 
 func NewSide(config Config) *Side {
-	s := &Side{config: config.withDefaults(), inbox: newMailbox[func()]()}
+	s := &Side{config: config.withDefaults(), inbox: newMailbox[func()](), transfers: make(map[int]*sideTransfer)}
 	s.keeper = newKeeper(s.config, func(reachable bool) {
 		s.inbox.put(func() { s.clipboardReachable(reachable) })
 	})
@@ -41,9 +49,10 @@ func (s *Side) Run(ctx context.Context) {
 	}()
 	defer func() { <-keeperStopped }()
 	s.reachable = <-reachedAtStart
-	s.on = s.reachable && s.config.SwitchedOn()
-	s.machine = clipboard.NewSide(onlyText(s.on))
-	defer s.lost()
+	s.on = s.kindsOn()
+	s.machine = clipboard.NewSide(s.on)
+	s.ctx = ctx
+	defer s.stopEverything()
 	for {
 		select {
 		case <-ctx.Done():
@@ -81,7 +90,7 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 	}
 	switch frame.Code {
 	case event.ControlFeatures:
-		takes := takesCopies(frame)
+		takes := clipboard.KindsIn(frame.Value)
 		s.inbox.put(func() { s.centralSays(l, takes) })
 	case event.ControlClipboard, event.ControlClipboardData:
 		text, progress, err := l.take(frame)
@@ -93,12 +102,19 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 		}
 	case event.ControlClipboardAck:
 		l.acknowledged(frame.Value)
+	case event.ControlOpenData:
+		wire, sideSends := event.SplitOpenData(frame.Value)
+		s.inbox.put(func() { s.openData(l, int(wire), sideSends) })
+	case event.ControlDataStop:
+		wire := int(frame.Value)
+		s.inbox.put(func() { s.dataStop(l, wire) })
 	}
 }
 
 func (s *Side) connected(l *link) {
 	s.followTheSwitch()
 	s.current = l
+	s.centralTakes = 0
 	s.do(s.machine.Connected())
 }
 
@@ -107,6 +123,12 @@ func (s *Side) lost() {
 		s.current.close()
 		s.current = nil
 	}
+	s.endEveryTransfer(errControlLost)
+}
+
+func (s *Side) stopEverything() {
+	s.lost()
+	waitAtMost(&s.moving, s.config.SilenceLimit)
 }
 
 func (s *Side) focusArrives() {
@@ -128,9 +150,10 @@ func (s *Side) reachAgainIfLost() {
 	}
 }
 
-func (s *Side) centralSays(l *link, takes bool) {
+func (s *Side) centralSays(l *link, takes clipboard.Kinds) {
 	if l == s.current {
-		s.do(s.machine.CentralSays(onlyText(takes)))
+		s.centralTakes = takes
+		s.do(s.machine.CentralSays(takes))
 	}
 }
 
@@ -140,18 +163,39 @@ func (s *Side) copyFromCentral(l *link, text string) {
 	}
 }
 
+func (s *Side) openData(l *link, wire int, sideSends bool) {
+	if l != s.current {
+		return
+	}
+	s.followTheSwitch()
+	if !sideSends {
+		s.do(s.machine.CentralSendsFiles(wire))
+		return
+	}
+	if !s.on.Has(clipboard.Files) {
+		fmt.Fprintln(s.config.Log, "The machine with the keyboard asked for the file copy of this machine, and it is not sent, because file sharing is off on this machine.")
+	}
+	s.do(s.machine.CentralWantsFiles(wire))
+}
+
 func (s *Side) clipboardReachable(reachable bool) {
 	s.reachable = reachable
 	s.followTheSwitch()
 }
 
+func (s *Side) kindsOn() clipboard.Kinds {
+	return kindsOn(s.reachable, s.config.SwitchedOn(), s.config.FilesOn(), func() bool {
+		return s.filesNotice.possible(s.config.Log, s.config.whyNoFiles(s.keeper.canHoldFiles(), s.config.DialData != nil))
+	})
+}
+
 func (s *Side) followTheSwitch() {
-	on := s.reachable && s.config.SwitchedOn()
+	on := s.kindsOn()
 	if on == s.on {
 		return
 	}
 	s.on = on
-	s.do(s.machine.Switch(onlyText(on)))
+	s.do(s.machine.Switch(on))
 }
 
 func (s *Side) readDone(l *link, result readResult) {
@@ -162,9 +206,20 @@ func (s *Side) readDone(l *link, result readResult) {
 		s.do(s.machine.ReadUnchanged())
 		return
 	}
-	actions, err := s.machine.ReadGave(result.text, result.err)
+	if !result.holdsFiles {
+		actions, err := s.machine.ReadGave(result.text, result.err)
+		if err != nil {
+			fmt.Fprintf(s.config.Log, "The copy on this machine is not shared: %s\n", forTheLog(err))
+		}
+		s.do(actions)
+		return
+	}
+	actions, err := s.machine.ReadGaveFiles(result.files, result.err)
 	if err != nil {
-		fmt.Fprintf(s.config.Log, "The copy on this machine is not shared: %v\n", err)
+		fmt.Fprintf(s.config.Log, "The file copy on this machine is not sent: %s\n", forTheLog(err))
+	} else {
+		s.described = result.paths
+		noteLeftOut(s.config.Log, result.skipped)
 	}
 	s.do(actions)
 }
@@ -173,7 +228,7 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 	for _, action := range actions {
 		switch action.Do {
 		case clipboard.Announce:
-			s.announce(s.config.turnTheClipboard(action.Takes.Has(clipboard.Text)))
+			s.announce(s.config.announcing(action.Takes))
 		case clipboard.Unchanged:
 			s.send(event.ClipboardUnchanged())
 		case clipboard.Withdraw:
@@ -186,9 +241,22 @@ func (s *Side) do(actions []clipboard.Action[clipboard.ToCentral]) {
 			s.keeper.write(action.Text)
 		case clipboard.Read:
 			asked := s.current
-			s.keeper.read(func(result readResult) { s.inbox.put(func() { s.readDone(asked, result) }) })
+			s.keeper.read(listFilesBy(s.on&s.centralTakes, s.config.SilenceLimit), func(result readResult) {
+				s.inbox.put(func() { s.readDone(asked, result) })
+			})
 		case clipboard.Mark:
-			s.keeper.takeReadMark()
+			s.keeper.takeReadMark(action.Takes)
+		case clipboard.Describe:
+			s.send(event.FileCopy(int32(action.FileCopy.FilesAndFolders)), event.FileCopySize(kibibytesRoundedUp(action.FileCopy.Bytes)))
+		case clipboard.SendFiles:
+			s.startTransfer(action.Transfer, false)
+		case clipboard.ReceiveFiles:
+			s.startTransfer(action.Transfer, true)
+		case clipboard.WriteFiles:
+			s.writeArrived(action.Transfer)
+		case clipboard.Stop:
+			s.send(event.DataStop(int32(action.Transfer)))
+			s.endTransfer(action.Transfer, errStoppedByThisSide)
 		}
 	}
 }
@@ -199,8 +267,8 @@ func (s *Side) announce(announced *features.Set) {
 	}
 }
 
-func (s *Side) send(frame event.Event) {
+func (s *Side) send(frames ...event.Event) {
 	if s.current != nil {
-		s.current.sendFrame(frame)
+		s.current.sendFrames(frames...)
 	}
 }
