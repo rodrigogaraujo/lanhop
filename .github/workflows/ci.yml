@@ -31,6 +31,65 @@ jobs:
         run: |
           go test -count=1 -run 'TestKeysArriveAtMost50|TestKeysArriveMoreThan50' ./internal/transport
           go test -count=1 -run 'Keys|64KiB|10MiB' ./internal/clipshare
+      - name: Answer commands while the main thread waits for AppKit
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        run: |
+          program="$RUNNER_TEMP/lanhop"
+          answers="$RUNNER_TEMP/lanhop-answers"
+          export LANHOP_CONFIG_DIR="$RUNNER_TEMP/lanhop-config"
+          mkdir -p "$LANHOP_CONFIG_DIR" "$answers"
+          go build -o "$program" ./cmd/lanhop
+          "$program" version >"$answers/version"
+          test "$(cat "$answers/version")" = "lanhop dev"
+          "$program" help >"$answers/help"
+          grep -q "lanhop status" "$answers/help"
+          "$program" status >"$answers/status"
+          grep -q "^stopped:" "$answers/status"
+          "$program" peers >"$answers/peers"
+          grep -q "No machine is trusted yet" "$answers/peers"
+          code=0
+          "$program" teleport 2>"$answers/unknown" || code=$?
+          test "$code" -eq 2
+          grep -q 'unknown command "teleport"' "$answers/unknown"
+      - name: Stop lanhop share with SIGTERM while the main thread waits for AppKit
+        if: runner.os == 'macOS'
+        timeout-minutes: 3
+        run: |
+          program="$RUNNER_TEMP/lanhop"
+          answers="$RUNNER_TEMP/lanhop-share"
+          export LANHOP_CONFIG_DIR="$RUNNER_TEMP/lanhop-share-config"
+          mkdir -p "$LANHOP_CONFIG_DIR" "$answers"
+          "$program" share --listen 127.0.0.1:0 >"$answers/share" 2>&1 &
+          share=$!
+          watchdog=""
+          trap 'kill -KILL $share $watchdog 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            "$program" status >"$answers/status"
+            if ! grep -q "^stopped:" "$answers/status"; then
+              break
+            fi
+            sleep 0.5
+          done
+          cat "$answers/status"
+          if grep -q "^stopped:" "$answers/status"; then
+            echo "::error::lanhop share did not start"
+            cat "$answers/share"
+            exit 1
+          fi
+          kill -TERM "$share"
+          perl -e 'sleep 30; kill "KILL", $ARGV[0]' "$share" &
+          watchdog=$!
+          code=0
+          wait "$share" || code=$?
+          cat "$answers/share"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::lanhop share ended with exit code $code after SIGTERM, want 0"
+            exit 1
+          fi
+          "$program" status >"$answers/status"
+          cat "$answers/status"
+          test "$(cat "$answers/status")" = "stopped: lanhop is not running here."
       - name: Test the macOS build without cgo
         if: runner.os == 'macOS'
         env:
