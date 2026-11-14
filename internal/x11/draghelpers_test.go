@@ -12,18 +12,15 @@ import (
 )
 
 const (
-	opGetWindowAttributes = 3
-	opMapWindow           = 8
-	opConfigureWindow     = 12
-	configureX            = 1
-	configureY            = 2
-	configureWidth        = 4
-	configureHeight       = 8
-	classInputOutput      = 1
-	xtestFakeInput        = 2
-	relativeMotion        = 1
-	absoluteMotion        = 0
-	mapStateUnmapped      = 0
+	configureX       = 1
+	configureY       = 2
+	configureWidth   = 4
+	configureHeight  = 8
+	classInputOutput = 1
+	xtestFakeInput   = 2
+	relativeMotion   = 1
+	absoluteMotion   = 0
+	mapStateUnmapped = 0
 )
 
 func dialForTest(t *testing.T, display string, onEvent func([]byte)) *conn {

@@ -51,6 +51,9 @@ type dragLimits struct {
 	finish    time.Duration
 	files     time.Duration
 	buttonsUp time.Duration
+	read      time.Duration
+	catch     time.Duration
+	raise     time.Duration
 }
 
 var defaultDragLimits = dragLimits{
@@ -60,13 +63,16 @@ var defaultDragLimits = dragLimits{
 	finish:    10 * time.Second,
 	files:     2 * time.Minute,
 	buttonsUp: 30 * time.Second,
+	read:      wholeReadTimeout,
+	catch:     10 * time.Second,
+	raise:     time.Second,
 }
 
 type dragAtoms struct {
-	selection, aware, proxy                        uint32
+	selection, aware, proxy, typeList              uint32
 	enter, position, status, leave, drop, finished uint32
 	actionCopy, uriList, targets, timestamp, incr  uint32
-	timeProperty                                   uint32
+	timeProperty, listProperty                     uint32
 }
 
 type pointerEvent struct {
@@ -81,8 +87,18 @@ func (e pointerEvent) endsTheDrag() bool {
 }
 
 type clientMessage struct {
-	kind uint32
-	data [5]uint32
+	window uint32
+	kind   uint32
+	data   [5]uint32
+}
+
+func clientMessageFrom(event []byte) clientMessage {
+	le := binary.LittleEndian
+	message := clientMessage{window: le.Uint32(event[4:8]), kind: le.Uint32(event[8:12])}
+	for i := range message.data {
+		message.data[i] = le.Uint32(event[12+4*i:])
+	}
+	return message
 }
 
 type dragTarget struct {
@@ -92,6 +108,8 @@ type dragTarget struct {
 }
 
 type Drags struct {
+	display  display
+	cookie   []byte
 	c        *conn
 	window   uint32
 	atoms    dragAtoms
@@ -128,6 +146,8 @@ func OpenDrags() (*Drags, error) {
 
 func openDrags(d display, cookie []byte) (*Drags, error) {
 	drags := &Drags{
+		display:  d,
+		cookie:   cookie,
 		limits:   defaultDragLimits,
 		motions:  make(chan pointerEvent, 1),
 		buttons:  make(chan pointerEvent, 64),
@@ -160,6 +180,7 @@ func (d *Drags) prepare() error {
 		&d.atoms.selection:    "XdndSelection",
 		&d.atoms.aware:        "XdndAware",
 		&d.atoms.proxy:        "XdndProxy",
+		&d.atoms.typeList:     "XdndTypeList",
 		&d.atoms.enter:        "XdndEnter",
 		&d.atoms.position:     "XdndPosition",
 		&d.atoms.status:       "XdndStatus",
@@ -172,6 +193,7 @@ func (d *Drags) prepare() error {
 		&d.atoms.timestamp:    "TIMESTAMP",
 		&d.atoms.incr:         "INCR",
 		&d.atoms.timeProperty: "LANHOP_DRAG_TIME",
+		&d.atoms.listProperty: "LANHOP_DRAG_LIST",
 	}
 	for atom, name := range names {
 		value, err := internAtom(d.c, name)
@@ -622,7 +644,7 @@ func (r *dragRun) fromTarget(message clientMessage) bool {
 }
 
 func (r *dragRun) send(kind uint32, data [5]uint32) error {
-	return r.d.sendMessage(r.target.destination, r.target.window, kind, data)
+	return sendClientMessage(r.d.c, r.target.destination, r.target.window, kind, data)
 }
 
 func latest(a, b uint32) uint32 {
@@ -740,11 +762,7 @@ func (d *Drags) serverTime() (uint32, error) {
 }
 
 func (d *Drags) selectionOwner() (uint32, error) {
-	reply, err := d.c.call(newRequest(opGetSelectionOwner, 0).u32(d.atoms.selection).done())
-	if err != nil {
-		return 0, err
-	}
-	return binary.LittleEndian.Uint32(reply[8:12]), nil
+	return ownerOf(d.c, d.atoms.selection)
 }
 
 func (d *Drags) withdrawOffer() bool {
@@ -755,7 +773,7 @@ func (d *Drags) withdrawOffer() bool {
 	return wasOffered
 }
 
-func (d *Drags) sendMessage(destination, window, kind uint32, data [5]uint32) error {
+func sendClientMessage(c *conn, destination, window, kind uint32, data [5]uint32) error {
 	le := binary.LittleEndian
 	event := make([]byte, 32)
 	event[0] = eventClientMessage
@@ -765,7 +783,7 @@ func (d *Drags) sendMessage(destination, window, kind uint32, data [5]uint32) er
 	for i, value := range data {
 		le.PutUint32(event[12+4*i:], value)
 	}
-	return d.c.send(newRequest(opSendEvent, 0).u32(destination).u32(0).raw(event).done())
+	return c.send(newRequest(opSendEvent, 0).u32(destination).u32(0).raw(event).done())
 }
 
 func (d *Drags) handle(event []byte) {
@@ -781,11 +799,7 @@ func (d *Drags) handle(event []byte) {
 			push(d.buttons, pointerEventFrom(event))
 		}
 	case eventClientMessage:
-		message := clientMessage{kind: le.Uint32(event[8:12])}
-		for i := range message.data {
-			message.data[i] = le.Uint32(event[12+4*i:])
-		}
-		push(d.messages, message)
+		push(d.messages, clientMessageFrom(event))
 	case eventSelectionRequest:
 		d.answer(event)
 	case eventSelectionClear:
