@@ -22,6 +22,7 @@ stopped_patience=25
 accessibility_restart=15
 start_wait=10
 service_started=no
+signature_becomes_stable=no
 showing=no
 someone_answers=no
 
@@ -307,6 +308,9 @@ install_app() {
       */lanhop.app/Contents/MacOS/lanhop) ;;
       *) earlier_program=$command_link ;;
     esac
+  fi
+  if signed_with_a_certificate "$unpacked" && { [ -n "$earlier_program" ] || { [ -e "$app" ] && ! signed_with_a_certificate "$app"; }; }; then
+    signature_becomes_stable=yes
   fi
   mkdir -p "$app_directory" "$install_directory"
   rm -rf "$app".new.* "$app".old.* 2>/dev/null || true
@@ -621,7 +625,18 @@ $guides_url/setup-macos.md says more.
 EOF
 }
 
+signed_with_a_certificate() {
+  codesign -d -r- "$1" 2>/dev/null | grep -q 'certificate leaf'
+}
+
 explain_accessibility_of_the_app() {
+  if [ "$signature_becomes_stable" = yes ]; then
+    cat <<EOF
+
+From this release on, lanhop.app is signed with a certificate of the project. macOS asks
+for Accessibility this one last time, and later updates keep the permission.
+EOF
+  fi
   cat <<EOF
 
 macOS lets a program read and control the keyboard and mouse only after you allow it

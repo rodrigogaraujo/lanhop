@@ -215,6 +215,30 @@ const infoOfTheApp = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
+const infoOfTheSignedApp = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.github.rodrigogaraujo.lanhop</string>
+  <key>TestSignature</key>
+  <string>certificate</string>
+</dict>
+</plist>
+`
+
+const fakeCodesign = `#!/bin/sh
+app=$3
+if grep -q '<string>certificate</string>' "$app/Contents/Info.plist" 2>/dev/null; then
+  echo 'designated => identifier "com.github.rodrigogaraujo.lanhop" and certificate leaf = H"fed77ab0a2fc94bf5a08dd743fe8dfa45ff74d98"'
+elif [ -d "$app" ]; then
+  echo '# designated => cdhash H"7787834cbcdc16c4b3831d06c59f9174915cdac1"'
+else
+  exit 1
+fi
+`
+
+const lastAccessibilityQuestion = "macOS asks\nfor Accessibility this one last time"
+
 var builds = []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"}
 
 type releases struct {
@@ -225,6 +249,7 @@ type releases struct {
 	statuses      string
 	usage         string
 	withoutTheApp bool
+	signed        bool
 }
 
 func newReleases(t *testing.T) *releases {
@@ -252,8 +277,12 @@ func (r *releases) publish(directory, version string) {
 		program := fmt.Sprintf(fakeLanhop, r.calls, version+" "+build, r.usage, r.statuses)
 		files := []archived{{name + "/lanhop", program, 0o700}}
 		if strings.HasPrefix(build, "darwin-") && !r.withoutTheApp {
+			info := infoOfTheApp
+			if r.signed {
+				info = infoOfTheSignedApp
+			}
 			files = []archived{
-				{name + "/lanhop.app/Contents/Info.plist", infoOfTheApp, 0o644},
+				{name + "/lanhop.app/Contents/Info.plist", info, 0o644},
 				{name + "/lanhop.app/Contents/MacOS/lanhop", program, 0o700},
 			}
 		}
@@ -1627,6 +1656,61 @@ func TestAProgramOfAnEarlierInstallBecomesALinkToTheAppAndItsOldPermissionsAreNa
 		again := m.mustRun()
 		if strings.Contains(again, "now runs the lanhop app") {
 			t.Errorf("the second run talks about an earlier program again:\n%s", again)
+		}
+	})
+}
+
+func TestTheMoveToTheSignedAppSaysItIsTheLastAccessibilityQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		writeFile(t, filepath.Join(m.aside, "bin", "codesign"), []byte(fakeCodesign), 0o755)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+
+		first := m.mustRun()
+		expectMention(t, first, "the program to allow is the lanhop app")
+		if strings.Contains(first, lastAccessibilityQuestion) {
+			t.Errorf("installing the app signed ad hoc speaks of a last question:\n%s", first)
+		}
+
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		moved := m.mustRun()
+		expectMention(t, moved, lastAccessibilityQuestion)
+
+		again := m.mustRun()
+		if strings.Contains(again, lastAccessibilityQuestion) {
+			t.Errorf("installing the signed app over the signed app speaks of a last question:\n%s", again)
+		}
+	})
+}
+
+func TestAProgramOfAnEarlierInstallMovingToTheSignedAppHearsItIsTheLastQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		writeFile(t, filepath.Join(m.aside, "bin", "codesign"), []byte(fakeCodesign), 0o755)
+		writeFile(t, m.path(binaryFile), []byte("#!/bin/sh\necho 'lanhop v0.1.0'\n"), 0o755)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		expectMention(t, m.mustRun(), lastAccessibilityQuestion)
+	})
+}
+
+func TestAFirstInstallOfTheSignedAppSpeaksOfNoLastQuestion(t *testing.T) {
+	inEveryShell(t, func(t *testing.T, shell string) {
+		published := newReleases(t)
+		published.signed = true
+		published.publish(latestRelease, "1.1.0")
+		m := newMachine(t, shell, "Darwin", "arm64", published)
+		writeFile(t, filepath.Join(m.aside, "bin", "codesign"), []byte(fakeCodesign), 0o755)
+		m.settings["LANHOP_ROLE"] = "receive"
+		m.settings["LANHOP_YES"] = "1"
+		if output := m.mustRun(); strings.Contains(output, lastAccessibilityQuestion) {
+			t.Errorf("a first install speaks of a last question:\n%s", output)
 		}
 	})
 }
