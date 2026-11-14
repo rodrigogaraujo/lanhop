@@ -4,6 +4,7 @@ package x11
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -273,31 +275,131 @@ func TestATextOverTheLimitIsNotRead(t *testing.T) {
 	}
 }
 
-func TestAnOwnerThatNeverAnswersIsReportedInsteadOfAwaited(t *testing.T) {
-	display := startXvfb(t)
+func ownedByAnotherProgram(t *testing.T, display string, reader *Clipboard, answer func(owner *conn, event []byte)) {
+	t.Helper()
 	d, err := parseDisplay(display)
 	if err != nil {
 		t.Fatalf("parseDisplay: %v", err)
 	}
-	silent, err := dial(d, nil, func([]byte) {})
+	ready := make(chan struct{})
+	var owner *conn
+	owner, err = dial(d, nil, func(event []byte) {
+		<-ready
+		answer(owner, event)
+	})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	t.Cleanup(func() { silent.close() })
+	close(ready)
+	t.Cleanup(func() { owner.close() })
+	window := owner.newID()
+	owner.send(newRequest(opCreateWindow, 0).u32(window).u32(owner.root).u16(0).u16(0).u16(1).u16(1).u16(0).u16(classInputOnly).u32(0).u32(0).done())
+	owner.send(newRequest(opSetSelectionOwner, 0).u32(window).u32(reader.atoms.clipboard).u32(currentTime).done())
+	reply, err := owner.call(newRequest(opGetSelectionOwner, 0).u32(reader.atoms.clipboard).done())
+	if err != nil || binary.LittleEndian.Uint32(reply[8:12]) != window {
+		t.Fatalf("the other program does not own the clipboard: %v", err)
+	}
+}
+
+func neverAnswering(*conn, []byte) {}
+
+func tricklingATextForever(names atoms, every time.Duration) func(owner *conn, event []byte) {
+	return func(owner *conn, event []byte) {
+		switch event[0] & 0x7f {
+		case eventSelectionRequest:
+			requestor := binary.LittleEndian.Uint32(event[12:16])
+			target := binary.LittleEndian.Uint32(event[20:24])
+			property := binary.LittleEndian.Uint32(event[24:28])
+			if target == names.targets {
+				offered := binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(nil, names.targets), names.utf8String)
+				owner.send(newRequest(opChangeProperty, modeReplace).u32(requestor).u32(property).u32(atomAtom).u8(32).u8(0).u8(0).u8(0).u32(2).raw(offered).done())
+			} else {
+				owner.send(newRequest(opChangeWindowAttributes, 0).u32(requestor).u32(attributeEventMask).u32(propertyChangeMask).done())
+				owner.send(newRequest(opChangeProperty, modeReplace).u32(requestor).u32(property).u32(names.incr).u8(32).u8(0).u8(0).u8(0).u32(1).raw(binary.LittleEndian.AppendUint32(nil, 1<<20)).done())
+			}
+			notify := make([]byte, 32)
+			notify[0] = eventSelectionNotify
+			copy(notify[4:8], event[4:8])
+			copy(notify[8:12], event[12:16])
+			copy(notify[12:16], event[16:20])
+			copy(notify[16:20], event[20:24])
+			copy(notify[20:24], event[24:28])
+			owner.send(newRequest(opSendEvent, 0).u32(requestor).u32(0).raw(notify).done())
+		case eventPropertyNotify:
+			window := binary.LittleEndian.Uint32(event[4:8])
+			property := binary.LittleEndian.Uint32(event[8:12])
+			if event[16] == propertyDeleted {
+				time.AfterFunc(every, func() {
+					owner.send(newRequest(opChangeProperty, modeReplace).u32(window).u32(property).u32(names.utf8String).u8(8).u8(0).u8(0).u8(0).u32(1).raw([]byte("x")).done())
+				})
+			}
+		}
+	}
+}
+
+func TestAnOwnerThatNeverAnswersIsReportedInsteadOfAwaited(t *testing.T) {
+	display := startXvfb(t)
 	reader := openOn(t, display)
-	window := silent.newID()
-	silent.send(newRequest(opCreateWindow, 0).u32(window).u32(silent.root).u16(0).u16(0).u16(1).u16(1).u16(0).u16(classInputOnly).u32(0).u32(0).done())
-	silent.send(newRequest(opSetSelectionOwner, 0).u32(window).u32(reader.atoms.clipboard).u32(currentTime).done())
+	ownedByAnotherProgram(t, display, reader, neverAnswering)
 	reader.readTimeout = 200 * time.Millisecond
 
 	start := time.Now()
-	_, err = reader.Read()
+	_, err := reader.Read()
 
 	if !errors.Is(err, ErrNoAnswer) {
 		t.Errorf("Read: error = %v, want %v", err, ErrNoAnswer)
 	}
 	if waited := time.Since(start); waited > time.Second {
 		t.Errorf("Read waited %v", waited)
+	}
+}
+
+func TestAReadWhoseTimeHasRunOutAsksTheOwnerForNothing(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	var asked atomic.Int32
+	ownedByAnotherProgram(t, display, reader, func(_ *conn, event []byte) {
+		if event[0]&0x7f == eventSelectionRequest {
+			asked.Add(1)
+		}
+	})
+	reader.wholeRead = 0
+
+	_, err := reader.Read()
+
+	if !errors.Is(err, ErrNoAnswer) {
+		t.Errorf("Read: error = %v, want %v", err, ErrNoAnswer)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := asked.Load(); got != 0 {
+		t.Errorf("the owner was asked for %d conversions after the read had run out of time", got)
+	}
+}
+
+func TestAnOwnerThatTricklesItsCopyForeverIsGivenUpWhenTheWholeReadRunsOut(t *testing.T) {
+	display := startXvfb(t)
+	reader := openOn(t, display)
+	ownedByAnotherProgram(t, display, reader, tricklingATextForever(reader.atoms, 50*time.Millisecond))
+	reader.readTimeout = 400 * time.Millisecond
+	reader.wholeRead = 800 * time.Millisecond
+
+	start := time.Now()
+	failed := make(chan error, 1)
+	go func() {
+		_, err := reader.Read()
+		failed <- err
+	}()
+
+	select {
+	case err := <-failed:
+		if !errors.Is(err, ErrNoAnswer) {
+			t.Errorf("Read: error = %v, want %v", err, ErrNoAnswer)
+		}
+		if waited := time.Since(start); waited < reader.wholeRead || waited > reader.wholeRead+reader.readTimeout {
+			t.Errorf("Read gave up after %v, want between %v and %v", waited, reader.wholeRead, reader.wholeRead+reader.readTimeout)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Read was still taking parts of a copy that never ends after 5 s")
 	}
 }
 
