@@ -18,7 +18,7 @@ import (
 var (
 	ErrNoFileDrag = errors.New("clipshare: no file is being dragged on the machine the drag left")
 
-	errSharingStopped     = errors.New("clipshare: clipboard sharing has stopped")
+	errNotRunning         = errors.New("clipshare: clipboard sharing is not running")
 	errNoDropSession      = errors.New("clipshare: this machine has no drop waiting for these files")
 	errDropsNotTakenThere = errors.New("clipshare: the machine on the other end does not take dragged files")
 )
@@ -26,9 +26,10 @@ var (
 type dropRun struct {
 	stop chan struct{}
 
-	mutex   sync.Mutex
-	session DropSession
-	over    bool
+	mutex    sync.Mutex
+	session  DropSession
+	over     bool
+	lastCall chan struct{}
 
 	taken   bool
 	handed  bool
@@ -53,7 +54,7 @@ func (r *dropRun) begin(ctx context.Context, drops Drops, tops []filestream.TopE
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.over {
-		go session.Cancel()
+		r.callLater(session, DropSession.Cancel)
 		return errTransferStopped
 	}
 	r.session = session
@@ -67,43 +68,70 @@ func (r *dropRun) ended() bool {
 	return r.over
 }
 
+func (r *dropRun) callLater(session DropSession, call func(DropSession)) {
+	previous, done := r.lastCall, make(chan struct{})
+	r.lastCall = done
+	go func() {
+		defer close(done)
+		if previous != nil {
+			<-previous
+		}
+		call(session)
+	}()
+}
+
 func (r *dropRun) hand() {
 	r.handed = true
 	paths := r.arrival.Paths()
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if r.session != nil && !r.over {
-		r.session.Arrived(paths)
+		r.callLater(r.session, func(session DropSession) { session.Arrived(paths) })
 	}
 }
 
-func (r *dropRun) cancel() {
-	if r.arrival != nil {
-		r.arrival.GiveUp()
-	}
+func (r *dropRun) cancel(removal *remover) {
+	removal.giveUp(r.arrival)
 	r.end(true)
 }
 
-func (r *dropRun) refused() {
-	if !r.taken && r.arrival != nil {
-		r.arrival.GiveUp()
+func (r *dropRun) refused(removal *remover) {
+	if !r.taken {
+		removal.giveUp(r.arrival)
 	}
 	r.end(false)
 }
 
 func (r *dropRun) end(cancelTheSession bool) {
 	r.mutex.Lock()
+	defer r.mutex.Unlock()
 	if r.over {
-		r.mutex.Unlock()
 		return
 	}
 	r.over = true
-	session := r.session
-	r.mutex.Unlock()
 	close(r.stop)
-	if cancelTheSession && session != nil {
-		go session.Cancel()
+	if cancelTheSession && r.session != nil {
+		r.callLater(r.session, DropSession.Cancel)
 	}
+}
+
+type remover struct {
+	removing sync.WaitGroup
+}
+
+func (r *remover) giveUp(arrived *arrival.Arrival) {
+	if arrived == nil {
+		return
+	}
+	r.removing.Add(1)
+	go func() {
+		defer r.removing.Done()
+		arrived.GiveUp()
+	}()
+}
+
+func (r *remover) wait(limit time.Duration) {
+	waitAtMost(&r.removing, limit)
 }
 
 func droppedFiles(tops []filestream.TopEntry) []DroppedFile {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/rodrigogaraujo/lanhop/internal/clipboard"
 	"github.com/rodrigogaraujo/lanhop/internal/edge"
@@ -37,6 +38,8 @@ type Side struct {
 	dragWatch     dragWatch
 	dragged       []string
 	dragDescribed bool
+	dragEnded     time.Time
+	remover       remover
 	drops         map[int]*dropRun
 }
 
@@ -143,7 +146,8 @@ func (s *Side) heardFrom(l *link, frame event.Event) {
 func (s *Side) connected(l *link) {
 	s.followTheSwitch()
 	s.current = l
-	s.centralTakes, s.centralDrops, s.dragDescribed = 0, false, false
+	s.centralTakes, s.centralDrops = 0, false
+	s.forgetDraggedFiles()
 	s.do(s.machine.Connected())
 }
 
@@ -152,6 +156,7 @@ func (s *Side) lost() {
 		s.current.close()
 		s.current = nil
 	}
+	s.forgetDraggedFiles()
 	s.endEveryTransfer(errControlLost)
 	s.endEveryDrop()
 }
@@ -160,6 +165,7 @@ func (s *Side) stopEverything() {
 	s.lost()
 	waitAtMost(&s.moving, s.config.SilenceLimit)
 	waitAtMost(&s.dragWatch.counting, s.config.SilenceLimit)
+	s.remover.wait(s.config.SilenceLimit)
 }
 
 func (s *Side) focusArrives() {
@@ -187,7 +193,7 @@ func (s *Side) centralSays(l *link, takes clipboard.Kinds, drops bool) {
 	}
 	s.centralTakes, s.centralDrops = takes, drops
 	if !s.describesDrags() {
-		s.dragDescribed = false
+		s.forgetDraggedFiles()
 	}
 	s.do(s.machine.CentralSays(takes))
 }

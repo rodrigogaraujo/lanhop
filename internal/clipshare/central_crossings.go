@@ -10,13 +10,18 @@ func (c *Central) OnSideDock(reported func(machine string, dock edge.Side)) {
 }
 
 func (c *Central) DragLeaves(origin string) error {
+	select {
+	case <-c.started:
+	default:
+		return errNotRunning
+	}
 	answer := make(chan error, 1)
 	c.inbox.put(centralNews{evenWhileFocusMoves: true, handle: func() { answer <- c.dragLeaves(origin) }})
 	select {
 	case err := <-answer:
 		return err
 	case <-c.stopped:
-		return errSharingStopped
+		return errNotRunning
 	}
 }
 
@@ -29,7 +34,7 @@ func (c *Central) dragLeaves(origin string) error {
 	if err := l.conn.Send(event.DragLeaves()); err != nil {
 		return err
 	}
-	machine.dragLeft = true
+	machine.dragCrossed = true
 	return nil
 }
 

@@ -35,11 +35,21 @@ func (c *Central) dragCounted(count dragCount) {
 
 func (c *Central) dragGone() {
 	c.dragWatch.gone()
+	if !c.ownDragCrossed {
+		c.forgetOwnDrag()
+	}
+}
+
+func (c *Central) dragOver() {
+	c.dragWatch.gone()
 	c.forgetOwnDrag()
+	for l, machine := range c.sides {
+		c.forgetDragOn(l, machine)
+	}
 }
 
 func (c *Central) forgetOwnDrag() {
-	c.dragging, c.drag, c.dragged = false, clipboard.FileCopy{}, nil
+	c.dragging, c.drag, c.dragged, c.ownDragCrossed = false, clipboard.FileCopy{}, nil, false
 }
 
 func (c *Central) takesDraggedFilesOf(machine *sideMachine) bool {
@@ -51,14 +61,14 @@ func (c *Central) dragOn(l *link, files clipboard.FileCopy, dock edge.Side) {
 	if machine == nil || !c.takesDraggedFilesOf(machine) {
 		return
 	}
-	machine.dragging, machine.drag, machine.dragLeft = true, files, false
+	machine.dragging, machine.drag, machine.dragCrossed = true, files, false
 	if c.sideDragStarted != nil {
 		c.sideDragStarted(SideDrag{Origin: l.name, Files: files.FilesAndFolders, Dock: dock})
 	}
 }
 
 func (c *Central) dragGoneOn(l *link) {
-	if machine := c.sides[l]; machine != nil && !machine.dragLeft {
+	if machine := c.sides[l]; machine != nil && !machine.dragCrossed {
 		c.forgetDragOn(l, machine)
 	}
 }
@@ -67,7 +77,7 @@ func (c *Central) forgetDragOn(l *link, machine *sideMachine) {
 	if !machine.dragging {
 		return
 	}
-	machine.dragging, machine.drag, machine.dragLeft = false, clipboard.FileCopy{}, false
+	machine.dragging, machine.drag, machine.dragCrossed = false, clipboard.FileCopy{}, false
 	if c.sideDragEnded != nil {
 		c.sideDragEnded(l.name)
 	}
@@ -81,6 +91,11 @@ func (c *Central) dragCrossed(origin, to string) error {
 	actions, err := c.desk.DragCrossed(source, c.placeNamed(to), files)
 	if err != nil {
 		return err
+	}
+	if source.OnASide {
+		c.sides[source.Side].dragCrossed = true
+	} else {
+		c.ownDragCrossed = true
 	}
 	if opened := len(actions); opened > 0 {
 		c.lastDrop = actions[opened-1].Transfer
@@ -135,7 +150,7 @@ func (c *Central) takesDropsOn(l *link) bool {
 
 func (c *Central) startDrop(transfer int) {
 	if earlier := c.drops[transfer]; earlier != nil {
-		earlier.cancel()
+		earlier.cancel(&c.remover)
 	}
 	c.drops[transfer] = newDropRun()
 }
@@ -145,7 +160,7 @@ func (c *Central) beginDrop(t *centralTransfer) func(tops []filestream.TopEntry)
 		if t.run == nil {
 			return errNoDropSession
 		}
-		return t.run.begin(c.ctx, c.config.Drops, tops,
+		return t.run.begin(t.ctx, c.config.Drops, tops,
 			func() { c.tell(func() { c.dropTaken(t.id, t.run) }) },
 			func() { c.tell(func() { c.dropRefused(t.id, t.run) }) })
 	}
@@ -192,7 +207,7 @@ func (c *Central) dropRefused(transfer int, run *dropRun) {
 	}
 	delete(c.drops, transfer)
 	c.do(c.desk.DropRefused(transfer))
-	run.refused()
+	run.refused(&c.remover)
 }
 
 func (c *Central) cancelDrop(to *link, transfer int) {
@@ -205,7 +220,7 @@ func (c *Central) cancelDrop(to *link, transfer int) {
 		return
 	}
 	delete(c.drops, transfer)
-	run.cancel()
+	run.cancel(&c.remover)
 }
 
 func (c *Central) askToCancel(to *link, transfer int) {
@@ -245,8 +260,8 @@ func (c *Central) dropTakenOn(l *link, wire int32) {
 }
 
 func (c *Central) rememberDelivered(t *centralTransfer) {
-	half, announced := t.halfOn(t.to)
-	if !announced {
+	half, cancellable := t.halfStillCancellable(t.to)
+	if !cancellable {
 		return
 	}
 	c.delivered[t.id] = half
@@ -270,7 +285,7 @@ func (c *Central) forgetDeliveredTo(l *link) {
 func (c *Central) endEveryDrop() {
 	for transfer, run := range c.drops {
 		delete(c.drops, transfer)
-		run.cancel()
+		run.cancel(&c.remover)
 	}
 	waitAtMost(&c.dragWatch.counting, c.config.SilenceLimit)
 }

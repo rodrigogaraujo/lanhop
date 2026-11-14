@@ -80,7 +80,7 @@ func (s *Side) carry(t *sideTransfer) error {
 func (s *Side) transferDone(t *sideTransfer, err error) {
 	if s.transfers[t.wire] != t {
 		if err == nil {
-			t.leaveNothing()
+			s.remover.giveUp(t.arrival)
 		}
 		return
 	}
@@ -97,7 +97,7 @@ func (s *Side) transferDone(t *sideTransfer, err error) {
 	s.do(s.machine.FilesArrived(t.wire))
 	delete(s.transfers, t.wire)
 	if !t.written {
-		t.leaveNothing()
+		s.remover.giveUp(t.arrival)
 	}
 }
 
@@ -150,12 +150,6 @@ func (t *sideTransfer) close(cause error) {
 	t.closed = true
 	if t.conn != nil {
 		closeInTheBackground(t.conn)
-	}
-}
-
-func (t *sideTransfer) leaveNothing() {
-	if t.arrival != nil {
-		t.arrival.GiveUp()
 	}
 }
 
