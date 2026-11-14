@@ -30,7 +30,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           go test -count=1 -run 'TestKeysArriveAtMost50|TestKeysArriveMoreThan50' ./internal/transport
-          go test -count=1 -run 'Keys|64KiB' ./internal/clipshare
+          go test -count=1 -run 'Keys|64KiB|10MiB' ./internal/clipshare
       - name: Test the macOS build without cgo
         if: runner.os == 'macOS'
         env:
