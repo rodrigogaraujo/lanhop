@@ -96,30 +96,40 @@ func (f *Folder) Directory() string {
 	return f.config.Directory
 }
 
-func (f *Folder) Start(transfer int, bytes int64, entries int) (*Arrival, error) {
+func (f *Folder) Expecting(transfer int) *Arrival {
+	return &Arrival{folder: f, transfer: transfer}
+}
+
+func (f *Folder) start(a *Arrival, bytes int64, entries int) error {
 	if entries < 1 || entries > clipboard.FilesAndFoldersLimit || bytes < 0 || bytes > clipboard.FileCopyLimit {
-		return nil, fmt.Errorf("%w: %d files and folders, %d bytes", ErrOutsideTheLimits, entries, bytes)
+		return fmt.Errorf("%w: %d files and folders, %d bytes", ErrOutsideTheLimits, entries, bytes)
 	}
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 	if err := os.MkdirAll(f.config.Directory, 0o700); err != nil {
-		return nil, fmt.Errorf("arrival: %w", err)
+		return fmt.Errorf("arrival: %w", err)
 	}
 	completed, _ := f.look()
 	if err := f.makeRoom(completed, bytes); err != nil {
-		return nil, err
+		return err
 	}
-	name, err := arrivalName(transfer)
+	name, err := arrivalName(a.transfer)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	path := filepath.Join(f.config.Directory, name)
 	if err := os.Mkdir(path, 0o700); err != nil {
-		return nil, fmt.Errorf("arrival: %w", err)
+		return fmt.Errorf("arrival: %w", err)
 	}
-	arrival := &Arrival{folder: f, name: name, path: path, bytes: bytes, entries: entries, made: make(map[string]made)}
-	f.writing[name] = arrival
-	return arrival, nil
+	a.name, a.path, a.bytes, a.entries, a.made = name, path, bytes, entries, make(map[string]made)
+	f.writing[name] = a
+	return nil
+}
+
+func (f *Folder) removeFinished(name string) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	f.remove(name)
 }
 
 func (f *Folder) RemoveOld() error {

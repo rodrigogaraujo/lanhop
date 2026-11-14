@@ -2,7 +2,6 @@ package arrival
 
 import (
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,33 +14,38 @@ import (
 
 func TestAWholeArrivalOfNestedFoldersAndFilesGivesItsTopLevelPaths(t *testing.T) {
 	f, _, _ := openFolder(t, 0, 0)
-	files := []sent{
+	entries := []sent{
+		aFolder("photos"),
 		aFile("photos/beach.jpg", "sand and sea"),
+		aFolder("photos/2026"),
 		aFile("photos/2026/snow.jpg", strings.Repeat("snow ", 40_000)),
 		aFile("photos/empty.txt", ""),
 		aFile("notes.txt", "remember the milk"),
-		aFile("docs/deep/plan.md", "a plan in folders that were not announced"),
+		aFolder("docs"),
+		aFolder("docs/deep"),
+		aFile("docs/deep/plan.md", "a plan two folders down"),
 	}
-	entries := append([]sent{aFolder("photos"), aFolder("photos/2026")}, files...)
 	a, paths := arrive(t, f, 7, entries...)
 
 	want := []string{filepath.Join(a.path, "photos"), filepath.Join(a.path, "notes.txt"), filepath.Join(a.path, "docs")}
 	if !slices.Equal(paths, want) {
-		t.Errorf("Complete gave %q, want the top-level paths %q", paths, want)
+		t.Errorf("Paths gave %q, want the top-level paths %q", paths, want)
 	}
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
 			t.Errorf("%s is not absolute", path)
 		}
 	}
-	for _, file := range files {
-		path := filepath.Join(a.path, file.entry.Path)
-		expectContent(t, path, file.content)
+	for _, entry := range entries {
+		path := filepath.Join(a.path, entry.name)
+		if entry.folder {
+			expectMode(t, path, fs.ModeDir|0o700)
+			continue
+		}
+		expectContent(t, path, entry.content)
 		expectMode(t, path, 0o600)
 	}
-	for _, folder := range []string{"", "photos", "photos/2026", "docs", "docs/deep"} {
-		expectMode(t, filepath.Join(a.path, folder), fs.ModeDir|0o700)
-	}
+	expectMode(t, a.path, fs.ModeDir|0o700)
 	filepath.WalkDir(a.path, func(path string, entry fs.DirEntry, err error) error {
 		if err == nil && strings.HasPrefix(entry.Name(), ".lanhop-arriving-") {
 			t.Errorf("a temporary file is left: %s", path)
@@ -51,10 +55,29 @@ func TestAWholeArrivalOfNestedFoldersAndFilesGivesItsTopLevelPaths(t *testing.T)
 	expectKept(t, a)
 }
 
+func TestPathsAreGivenOnlyOnceTheArrivalIsFinished(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	notes := aFile("notes.txt", "milk")
+	a := expecting(t, f, 1, notes)
+	sendAll(t, a, notes)
+	if paths := a.Paths(); paths != nil {
+		t.Errorf("Paths before Finish = %q, want none", paths)
+	}
+	if err := a.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if err := a.Finish(); err != nil {
+		t.Errorf("a second Finish: %v", err)
+	}
+	if paths := a.Paths(); !slices.Equal(paths, []string{filepath.Join(a.path, "notes.txt")}) {
+		t.Errorf("Paths after Finish = %q", paths)
+	}
+}
+
 func TestEachArrivalGetsAFolderOfItsOwnNamedByTheTransferAndARandomPart(t *testing.T) {
 	f, _, _ := openFolder(t, 0, 0)
-	first := startWith(t, f, 42, 0, 1)
-	second := startWith(t, f, 42, 0, 1)
+	first := expectingWith(t, f, 42, 0, 1)
+	second := expectingWith(t, f, 42, 0, 1)
 	named := regexp.MustCompile(`^42-[0-9a-f]{16}$`)
 	for _, a := range []*Arrival{first, second} {
 		if !named.MatchString(a.name) || filepath.Dir(a.path) != f.Directory() {
@@ -82,93 +105,96 @@ func TestEachUnsafePathIsRefusedAndLeavesNothing(t *testing.T) {
 		"a backslash":             `a\b`,
 		"a backslash and dot dot": `..\outside.txt`,
 	} {
-		t.Run(name, func(t *testing.T) {
-			f, _, _ := openFolder(t, 0, 0)
-			good, unsafe := aFile("first.txt", "first"), aFile(path, "x")
-			a := start(t, f, 1, good, unsafe)
-			receiveAll(t, a, good)
-			if err := a.Receive(unsafe.entry, unsafe.stream()); !errors.Is(err, ErrUnsafePath) {
-				t.Errorf("Receive(%q) = %v, want ErrUnsafePath", path, err)
-			}
-			expectGone(t, a)
-			expectHolds(t, f)
-		})
-	}
-}
-
-func TestAPathThroughAFileIsRefused(t *testing.T) {
-	for name, through := range map[string]sent{
-		"a file":   aFile("notes/inside.txt", "inside"),
-		"a folder": aFolder("notes/inside"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			f, _, _ := openFolder(t, 0, 0)
-			file := aFile("notes", "a file, not a folder")
-			a := start(t, f, 1, file, through)
-			receiveAll(t, a, file)
-			if err := a.Receive(through.entry, through.stream()); !errors.Is(err, ErrUnsafePath) {
-				t.Errorf("Receive(%q) under a file = %v, want ErrUnsafePath", through.entry.Path, err)
-			}
-			expectGone(t, a)
-		})
-	}
-}
-
-func TestTheSamePathTwiceIsRefusedUnlessItIsTheSameFolder(t *testing.T) {
-	for name, test := range map[string]struct {
-		first, again sent
-		refused      bool
-	}{
-		"a file twice":            {aFile("a.txt", "one"), aFile("a.txt", "two"), true},
-		"a folder over a file":    {aFile("a", "one"), aFolder("a"), true},
-		"a file over a folder":    {aFolder("a"), aFile("a", "two"), true},
-		"a folder twice":          {aFolder("a"), aFolder("a"), false},
-		"a folder made for files": {aFile("a/b.txt", "b"), aFolder("a"), false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			f, _, _ := openFolder(t, 0, 0)
-			a := start(t, f, 1, test.first, test.again)
-			receiveAll(t, a, test.first)
-			err := a.Receive(test.again.entry, test.again.stream())
-			if test.refused {
-				if !errors.Is(err, ErrUnsafePath) {
-					t.Errorf("Receive(%q) again = %v, want ErrUnsafePath", test.again.entry.Path, err)
+		for kind, unsafe := range map[string]sent{"file": aFile(path, "x"), "folder": aFolder(path)} {
+			t.Run(name+" as a "+kind, func(t *testing.T) {
+				f, _, _ := openFolder(t, 0, 0)
+				good := aFile("first.txt", "first")
+				a := expecting(t, f, 1, good, unsafe)
+				sendAll(t, a, good)
+				if err := send(a, unsafe); !errors.Is(err, ErrUnsafePath) {
+					t.Errorf("sending %q = %v, want ErrUnsafePath", path, err)
 				}
 				expectGone(t, a)
-				return
+				expectHolds(t, f)
+			})
+		}
+	}
+}
+
+func TestANameUnderAFileOrInAFolderThatDidNotArriveIsRefused(t *testing.T) {
+	for name, test := range map[string]struct {
+		before []sent
+		next   sent
+	}{
+		"a file under a file":                      {[]sent{aFile("notes", "a file")}, aFile("notes/inside.txt", "inside")},
+		"a folder under a file":                    {[]sent{aFile("notes", "a file")}, aFolder("notes/inside")},
+		"a file in a folder that did not arrive":   {nil, aFile("docs/plan.md", "plan")},
+		"a folder in a folder that did not arrive": {[]sent{aFolder("docs")}, aFolder("docs/2026/11")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _, _ := openFolder(t, 0, 0)
+			a := expecting(t, f, 1, append(test.before, test.next)...)
+			sendAll(t, a, test.before...)
+			if err := send(a, test.next); !errors.Is(err, ErrUnsafePath) {
+				t.Errorf("sending %q = %v, want ErrUnsafePath", test.next.name, err)
 			}
-			if err != nil {
-				t.Fatalf("Receive(%q) again = %v, want it taken as the folder this arrival made", test.again.entry.Path, err)
+			expectGone(t, a)
+		})
+	}
+}
+
+func TestANameThatAlreadyExistsIsRefused(t *testing.T) {
+	for name, test := range map[string]struct {
+		first, again sent
+	}{
+		"a file twice":         {aFile("a.txt", "one"), aFile("a.txt", "two")},
+		"a folder twice":       {aFolder("a"), aFolder("a")},
+		"a folder over a file": {aFile("a", "one"), aFolder("a")},
+		"a file over a folder": {aFolder("a"), aFile("a", "two")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _, _ := openFolder(t, 0, 0)
+			a := expecting(t, f, 1, test.first, test.again)
+			sendAll(t, a, test.first)
+			if err := send(a, test.again); !errors.Is(err, ErrUnsafePath) {
+				t.Errorf("sending %q again = %v, want ErrUnsafePath", test.again.name, err)
 			}
-			if _, err := a.Complete(); err != nil {
-				t.Errorf("Complete: %v", err)
+			expectGone(t, a)
+		})
+	}
+	for _, kind := range []sent{aFile("plan.md", "plan"), aFolder("plan.md")} {
+		t.Run("a plain file put there by something else, then a folder or a file", func(t *testing.T) {
+			f, _, _ := openFolder(t, 0, 0)
+			a := expecting(t, f, 1, kind)
+			if err := os.WriteFile(filepath.Join(a.path, "plan.md"), []byte("put there by something else"), 0o600); err != nil {
+				t.Fatal(err)
 			}
+			if err := send(a, kind); !errors.Is(err, ErrUnsafePath) {
+				t.Errorf("sending %q over a file already there = %v, want ErrUnsafePath", kind.name, err)
+			}
+			expectGone(t, a)
 		})
 	}
 }
 
 func TestAFolderPlantedAsALinkInTheArrivalIsNeverReused(t *testing.T) {
-	for name, entry := range map[string]sent{
-		"as the folder announced":     aFolder("docs"),
-		"as the folder of a file":     aFile("docs/plan.md", "plan"),
-		"as a folder deeper in there": aFile("docs/2026/plan.md", "plan"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			f, _, _ := openFolder(t, 0, 0)
-			outside := t.TempDir()
-			a := start(t, f, 1, entry)
-			if err := os.Symlink(outside, filepath.Join(a.path, "docs")); err != nil {
-				t.Fatal(err)
-			}
-			if err := a.Receive(entry.entry, entry.stream()); !errors.Is(err, ErrUnsafePath) {
-				t.Errorf("Receive(%q) through a planted link = %v, want ErrUnsafePath", entry.entry.Path, err)
-			}
-			if listed, _ := os.ReadDir(outside); len(listed) != 0 {
-				t.Errorf("the folder the link points to got %d entries, want none", len(listed))
-			}
-			expectGone(t, a)
-		})
+	f, _, _ := openFolder(t, 0, 0)
+	outside := t.TempDir()
+	docs, plan := aFolder("docs"), aFile("docs/plan.md", "plan")
+	a := expecting(t, f, 1, docs, plan)
+	if err := os.Symlink(outside, filepath.Join(a.path, "docs")); err != nil {
+		t.Fatal(err)
 	}
+	if err := send(a, docs); !errors.Is(err, ErrUnsafePath) {
+		t.Errorf("Folder(docs) over a planted link = %v, want ErrUnsafePath", err)
+	}
+	if err := send(a, plan); !errors.Is(err, ErrGivenUp) {
+		t.Errorf("File(docs/plan.md) after the refusal = %v, want ErrGivenUp", err)
+	}
+	if listed, _ := os.ReadDir(outside); len(listed) != 0 {
+		t.Errorf("the folder the link points to got %d entries, want none", len(listed))
+	}
+	expectGone(t, a)
 }
 
 func TestAFileIsNeverOpenedThroughALinkPlantedAtItsTemporaryName(t *testing.T) {
@@ -178,28 +204,22 @@ func TestAFileIsNeverOpenedThroughALinkPlantedAtItsTemporaryName(t *testing.T) {
 		t.Fatal(err)
 	}
 	missing := filepath.Join(t.TempDir(), "missing.txt")
-	plan, notes := aFile("plan.md", "plan"), aFile("docs/notes.txt", "notes")
 	for _, test := range []struct {
-		target   string
-		entry    sent
-		position int
-		under    string
+		target  string
+		entries []sent
+		under   string
 	}{
-		{outside, plan, 1, ""},
-		{missing, notes, 1, "docs"},
+		{outside, []sent{aFile("plan.md", "plan")}, ""},
+		{missing, []sent{aFolder("docs"), aFile("docs/notes.txt", "notes")}, "docs"},
 	} {
-		a := start(t, f, 1, test.entry)
-		if test.under != "" {
-			if err := os.Mkdir(filepath.Join(a.path, test.under), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			a.made[test.under] = madeFolder
-		}
-		if err := os.Symlink(test.target, filepath.Join(a.path, test.under, temporaryName(test.position))); err != nil {
+		a := expecting(t, f, 1, test.entries...)
+		last := len(test.entries) - 1
+		sendAll(t, a, test.entries[:last]...)
+		if err := os.Symlink(test.target, filepath.Join(a.path, test.under, temporaryName(last+1))); err != nil {
 			t.Fatal(err)
 		}
-		if err := a.Receive(test.entry.entry, test.entry.stream()); !errors.Is(err, ErrUnsafePath) {
-			t.Errorf("Receive(%q) with a link at its temporary name = %v, want ErrUnsafePath", test.entry.entry.Path, err)
+		if err := send(a, test.entries[last]); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("sending %q with a link at its temporary name = %v, want ErrUnsafePath", test.entries[last].name, err)
 		}
 		expectGone(t, a)
 	}
@@ -210,48 +230,51 @@ func TestAFileIsNeverOpenedThroughALinkPlantedAtItsTemporaryName(t *testing.T) {
 }
 
 func TestAFileIsNeverPutInPlaceOverALinkPlantedAtItsName(t *testing.T) {
-	f, _, _ := openFolder(t, 0, 0)
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.WriteFile(outside, []byte("untouched"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan := aFile("plan.md", "plan")
-	a := start(t, f, 1, plan)
-	if err := os.Symlink(outside, filepath.Join(a.path, "plan.md")); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Receive(plan.entry, plan.stream()); !errors.Is(err, ErrUnsafePath) {
-		t.Errorf("Receive over a planted link = %v, want ErrUnsafePath", err)
-	}
-	expectUntouched(t, outside, "untouched")
-	expectGone(t, a)
-}
-
-func TestAKindOtherThanFileOrFolderIsRefused(t *testing.T) {
-	for _, kind := range []Kind{0, 3, 4, 255} {
+	t.Run("planted before the file opens", func(t *testing.T) {
 		f, _, _ := openFolder(t, 0, 0)
-		a := startWith(t, f, 1, 0, 1)
-		if err := a.Receive(Entry{Path: "link", Kind: kind}, strings.NewReader("")); !errors.Is(err, ErrNotFileOrFolder) {
-			t.Errorf("Receive of kind %d = %v, want ErrNotFileOrFolder", kind, err)
+		plan := aFile("plan.md", "plan")
+		a := expecting(t, f, 1, plan)
+		if err := os.Symlink(outside, filepath.Join(a.path, "plan.md")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.File(plan.name, plan.size()); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("File over a planted link = %v, want ErrUnsafePath", err)
 		}
 		expectGone(t, a)
-	}
+	})
+	t.Run("planted while the file is written", func(t *testing.T) {
+		f, _, _ := openFolder(t, 0, 0)
+		plan := aFile("plan.md", "plan")
+		a := expecting(t, f, 1, plan)
+		file, err := a.File(plan.name, plan.size())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeInPieces(file, plan.content); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(a.path, "plan.md")); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Whole(); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("Whole over a planted link = %v, want ErrUnsafePath", err)
+		}
+		expectGone(t, a)
+	})
+	expectUntouched(t, outside, "untouched")
 }
 
-func TestASizeAnEntryCannotHaveIsRefused(t *testing.T) {
-	for name, entry := range map[string]Entry{
-		"a file with a negative size": {Path: "a.txt", Kind: FileKind, Size: -1},
-		"a folder with a size":        {Path: "a", Kind: FolderKind, Size: 5},
-	} {
-		t.Run(name, func(t *testing.T) {
-			f, _, _ := openFolder(t, 0, 0)
-			a := startWith(t, f, 1, 5, 1)
-			if err := a.Receive(entry, strings.NewReader("12345")); !errors.Is(err, ErrImpossibleSize) {
-				t.Errorf("Receive(%+v) = %v, want ErrImpossibleSize", entry, err)
-			}
-			expectGone(t, a)
-		})
+func TestANegativeSizeIsRefused(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	a := expectingWith(t, f, 1, 5, 1)
+	if _, err := a.File("a.txt", -1); !errors.Is(err, ErrImpossibleSize) {
+		t.Errorf("File with -1 bytes = %v, want ErrImpossibleSize", err)
 	}
+	expectGone(t, a)
 }
 
 func TestMoreEntriesOrBytesThanAnnouncedAreRefused(t *testing.T) {
@@ -266,11 +289,11 @@ func TestMoreEntriesOrBytesThanAnnouncedAreRefused(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, _, _ := openFolder(t, 0, 0)
-			a := startWith(t, f, 1, test.bytes, test.entries)
+			a := expectingWith(t, f, 1, test.bytes, test.entries)
 			last := len(test.sent) - 1
-			receiveAll(t, a, test.sent[:last]...)
-			if err := a.Receive(test.sent[last].entry, test.sent[last].stream()); !errors.Is(err, ErrMoreThanAnnounced) {
-				t.Errorf("Receive(%q) = %v, want ErrMoreThanAnnounced", test.sent[last].entry.Path, err)
+			sendAll(t, a, test.sent[:last]...)
+			if err := send(a, test.sent[last]); !errors.Is(err, ErrMoreThanAnnounced) {
+				t.Errorf("sending %q = %v, want ErrMoreThanAnnounced", test.sent[last].name, err)
 			}
 			expectGone(t, a)
 			expectHolds(t, f)
@@ -278,106 +301,210 @@ func TestMoreEntriesOrBytesThanAnnouncedAreRefused(t *testing.T) {
 	}
 }
 
-func TestAWrongDigestLeavesNothingBehind(t *testing.T) {
+func TestMoreBytesThanTheSizeOfAFileFailInWrite(t *testing.T) {
 	f, _, _ := openFolder(t, 0, 0)
-	first, report := aFile("first.txt", "first"), aFile("report.pdf", "the report")
-	a := start(t, f, 1, first, report)
-	receiveAll(t, a, first)
-	if err := a.Receive(report.entry, report.streamWithDigestOf("another report")); !errors.Is(err, ErrDigestDiffers) {
-		t.Errorf("Receive with a wrong digest = %v, want ErrDigestDiffers", err)
-	}
-	expectGone(t, a)
-	expectHolds(t, f)
-}
-
-func TestAFileShorterThanItsSizeLeavesNothingBehind(t *testing.T) {
-	f, _, _ := openFolder(t, 0, 0)
-	first, report := aFile("first.txt", "first"), aFile("report.pdf", "the whole report")
-	a := start(t, f, 1, first, report)
-	receiveAll(t, a, first)
-	if err := a.Receive(report.entry, strings.NewReader("the whole")); !errors.Is(err, ErrSizeDiffers) {
-		t.Errorf("Receive of a file cut short = %v, want ErrSizeDiffers", err)
-	}
-	expectGone(t, a)
-	expectHolds(t, f)
-}
-
-func TestAFileWithoutItsDigestLeavesNothingBehind(t *testing.T) {
-	f, _, _ := openFolder(t, 0, 0)
-	report := aFile("report.pdf", "the whole report")
-	a := start(t, f, 1, report)
-	if err := a.Receive(report.entry, strings.NewReader(report.content)); err == nil {
-		t.Error("Receive of a file whose digest never came succeeded")
-	}
-	expectGone(t, a)
-}
-
-func TestAStopHalfwayLeavesNothingAndAnotherStopDoesNothing(t *testing.T) {
-	f, _, _ := openFolder(t, 0, 0)
-	entries := []sent{aFolder("photos"), aFile("photos/beach.jpg", "sand"), aFile("notes.txt", "milk")}
-	a := start(t, f, 3, entries...)
-	receiveAll(t, a, entries[:2]...)
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	expectGone(t, a)
-	if err := a.Stop(); err != nil {
-		t.Errorf("a second Stop: %v", err)
-	}
-	if err := a.Receive(entries[2].entry, entries[2].stream()); !errors.Is(err, ErrStopped) {
-		t.Errorf("Receive after Stop = %v, want ErrStopped", err)
-	}
-	if _, err := a.Complete(); !errors.Is(err, ErrStopped) {
-		t.Errorf("Complete after Stop = %v, want ErrStopped", err)
-	}
-	expectHolds(t, f)
-}
-
-func TestAStopWhileAFileIsBeingWrittenLeavesNothing(t *testing.T) {
-	f, _, _ := openFolder(t, 0, 0)
-	large := aFile("large.bin", strings.Repeat("x", 1<<20))
-	a := start(t, f, 1, large)
-	reader, writer := io.Pipe()
-	received := make(chan error, 1)
-	go func() { received <- a.Receive(large.entry, reader) }()
-	if _, err := writer.Write([]byte(large.content[:256<<10])); err != nil {
+	a := expectingWith(t, f, 1, 10, 1)
+	file, err := a.File("report.pdf", 5)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if _, err := file.Write([]byte("123")); err != nil {
+		t.Fatalf("Write within the size: %v", err)
 	}
-	writer.CloseWithError(errors.New("the data connection closed"))
-	if err := <-received; err == nil {
-		t.Error("Receive succeeded after the arrival stopped")
+	if written, err := file.Write([]byte("456")); !errors.Is(err, ErrSizeDiffers) || written != 0 {
+		t.Errorf("Write past the size = %d, %v, want 0 and ErrSizeDiffers", written, err)
+	}
+	expectGone(t, a)
+}
+
+func TestAFileShorterThanItsSizeIsNeverWhole(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	first := aFile("first.txt", "first")
+	a := expectingWith(t, f, 1, first.size()+16, 2)
+	sendAll(t, a, first)
+	file, err := a.File("report.pdf", 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInPieces(file, "the whole"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Whole(); !errors.Is(err, ErrSizeDiffers) {
+		t.Errorf("Whole of a file cut short = %v, want ErrSizeDiffers", err)
 	}
 	expectGone(t, a)
 	expectHolds(t, f)
 }
 
-func TestAStopAfterCompleteKeepsTheFiles(t *testing.T) {
+func TestAFileThatNeverBecomesWholeLeavesNothingWhenTheArrivalIsGivenUp(t *testing.T) {
 	f, _, _ := openFolder(t, 0, 0)
-	notes := aFile("notes.txt", "milk")
-	a, paths := arrive(t, f, 1, notes)
-	if err := a.Stop(); err != nil {
-		t.Fatalf("Stop after Complete: %v", err)
+	first, report := aFile("first.txt", "first"), aFile("report.pdf", "the report, with a digest that does not match")
+	a := expecting(t, f, 1, first, report)
+	sendAll(t, a, first)
+	file, err := a.File(report.name, report.size())
+	if err != nil {
+		t.Fatal(err)
 	}
-	expectKept(t, a)
-	expectContent(t, paths[0], notes.content)
-	if again, err := a.Complete(); err != nil || !slices.Equal(again, paths) {
-		t.Errorf("Complete again = %q, %v, want %q", again, err, paths)
+	if err := writeInPieces(file, report.content); err != nil {
+		t.Fatal(err)
+	}
+	a.GiveUp()
+	expectGone(t, a)
+	expectHolds(t, f)
+	if _, err := file.Write([]byte("x")); !errors.Is(err, ErrGivenUp) {
+		t.Errorf("Write after GiveUp = %v, want ErrGivenUp", err)
+	}
+	if err := file.Whole(); !errors.Is(err, ErrGivenUp) {
+		t.Errorf("Whole after GiveUp = %v, want ErrGivenUp", err)
+	}
+	if err := file.file.Close(); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("the open file was not closed by GiveUp: Close gave %v", err)
 	}
 }
 
-func TestCompletingBeforeEveryEntryArrivedIsRefusedAndLeavesNothing(t *testing.T) {
+func TestGivingUpHalfwayLeavesNothingAndAnotherGiveUpDoesNothing(t *testing.T) {
 	f, _, _ := openFolder(t, 0, 0)
-	entries := []sent{aFile("one.txt", "one"), aFile("two.txt", "two")}
-	a := start(t, f, 1, entries...)
-	receiveAll(t, a, entries[0])
-	if _, err := a.Complete(); !errors.Is(err, ErrIncomplete) {
-		t.Errorf("Complete with one of two entries = %v, want ErrIncomplete", err)
+	entries := []sent{aFolder("photos"), aFile("photos/beach.jpg", "sand"), aFile("notes.txt", "milk")}
+	a := expecting(t, f, 3, entries...)
+	sendAll(t, a, entries[:2]...)
+	a.GiveUp()
+	expectGone(t, a)
+	a.GiveUp()
+	if err := send(a, entries[2]); !errors.Is(err, ErrGivenUp) {
+		t.Errorf("sending after GiveUp = %v, want ErrGivenUp", err)
+	}
+	if err := a.Finish(); !errors.Is(err, ErrGivenUp) {
+		t.Errorf("Finish after GiveUp = %v, want ErrGivenUp", err)
+	}
+	if paths := a.Paths(); paths != nil {
+		t.Errorf("Paths after GiveUp = %q, want none", paths)
+	}
+	expectHolds(t, f)
+}
+
+func TestGivingUpFromAnotherGoroutineWhileAFileIsWrittenLeavesNothing(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	const size = 16 << 20
+	a := expectingWith(t, f, 1, size, 1)
+	file, err := a.File("large.bin", size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	piece := make([]byte, 4<<10)
+	written := make(chan error, 1)
+	firstPiece := make(chan struct{})
+	go func() {
+		for sent := 0; ; sent += len(piece) {
+			if _, err := file.Write(piece); err != nil {
+				written <- err
+				return
+			}
+			if sent == 0 {
+				close(firstPiece)
+			}
+		}
+	}()
+	<-firstPiece
+	a.GiveUp()
+	if err := <-written; !errors.Is(err, ErrGivenUp) {
+		t.Errorf("Write after GiveUp from another goroutine = %v, want ErrGivenUp", err)
 	}
 	expectGone(t, a)
 	expectHolds(t, f)
+}
+
+func TestGivingUpAfterFinishRemovesEverything(t *testing.T) {
+	f, _, _ := openFolder(t, 0, 0)
+	a, paths := arrive(t, f, 1, aFolder("photos"), aFile("photos/beach.jpg", "sand"), aFile("notes.txt", "milk"))
+	a.GiveUp()
+	expectGone(t, a)
+	for _, path := range paths {
+		if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s is still there after GiveUp: %v", path, err)
+		}
+	}
+	if paths := a.Paths(); paths != nil {
+		t.Errorf("Paths after GiveUp = %q, want none", paths)
+	}
+	a.GiveUp()
+	expectHolds(t, f)
+}
+
+func TestGivingUpBeforeExpectOrAfterARefusedExpectIsSafe(t *testing.T) {
+	f, _, _ := openFolder(t, 100, 1)
+	never := f.Expecting(1)
+	never.GiveUp()
+	never.GiveUp()
+	if err := never.Expect(5, 1); !errors.Is(err, ErrGivenUp) {
+		t.Errorf("Expect after GiveUp = %v, want ErrGivenUp", err)
+	}
+	refused := f.Expecting(2)
+	if err := refused.Expect(101, 1); !errors.Is(err, ErrNoRoom) {
+		t.Errorf("Expect of 101 bytes in a room of 100 = %v, want ErrNoRoom", err)
+	}
+	refused.GiveUp()
+	if _, err := os.Lstat(f.Directory()); err == nil {
+		expectHolds(t, f)
+	}
+}
+
+func TestEntriesOutOfOrderAreRefused(t *testing.T) {
+	t.Run("an entry before Expect", func(t *testing.T) {
+		f, _, _ := openFolder(t, 0, 0)
+		a := f.Expecting(1)
+		if err := a.Folder("photos"); !errors.Is(err, ErrOutOfOrder) {
+			t.Errorf("Folder before Expect = %v, want ErrOutOfOrder", err)
+		}
+		expectHolds(t, f)
+	})
+	t.Run("Expect twice", func(t *testing.T) {
+		f, _, _ := openFolder(t, 0, 0)
+		a := expectingWith(t, f, 1, 0, 1)
+		if err := a.Expect(0, 1); !errors.Is(err, ErrOutOfOrder) {
+			t.Errorf("a second Expect = %v, want ErrOutOfOrder", err)
+		}
+		expectGone(t, a)
+	})
+	t.Run("an entry while a file is not whole", func(t *testing.T) {
+		f, _, _ := openFolder(t, 0, 0)
+		a := expectingWith(t, f, 1, 4, 2)
+		if _, err := a.File("one.txt", 4); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.File("two.txt", 0); !errors.Is(err, ErrOutOfOrder) {
+			t.Errorf("File while another file is open = %v, want ErrOutOfOrder", err)
+		}
+		expectGone(t, a)
+	})
+}
+
+func TestFinishingBeforeEveryEntryIsWholeIsRefusedAndLeavesNothing(t *testing.T) {
+	t.Run("an entry missing", func(t *testing.T) {
+		f, _, _ := openFolder(t, 0, 0)
+		entries := []sent{aFile("one.txt", "one"), aFile("two.txt", "two")}
+		a := expecting(t, f, 1, entries...)
+		sendAll(t, a, entries[0])
+		if err := a.Finish(); !errors.Is(err, ErrIncomplete) {
+			t.Errorf("Finish with one of two entries = %v, want ErrIncomplete", err)
+		}
+		expectGone(t, a)
+		expectHolds(t, f)
+	})
+	t.Run("a file still open", func(t *testing.T) {
+		f, _, _ := openFolder(t, 0, 0)
+		a := expectingWith(t, f, 1, 3, 1)
+		file, err := a.File("one.txt", 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeInPieces(file, "one"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Finish(); !errors.Is(err, ErrIncomplete) {
+			t.Errorf("Finish before Whole = %v, want ErrIncomplete", err)
+		}
+		expectGone(t, a)
+	})
 }
 
 func TestAFileCopyOutsideTheLimitsIsRefusedBeforeAnythingIsWritten(t *testing.T) {
@@ -392,17 +519,14 @@ func TestAFileCopyOutsideTheLimitsIsRefusedBeforeAnythingIsWritten(t *testing.T)
 		{-1, 1},
 		{4<<30 + 1, 1},
 	} {
-		if _, err := f.Start(1, refused.bytes, refused.entries); !errors.Is(err, ErrOutsideTheLimits) {
-			t.Errorf("Start with %d bytes and %d entries = %v, want ErrOutsideTheLimits", refused.bytes, refused.entries, err)
+		if err := f.Expecting(1).Expect(refused.bytes, refused.entries); !errors.Is(err, ErrOutsideTheLimits) {
+			t.Errorf("Expect with %d bytes and %d entries = %v, want ErrOutsideTheLimits", refused.bytes, refused.entries, err)
 		}
 	}
 	if _, err := os.Lstat(f.Directory()); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the arrival folder was created for a refused copy: %v", err)
 	}
-	atTheLimits := startWith(t, f, 2, 4<<30, 10_000)
-	if err := atTheLimits.Stop(); err != nil {
-		t.Errorf("Stop: %v", err)
-	}
+	expectingWith(t, f, 2, 4<<30, 10_000).GiveUp()
 }
 
 func TestTheArrivalFolderComesBackWhenTheCacheWasEmptied(t *testing.T) {

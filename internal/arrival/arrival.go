@@ -1,12 +1,8 @@
 package arrival
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"hash"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,28 +12,14 @@ import (
 	"sync/atomic"
 )
 
-type Kind uint8
-
-const (
-	FileKind   Kind = 1
-	FolderKind Kind = 2
-)
-
-type Entry struct {
-	Path string
-	Kind Kind
-	Size int64
-}
-
 var (
-	ErrUnsafePath        = errors.New("arrival: a path that arrived is not a plain relative path inside the arrival")
-	ErrNotFileOrFolder   = errors.New("arrival: an entry that arrived is neither a file nor a folder")
-	ErrImpossibleSize    = errors.New("arrival: an entry announced a size it cannot have")
+	ErrUnsafePath        = errors.New("arrival: a name that arrived is not a plain relative path inside the arrival")
+	ErrImpossibleSize    = errors.New("arrival: a file announced a negative size")
 	ErrMoreThanAnnounced = errors.New("arrival: more files, folders or bytes arrived than were announced")
 	ErrSizeDiffers       = errors.New("arrival: a file did not hold the size it announced")
-	ErrDigestDiffers     = errors.New("arrival: a file did not match its SHA-256")
-	ErrIncomplete        = errors.New("arrival: not every announced file and folder has arrived")
-	ErrStopped           = errors.New("arrival: the arrival stopped, and what arrived of it was removed")
+	ErrIncomplete        = errors.New("arrival: not every announced file and folder has arrived whole")
+	ErrOutOfOrder        = errors.New("arrival: an entry came before Expect, after Finish, or while a file was not whole yet")
+	ErrGivenUp           = errors.New("arrival: the arrival was given up, and what arrived of it was removed")
 )
 
 type made uint8
@@ -48,126 +30,249 @@ const (
 )
 
 type Arrival struct {
-	folder  *Folder
-	name    string
-	path    string
-	bytes   int64
-	entries int
+	folder   *Folder
+	transfer int
+	written  atomic.Int64
 
-	receiving     sync.Mutex
+	state         sync.Mutex
+	name          string
+	path          string
+	bytes         int64
+	entries       int
+	expected      bool
+	finished      bool
+	gaveUp        bool
 	entriesSoFar  int
 	bytesSoFar    int64
 	made          map[string]made
+	open          *IncomingFile
 	topLevelPaths []string
-
-	state     sync.Mutex
-	completed bool
-	stopped   atomic.Bool
-	written   atomic.Int64
 }
 
-func (a *Arrival) Receive(entry Entry, from io.Reader) error {
-	a.receiving.Lock()
-	defer a.receiving.Unlock()
-	if err := a.receive(entry, from); err != nil {
-		a.Stop()
-		return err
+type IncomingFile struct {
+	arrival   *Arrival
+	file      *os.File
+	relative  string
+	temporary string
+	final     string
+	topLevel  bool
+	size      int64
+	written   int64
+}
+
+func (a *Arrival) Expect(bytes int64, filesAndFolders int) error {
+	a.state.Lock()
+	defer a.state.Unlock()
+	if err := a.mayExpect(); err != nil {
+		return a.orGiveUp(err)
 	}
+	if err := a.folder.start(a, bytes, filesAndFolders); err != nil {
+		return a.orGiveUp(err)
+	}
+	a.expected = true
 	return nil
 }
 
-func (a *Arrival) Complete() ([]string, error) {
-	a.receiving.Lock()
-	defer a.receiving.Unlock()
-	if a.isCompleted() {
-		return slices.Clone(a.topLevelPaths), nil
-	}
-	if err := a.complete(); err != nil {
-		a.Stop()
-		return nil, err
-	}
-	a.folder.forget(a.name)
-	return slices.Clone(a.topLevelPaths), nil
+func (a *Arrival) Folder(name string) error {
+	a.state.Lock()
+	defer a.state.Unlock()
+	return a.orGiveUp(a.makeFolder(name))
 }
 
-func (a *Arrival) Stop() error {
+func (a *Arrival) File(name string, size int64) (*IncomingFile, error) {
 	a.state.Lock()
-	if a.completed || a.stopped.Load() {
-		a.state.Unlock()
+	defer a.state.Unlock()
+	incoming, err := a.openFile(name, size)
+	if err != nil {
+		return nil, a.orGiveUp(err)
+	}
+	return incoming, nil
+}
+
+func (a *Arrival) Finish() error {
+	a.state.Lock()
+	defer a.state.Unlock()
+	return a.orGiveUp(a.finish())
+}
+
+func (a *Arrival) Paths() []string {
+	a.state.Lock()
+	defer a.state.Unlock()
+	if !a.finished || a.gaveUp {
 		return nil
 	}
-	a.stopped.Store(true)
-	err := os.RemoveAll(a.path)
-	a.state.Unlock()
-	a.folder.forget(a.name)
+	return slices.Clone(a.topLevelPaths)
+}
+
+func (a *Arrival) GiveUp() {
+	a.state.Lock()
+	defer a.state.Unlock()
+	a.giveUp()
+}
+
+func (i *IncomingFile) Write(content []byte) (int, error) {
+	a := i.arrival
+	a.state.Lock()
+	defer a.state.Unlock()
+	written, err := i.write(content)
+	return written, a.orGiveUp(err)
+}
+
+func (i *IncomingFile) Whole() error {
+	a := i.arrival
+	a.state.Lock()
+	defer a.state.Unlock()
+	return a.orGiveUp(i.whole())
+}
+
+func (a *Arrival) orGiveUp(err error) error {
 	if err != nil {
-		return fmt.Errorf("arrival: %w", err)
+		a.giveUp()
+	}
+	return err
+}
+
+func (a *Arrival) giveUp() {
+	if a.gaveUp {
+		return
+	}
+	a.gaveUp = true
+	if a.open != nil {
+		a.open.file.Close()
+		a.open = nil
+	}
+	if a.name == "" {
+		return
+	}
+	if a.finished {
+		a.folder.removeFinished(a.name)
+		return
+	}
+	os.RemoveAll(a.path)
+	a.folder.forget(a.name)
+}
+
+func (a *Arrival) mayExpect() error {
+	switch {
+	case a.gaveUp:
+		return ErrGivenUp
+	case a.expected:
+		return fmt.Errorf("%w: Expect came twice", ErrOutOfOrder)
 	}
 	return nil
 }
 
-func (a *Arrival) isCompleted() bool {
-	a.state.Lock()
-	defer a.state.Unlock()
-	return a.completed
+func (a *Arrival) mayTakeAnEntry() error {
+	switch {
+	case a.gaveUp:
+		return ErrGivenUp
+	case !a.expected || a.finished || a.open != nil:
+		return ErrOutOfOrder
+	case a.entriesSoFar >= a.entries:
+		return fmt.Errorf("%w: %d files and folders were announced", ErrMoreThanAnnounced, a.entries)
+	}
+	return nil
 }
 
-func (a *Arrival) whileWriting(write func() error) error {
-	a.state.Lock()
-	defer a.state.Unlock()
-	if a.stopped.Load() {
-		return ErrStopped
+func (a *Arrival) makeFolder(name string) error {
+	if err := a.mayTakeAnEntry(); err != nil {
+		return err
 	}
-	return write()
-}
-
-func (a *Arrival) receive(entry Entry, from io.Reader) error {
-	if a.stopped.Load() {
-		return ErrStopped
-	}
-	if entry.Kind != FileKind && entry.Kind != FolderKind {
-		return fmt.Errorf("%w: %q is of kind %d", ErrNotFileOrFolder, entry.Path, entry.Kind)
-	}
-	if entry.Size < 0 || (entry.Kind == FolderKind && entry.Size != 0) {
-		return fmt.Errorf("%w: %q with %d bytes", ErrImpossibleSize, entry.Path, entry.Size)
-	}
-	elements, err := safeElements(entry.Path)
+	elements, full, err := a.placeFor(name)
 	if err != nil {
 		return err
 	}
-	if a.entriesSoFar >= a.entries || entry.Size > a.bytes-a.bytesSoFar {
-		return fmt.Errorf("%w: %d files and folders and %d bytes were announced", ErrMoreThanAnnounced, a.entries, a.bytes)
+	if err := os.Mkdir(full, 0o700); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%w: %q is there already and this arrival did not make it: %w", ErrUnsafePath, name, err)
+		}
+		return fmt.Errorf("arrival: %w", err)
+	}
+	if err := a.markQuarantined(full, name); err != nil {
+		return err
 	}
 	a.entriesSoFar++
-	a.bytesSoFar += entry.Size
-	for depth := 1; depth < len(elements); depth++ {
-		if err := a.makeFolder(elements[:depth]); err != nil {
-			return err
-		}
+	a.made[name] = madeFolder
+	if len(elements) == 1 {
+		a.topLevelPaths = append(a.topLevelPaths, full)
 	}
-	if entry.Kind == FolderKind {
-		return a.makeFolder(elements)
-	}
-	return a.receiveFile(elements, entry.Size, from)
+	return nil
 }
 
-func safeElements(path string) ([]string, error) {
+func (a *Arrival) openFile(name string, size int64) (*IncomingFile, error) {
+	if err := a.mayTakeAnEntry(); err != nil {
+		return nil, err
+	}
+	if size < 0 {
+		return nil, fmt.Errorf("%w: %q with %d bytes", ErrImpossibleSize, name, size)
+	}
+	if size > a.bytes-a.bytesSoFar {
+		return nil, fmt.Errorf("%w: %q has %d bytes, and only %d of the %d bytes announced are left", ErrMoreThanAnnounced, name, size, a.bytes-a.bytesSoFar, a.bytes)
+	}
+	elements, final, err := a.placeFor(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := nothingAt(final, name); err != nil {
+		return nil, err
+	}
+	temporary := filepath.Join(filepath.Dir(final), temporaryName(a.entriesSoFar+1))
+	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY|noFollow, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return nil, fmt.Errorf("%w: the temporary name of %q is there already: %w", ErrUnsafePath, name, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("arrival: %w", err)
+	}
+	a.open = &IncomingFile{arrival: a, file: file, relative: name, temporary: temporary, final: final, topLevel: len(elements) == 1, size: size}
+	if err := a.markQuarantined(temporary, name); err != nil {
+		return nil, err
+	}
+	a.entriesSoFar++
+	a.bytesSoFar += size
+	return a.open, nil
+}
+
+func (a *Arrival) placeFor(name string) ([]string, string, error) {
+	elements, err := safeElements(name)
+	if err != nil {
+		return nil, "", err
+	}
+	if a.made[name] != 0 {
+		return nil, "", fmt.Errorf("%w: %q arrived already", ErrUnsafePath, name)
+	}
+	if parent := strings.Join(elements[:len(elements)-1], "/"); parent != "" {
+		switch a.made[parent] {
+		case madeFile:
+			return nil, "", fmt.Errorf("%w: %q sits under a file", ErrUnsafePath, name)
+		case 0:
+			return nil, "", fmt.Errorf("%w: %q sits in a folder that did not arrive", ErrUnsafePath, name)
+		}
+	}
+	full := filepath.Join(a.path, filepath.Join(elements...))
+	if !strings.HasPrefix(full, a.path+string(filepath.Separator)) {
+		return nil, "", fmt.Errorf("%w: %q leaves the arrival", ErrUnsafePath, name)
+	}
+	return elements, full, nil
+}
+
+func safeElements(name string) ([]string, error) {
 	refuse := func(why string) ([]string, error) {
-		return nil, fmt.Errorf("%w: %q %s", ErrUnsafePath, path, why)
+		return nil, fmt.Errorf("%w: %q %s", ErrUnsafePath, name, why)
 	}
 	switch {
-	case path == "":
+	case name == "":
 		return refuse("is empty")
-	case strings.ContainsRune(path, 0):
+	case strings.ContainsRune(name, 0):
 		return refuse("holds a NUL byte")
-	case strings.ContainsRune(path, '\\'):
+	case strings.ContainsRune(name, '\\'):
 		return refuse("holds a backslash")
-	case strings.HasPrefix(path, "/") || filepath.IsAbs(path):
+	case strings.HasPrefix(name, "/") || filepath.IsAbs(name):
 		return refuse("is absolute")
-	case filepath.Clean(path) != path:
+	case filepath.Clean(name) != name:
 		return refuse("is not clean")
 	}
-	elements := strings.Split(path, "/")
+	elements := strings.Split(name, "/")
 	for _, element := range elements {
 		if element == "" || element == "." || element == ".." {
 			return refuse("holds an empty, . or .. element")
@@ -176,169 +281,98 @@ func safeElements(path string) ([]string, error) {
 	return elements, nil
 }
 
-func (a *Arrival) pathOf(elements []string) (string, error) {
-	full := filepath.Join(a.path, filepath.Join(elements...))
-	if !strings.HasPrefix(full, a.path+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: %q leaves the arrival", ErrUnsafePath, strings.Join(elements, "/"))
-	}
-	return full, nil
-}
-
-func (a *Arrival) makeFolder(elements []string) error {
-	relative := strings.Join(elements, "/")
-	switch a.made[relative] {
-	case madeFolder:
-		return nil
-	case madeFile:
-		return fmt.Errorf("%w: %q is a file that arrived already", ErrUnsafePath, relative)
-	}
-	full, err := a.pathOf(elements)
-	if err != nil {
-		return err
-	}
-	err = a.whileWriting(func() error {
-		if err := os.Mkdir(full, 0o700); err != nil {
-			if errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("%w: %q is there already and this arrival did not make it: %w", ErrUnsafePath, relative, err)
-			}
-			return fmt.Errorf("arrival: %w", err)
-		}
-		return a.markQuarantined(full, relative)
-	})
-	if err != nil {
-		return err
-	}
-	a.made[relative] = madeFolder
-	if len(elements) == 1 {
-		a.topLevelPaths = append(a.topLevelPaths, full)
-	}
-	return nil
-}
-
-func (a *Arrival) receiveFile(elements []string, size int64, from io.Reader) error {
-	relative := strings.Join(elements, "/")
-	if a.made[relative] != 0 {
-		return fmt.Errorf("%w: %q arrived already", ErrUnsafePath, relative)
-	}
-	final, err := a.pathOf(elements)
-	if err != nil {
-		return err
-	}
-	temporary := filepath.Join(filepath.Dir(final), temporaryName(a.entriesSoFar))
-	var file *os.File
-	err = a.whileWriting(func() error {
-		created, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY|noFollow, 0o600)
-		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("%w: the temporary name of %q is there already: %w", ErrUnsafePath, relative, err)
-		}
-		if err != nil {
-			return fmt.Errorf("arrival: %w", err)
-		}
-		file = created
-		return a.markQuarantined(temporary, relative)
-	})
-	if err == nil {
-		err = a.writeWhole(file, relative, size, from)
-	}
-	if file != nil {
-		err = errors.Join(err, file.Close())
-	}
-	if err == nil {
-		err = a.whileWriting(func() error { return putInPlace(temporary, final, relative) })
-	}
-	if err != nil {
-		if file != nil {
-			os.Remove(temporary)
-		}
-		return err
-	}
-	a.made[relative] = madeFile
-	if len(elements) == 1 {
-		a.topLevelPaths = append(a.topLevelPaths, final)
-	}
-	return nil
-}
-
-func (a *Arrival) writeWhole(file *os.File, relative string, size int64, from io.Reader) error {
-	content := &contentWriter{file: file, digest: sha256.New(), arrival: a}
-	if _, err := io.CopyN(content, from, size); err != nil {
-		if errors.Is(err, io.EOF) {
-			return fmt.Errorf("%w: %q ended before its %d bytes", ErrSizeDiffers, relative, size)
-		}
-		return fmt.Errorf("arrival: %q: %w", relative, err)
-	}
-	var announced [sha256.Size]byte
-	if _, err := io.ReadFull(from, announced[:]); err != nil {
-		return fmt.Errorf("arrival: the SHA-256 of %q: %w", relative, err)
-	}
-	written, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("arrival: %w", err)
-	}
-	if written.Size() != size {
-		return fmt.Errorf("%w: %q holds %d bytes, %d were announced", ErrSizeDiffers, relative, written.Size(), size)
-	}
-	if !bytes.Equal(content.digest.Sum(nil), announced[:]) {
-		return fmt.Errorf("%w: %q", ErrDigestDiffers, relative)
-	}
-	if err := flush(file); err != nil {
-		return fmt.Errorf("arrival: %w", err)
-	}
-	return nil
-}
-
-func putInPlace(temporary, final, relative string) error {
-	switch _, err := os.Lstat(final); {
+func nothingAt(path, name string) error {
+	switch _, err := os.Lstat(path); {
 	case err == nil:
-		return fmt.Errorf("%w: %q is there already and this arrival did not make it", ErrUnsafePath, relative)
+		return fmt.Errorf("%w: %q is there already and this arrival did not make it", ErrUnsafePath, name)
 	case !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("arrival: %w", err)
 	}
-	if err := os.Rename(temporary, final); err != nil {
+	return nil
+}
+
+func (a *Arrival) markQuarantined(path, name string) error {
+	if err := markQuarantined(path, a.folder.config.now()); err != nil {
+		return fmt.Errorf("arrival: the quarantine mark on %q: %w", name, err)
+	}
+	return nil
+}
+
+func (i *IncomingFile) write(content []byte) (int, error) {
+	a := i.arrival
+	switch {
+	case a.gaveUp:
+		return 0, ErrGivenUp
+	case a.open != i:
+		return 0, fmt.Errorf("%w: %q is not the file being written", ErrOutOfOrder, i.relative)
+	case int64(len(content)) > i.size-i.written:
+		return 0, fmt.Errorf("%w: %q has %d bytes, and more arrived", ErrSizeDiffers, i.relative, i.size)
+	}
+	written, err := i.file.Write(content)
+	i.written += int64(written)
+	a.written.Add(int64(written))
+	if err != nil {
+		return written, fmt.Errorf("arrival: %w", err)
+	}
+	return written, nil
+}
+
+func (i *IncomingFile) whole() error {
+	a := i.arrival
+	switch {
+	case a.gaveUp:
+		return ErrGivenUp
+	case a.open != i:
+		return fmt.Errorf("%w: %q is not the file being written", ErrOutOfOrder, i.relative)
+	case i.written != i.size:
+		return fmt.Errorf("%w: %q got %d of its %d bytes", ErrSizeDiffers, i.relative, i.written, i.size)
+	}
+	info, err := i.file.Stat()
+	if err != nil {
 		return fmt.Errorf("arrival: %w", err)
 	}
-	return nil
-}
-
-func (a *Arrival) markQuarantined(path, relative string) error {
-	if err := markQuarantined(path, a.folder.config.now()); err != nil {
-		return fmt.Errorf("arrival: the quarantine mark on %q: %w", relative, err)
+	if info.Size() != i.size {
+		return fmt.Errorf("%w: %q holds %d bytes on the disk, %d were announced", ErrSizeDiffers, i.relative, info.Size(), i.size)
+	}
+	if err := flush(i.file); err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	a.open = nil
+	if err := i.file.Close(); err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	if err := nothingAt(i.final, i.relative); err != nil {
+		return err
+	}
+	if err := os.Rename(i.temporary, i.final); err != nil {
+		return fmt.Errorf("arrival: %w", err)
+	}
+	a.made[i.relative] = madeFile
+	if i.topLevel {
+		a.topLevelPaths = append(a.topLevelPaths, i.final)
 	}
 	return nil
 }
 
-func (a *Arrival) complete() error {
-	if a.stopped.Load() {
-		return ErrStopped
-	}
-	if a.entriesSoFar != a.entries || a.bytesSoFar != a.bytes {
-		return fmt.Errorf("%w: %d of %d files and folders, %d of %d bytes", ErrIncomplete, a.entriesSoFar, a.entries, a.bytesSoFar, a.bytes)
-	}
-	return a.whileWriting(func() error {
-		if err := a.folder.writeRecord(a.name, a.folder.config.now(), a.bytes); err != nil {
-			return err
-		}
-		a.completed = true
+func (a *Arrival) finish() error {
+	switch {
+	case a.gaveUp:
+		return ErrGivenUp
+	case a.finished:
 		return nil
-	})
-}
-
-func temporaryName(entry int) string {
-	return fmt.Sprintf(".lanhop-arriving-%d", entry)
-}
-
-type contentWriter struct {
-	file    *os.File
-	digest  hash.Hash
-	arrival *Arrival
-}
-
-func (w *contentWriter) Write(content []byte) (int, error) {
-	if w.arrival.stopped.Load() {
-		return 0, ErrStopped
+	case !a.expected:
+		return ErrOutOfOrder
+	case a.open != nil || a.entriesSoFar != a.entries || a.bytesSoFar != a.bytes:
+		return fmt.Errorf("%w: %d of %d files and folders are whole", ErrIncomplete, len(a.made), a.entries)
 	}
-	written, err := w.file.Write(content)
-	w.digest.Write(content[:written])
-	w.arrival.written.Add(int64(written))
-	return written, err
+	if err := a.folder.writeRecord(a.name, a.folder.config.now(), a.bytes); err != nil {
+		return err
+	}
+	a.finished = true
+	a.folder.forget(a.name)
+	return nil
+}
+
+func temporaryName(position int) string {
+	return fmt.Sprintf(".lanhop-arriving-%d", position)
 }

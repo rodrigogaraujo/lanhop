@@ -20,11 +20,11 @@ func TestTheOldestArrivalsAreRemovedFirstToMakeRoom(t *testing.T) {
 	second, _ := arrive(t, f, 2, aFile("second.txt", strings.Repeat("2", 40)))
 	clock.pass(time.Minute)
 
-	third := startWith(t, f, 3, 50, 1)
+	third := expectingWith(t, f, 3, 50, 1)
 	expectGone(t, first)
 	expectKept(t, second)
 
-	fourth := startWith(t, f, 4, 50, 1)
+	fourth := expectingWith(t, f, 4, 50, 1)
 	expectGone(t, second)
 	expectHolds(t, f, third.name, fourth.name)
 }
@@ -32,21 +32,21 @@ func TestTheOldestArrivalsAreRemovedFirstToMakeRoom(t *testing.T) {
 func TestAnArrivalInProgressIsNeverRemovedToMakeRoom(t *testing.T) {
 	f, clock, _ := openFolder(t, 100, 1)
 	half := aFile("half.bin", strings.Repeat("h", 60))
-	writing := start(t, f, 1, half)
+	writing := expecting(t, f, 1, half)
 	clock.pass(time.Minute)
 	done, _ := arrive(t, f, 2, aFile("done.txt", strings.Repeat("d", 30)))
 	clock.pass(time.Minute)
 
-	third := startWith(t, f, 3, 30, 1)
+	third := expectingWith(t, f, 3, 30, 1)
 	expectGone(t, done)
-	if _, err := f.Start(4, 20, 1); !errors.Is(err, ErrNoRoom) {
-		t.Errorf("Start with only arrivals in progress to remove = %v, want ErrNoRoom", err)
+	if err := f.Expecting(4).Expect(20, 1); !errors.Is(err, ErrNoRoom) {
+		t.Errorf("Expect with only arrivals in progress to remove = %v, want ErrNoRoom", err)
 	}
 	expectHolds(t, f, writing.name, third.name)
 
-	receiveAll(t, writing, half)
-	if _, err := writing.Complete(); err != nil {
-		t.Errorf("the arrival in progress cannot complete: %v", err)
+	sendAll(t, writing, half)
+	if err := writing.Finish(); err != nil {
+		t.Errorf("the arrival in progress cannot finish: %v", err)
 	}
 }
 
@@ -56,8 +56,8 @@ func TestAnArrivalThatCannotFitIsRefusedAndRemovesNothing(t *testing.T) {
 	clock.pass(time.Minute)
 	second, _ := arrive(t, f, 2, aFile("second.txt", strings.Repeat("2", 40)))
 
-	if _, err := f.Start(3, 101, 1); !errors.Is(err, ErrNoRoom) {
-		t.Errorf("Start of 101 bytes in a room of 100 = %v, want ErrNoRoom", err)
+	if err := f.Expecting(3).Expect(101, 1); !errors.Is(err, ErrNoRoom) {
+		t.Errorf("Expect of 101 bytes in a room of 100 = %v, want ErrNoRoom", err)
 	}
 	expectHolds(t, f, first.name, first.name+recordSuffix, second.name, second.name+recordSuffix)
 }
@@ -68,17 +68,17 @@ func TestTheFreeSpaceOfTheDiskKeepsItsMargin(t *testing.T) {
 	clock.pass(time.Minute)
 	disk.setFree(1000 + 50)
 
-	if _, err := f.Start(2, 200, 1); !errors.Is(err, ErrNoRoom) {
-		t.Errorf("Start of more than the free space above the margin = %v, want ErrNoRoom", err)
+	if err := f.Expecting(2).Expect(200, 1); !errors.Is(err, ErrNoRoom) {
+		t.Errorf("Expect of more than the free space above the margin = %v, want ErrNoRoom", err)
 	}
 	expectKept(t, old)
 
-	writing := startWith(t, f, 3, 60, 1)
+	writing := expectingWith(t, f, 3, 60, 1)
 	expectGone(t, old)
 
 	disk.setFree(1000 + 100)
-	if _, err := f.Start(4, 50, 1); !errors.Is(err, ErrNoRoom) {
-		t.Errorf("Start while 60 bytes are still to arrive = %v, want ErrNoRoom", err)
+	if err := f.Expecting(4).Expect(50, 1); !errors.Is(err, ErrNoRoom) {
+		t.Errorf("Expect while 60 bytes are still to arrive = %v, want ErrNoRoom", err)
 	}
 	expectHolds(t, f, writing.name)
 }
@@ -94,25 +94,19 @@ func TestTheRoomIs8GiBAndTheMarginIs256MiBUnlessConfigured(t *testing.T) {
 		clock.pass(time.Hour)
 	}
 
-	large := startWith(t, f, 9, 3<<30, 1)
+	expectingWith(t, f, 9, 3<<30, 1).GiveUp()
 	expectGone(t, planted[0])
 	expectGone(t, planted[1])
 	expectKept(t, planted[2])
-	if err := large.Stop(); err != nil {
-		t.Fatal(err)
-	}
 
 	disk.setFree(DefaultMargin + 100)
-	small := startWith(t, f, 10, 100, 1)
+	expectingWith(t, f, 10, 100, 1).GiveUp()
 	expectKept(t, planted[2])
-	if err := small.Stop(); err != nil {
-		t.Fatal(err)
-	}
-	startWith(t, f, 11, 101, 1)
+	expectingWith(t, f, 11, 101, 1)
 	expectGone(t, planted[2])
 }
 
-func TestArrivalsAreRemovedADayAfterTheyCompleted(t *testing.T) {
+func TestArrivalsAreRemovedADayAfterTheyFinished(t *testing.T) {
 	f, clock, _ := openFolder(t, 0, 0)
 	first, _ := arrive(t, f, 1, aFile("first.txt", "first"))
 	clock.pass(2 * time.Hour)
@@ -142,10 +136,11 @@ func TestArrivalsAreRemovedADayAfterTheyCompleted(t *testing.T) {
 
 func leftBehindByACrash(t *testing.T, f *Folder) []*Arrival {
 	t.Helper()
-	writingWhenItCrashed := &Arrival{folder: f, name: "21-00000000000000aa", path: filepath.Join(f.Directory(), "21-00000000000000aa")}
-	wholeButNotRecorded := &Arrival{folder: f, name: "22-00000000000000bb", path: filepath.Join(f.Directory(), "22-00000000000000bb")}
-	recordLeftAlone := &Arrival{folder: f, name: "23-00000000000000cc", path: filepath.Join(f.Directory(), "23-00000000000000cc")}
-	unreadableRecord := &Arrival{folder: f, name: "24-00000000000000dd", path: filepath.Join(f.Directory(), "24-00000000000000dd")}
+	left := func(name string) *Arrival {
+		return &Arrival{folder: f, name: name, path: filepath.Join(f.Directory(), name)}
+	}
+	writingWhenItCrashed, wholeButNotRecorded := left("21-00000000000000aa"), left("22-00000000000000bb")
+	recordLeftAlone, unreadableRecord := left("23-00000000000000cc"), left("24-00000000000000dd")
 	for path, content := range map[string]string{
 		filepath.Join(writingWhenItCrashed.path, "photos", temporaryName(2)): "half a photo",
 		filepath.Join(wholeButNotRecorded.path, "notes.txt"):                 "milk",
@@ -168,8 +163,8 @@ func leftBehindByACrash(t *testing.T, f *Folder) []*Arrival {
 func TestCleaningUpKeepsAnArrivalInProgressAndRemovesWhatACrashLeftBehind(t *testing.T) {
 	f, clock, _ := openFolder(t, 0, 0)
 	one, two := aFile("one.txt", "one"), aFile("two.txt", "two")
-	writing := start(t, f, 1, one, two)
-	receiveAll(t, writing, one)
+	writing := expecting(t, f, 1, one, two)
+	sendAll(t, writing, one)
 	crashed := leftBehindByACrash(t, f)
 
 	clock.pass(48 * time.Hour)
@@ -181,22 +176,22 @@ func TestCleaningUpKeepsAnArrivalInProgressAndRemovesWhatACrashLeftBehind(t *tes
 	}
 	expectHolds(t, f, writing.name)
 
-	receiveAll(t, writing, two)
-	paths, err := writing.Complete()
-	if err != nil {
-		t.Fatalf("the arrival in progress cannot complete after the clean-up: %v", err)
+	sendAll(t, writing, two)
+	if err := writing.Finish(); err != nil {
+		t.Fatalf("the arrival in progress cannot finish after the clean-up: %v", err)
 	}
+	paths := writing.Paths()
 	expectContent(t, paths[0], one.content)
 	expectContent(t, paths[1], two.content)
 }
 
-func TestStartingAnArrivalRemovesWhatACrashLeftBehind(t *testing.T) {
+func TestExpectingAnArrivalRemovesWhatACrashLeftBehind(t *testing.T) {
 	f, _, _ := openFolder(t, 0, 0)
 	if err := os.MkdirAll(f.Directory(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	crashed := leftBehindByACrash(t, f)
-	a := startWith(t, f, 1, 0, 1)
+	a := expectingWith(t, f, 1, 0, 1)
 	for _, leftover := range crashed {
 		expectGone(t, leftover)
 	}
@@ -210,6 +205,7 @@ func TestSeveralArrivalsAtOnceKeepTheirFilesApart(t *testing.T) {
 		return []sent{
 			aFolder("desk"),
 			aFile("desk/a.txt", fmt.Sprintf("machine %d, file a", machine)),
+			aFolder("desk/deeper"),
 			aFile("desk/deeper/b.bin", strings.Repeat(fmt.Sprint(machine), 100_000)),
 			aFile(fmt.Sprintf("from-%d.txt", machine), "top"),
 		}
@@ -236,17 +232,16 @@ func TestSeveralArrivalsAtOnceKeepTheirFilesApart(t *testing.T) {
 				return
 			default:
 			}
-			stopped, err := f.Start(transfer, 3, 1)
-			if err != nil {
-				t.Errorf("Start of an arrival that stops: %v", err)
+			givenUp := f.Expecting(transfer)
+			if err := givenUp.Expect(3, 1); err != nil {
+				t.Errorf("Expect of an arrival that is given up: %v", err)
 				return
 			}
-			stopped.Receive(aFile("stopped.txt", "abc").entry, aFile("stopped.txt", "abc").stream())
-			stopped.Stop()
+			send(givenUp, aFile("given-up.txt", "abc"))
+			givenUp.GiveUp()
 		}
 	}()
 
-	paths := make([][]string, machines)
 	arrivals := make([]*Arrival, machines)
 	var arrived sync.WaitGroup
 	for machine := range machines {
@@ -255,22 +250,22 @@ func TestSeveralArrivalsAtOnceKeepTheirFilesApart(t *testing.T) {
 			defer arrived.Done()
 			entries := sentBy(machine)
 			total, count := announced(entries)
-			a, err := f.Start(machine, total, count)
-			if err != nil {
-				t.Errorf("Start for machine %d: %v", machine, err)
+			a := f.Expecting(machine)
+			if err := a.Expect(total, count); err != nil {
+				t.Errorf("Expect for machine %d: %v", machine, err)
 				return
 			}
 			for _, entry := range entries {
-				if err := a.Receive(entry.entry, entry.stream()); err != nil {
-					t.Errorf("Receive(%q) for machine %d: %v", entry.entry.Path, machine, err)
+				if err := send(a, entry); err != nil {
+					t.Errorf("sending %q for machine %d: %v", entry.name, machine, err)
 					return
 				}
 			}
-			arrivals[machine] = a
-			paths[machine], err = a.Complete()
-			if err != nil {
-				t.Errorf("Complete for machine %d: %v", machine, err)
+			if err := a.Finish(); err != nil {
+				t.Errorf("Finish for machine %d: %v", machine, err)
+				return
 			}
+			arrivals[machine] = a
 		}()
 	}
 	arrived.Wait()
@@ -278,18 +273,18 @@ func TestSeveralArrivalsAtOnceKeepTheirFilesApart(t *testing.T) {
 	tidied.Wait()
 
 	for machine, a := range arrivals {
-		if a == nil || len(paths[machine]) != 2 {
-			t.Fatalf("machine %d gave the paths %q", machine, paths[machine])
+		if a == nil || len(a.Paths()) != 2 {
+			t.Fatalf("machine %d did not finish with two top-level paths", machine)
 		}
 		for _, entry := range sentBy(machine) {
-			if entry.entry.Kind == FileKind {
-				expectContent(t, filepath.Join(a.path, entry.entry.Path), entry.content)
+			if !entry.folder {
+				expectContent(t, filepath.Join(a.path, entry.name), entry.content)
 			}
 		}
 	}
 }
 
-func TestArrivalsStartedAtOnceNeverTakeMoreThanTheRoom(t *testing.T) {
+func TestArrivalsExpectedAtOnceNeverTakeMoreThanTheRoom(t *testing.T) {
 	f, _, _ := openFolder(t, 100, 1)
 	const tries = 8
 	var started, refused atomic.Int32
@@ -298,14 +293,13 @@ func TestArrivalsStartedAtOnceNeverTakeMoreThanTheRoom(t *testing.T) {
 		everyone.Add(1)
 		go func() {
 			defer everyone.Done()
-			_, err := f.Start(transfer, 40, 1)
-			switch {
+			switch err := f.Expecting(transfer).Expect(40, 1); {
 			case err == nil:
 				started.Add(1)
 			case errors.Is(err, ErrNoRoom):
 				refused.Add(1)
 			default:
-				t.Errorf("Start: %v", err)
+				t.Errorf("Expect: %v", err)
 			}
 		}()
 	}
@@ -317,40 +311,41 @@ func TestArrivalsStartedAtOnceNeverTakeMoreThanTheRoom(t *testing.T) {
 
 func TestMakingRoomAcrossGoroutinesNeverRemovesAnArrivalInProgress(t *testing.T) {
 	file := aFile("round.txt", strings.Repeat("r", 1000))
-	f, _, _ := openFolder(t, 3*file.entry.Size, 1)
+	f, _, _ := openFolder(t, 3*file.size(), 1)
 	const machines, rounds = 6, 10
-	var completed atomic.Int32
+	var finished atomic.Int32
 	var everyone sync.WaitGroup
 	for machine := range machines {
 		everyone.Add(1)
 		go func() {
 			defer everyone.Done()
 			for round := 0; round < rounds; {
-				a, err := f.Start(machine*rounds+round, file.entry.Size, 1)
+				a := f.Expecting(machine*rounds + round)
+				err := a.Expect(file.size(), 1)
 				if errors.Is(err, ErrNoRoom) {
 					time.Sleep(time.Millisecond)
 					continue
 				}
 				if err != nil {
-					t.Errorf("Start: %v", err)
+					t.Errorf("Expect: %v", err)
 					return
 				}
-				if err := a.Receive(file.entry, file.stream()); err != nil {
+				if err := send(a, file); err != nil {
 					t.Errorf("an arrival in progress lost its folder: %v", err)
 					return
 				}
-				if _, err := a.Complete(); err != nil {
-					t.Errorf("Complete: %v", err)
+				if err := a.Finish(); err != nil {
+					t.Errorf("Finish: %v", err)
 					return
 				}
-				completed.Add(1)
+				finished.Add(1)
 				round++
 			}
 		}()
 	}
 	everyone.Wait()
-	if completed.Load() != machines*rounds {
-		t.Errorf("%d arrivals completed, want %d", completed.Load(), machines*rounds)
+	if finished.Load() != machines*rounds {
+		t.Errorf("%d arrivals finished, want %d", finished.Load(), machines*rounds)
 	}
 	listed, err := os.ReadDir(f.Directory())
 	if err != nil {

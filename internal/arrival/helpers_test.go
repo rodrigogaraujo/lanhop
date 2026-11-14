@@ -1,15 +1,11 @@
 package arrival
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,72 +63,89 @@ func openFolder(t *testing.T, room, margin int64) (*Folder, *clock, *disk) {
 }
 
 type sent struct {
-	entry   Entry
+	name    string
+	folder  bool
 	content string
 }
 
-func aFile(path, content string) sent {
-	return sent{entry: Entry{Path: path, Kind: FileKind, Size: int64(len(content))}, content: content}
+func aFile(name, content string) sent {
+	return sent{name: name, content: content}
 }
 
-func aFolder(path string) sent {
-	return sent{entry: Entry{Path: path, Kind: FolderKind}}
+func aFolder(name string) sent {
+	return sent{name: name, folder: true}
 }
 
-func (s sent) stream() io.Reader {
-	if s.entry.Kind != FileKind {
-		return strings.NewReader("")
-	}
-	digest := sha256.Sum256([]byte(s.content))
-	return io.MultiReader(strings.NewReader(s.content), bytes.NewReader(digest[:]))
-}
-
-func (s sent) streamWithDigestOf(other string) io.Reader {
-	digest := sha256.Sum256([]byte(other))
-	return io.MultiReader(strings.NewReader(s.content), bytes.NewReader(digest[:]))
+func (s sent) size() int64 {
+	return int64(len(s.content))
 }
 
 func announced(entries []sent) (int64, int) {
 	var total int64
 	for _, entry := range entries {
-		total += entry.entry.Size
+		total += entry.size()
 	}
 	return total, len(entries)
 }
 
-func startWith(t *testing.T, f *Folder, transfer int, bytes int64, entries int) *Arrival {
-	t.Helper()
-	a, err := f.Start(transfer, bytes, entries)
+func writeInPieces(file *IncomingFile, content string) error {
+	const piece = 32 << 10
+	for len(content) > 0 {
+		next := min(piece, len(content))
+		if _, err := file.Write([]byte(content[:next])); err != nil {
+			return err
+		}
+		content = content[next:]
+	}
+	return nil
+}
+
+func send(a *Arrival, entry sent) error {
+	if entry.folder {
+		return a.Folder(entry.name)
+	}
+	file, err := a.File(entry.name, entry.size())
 	if err != nil {
-		t.Fatalf("Start(%d, %d bytes, %d entries): %v", transfer, bytes, entries, err)
+		return err
+	}
+	if err := writeInPieces(file, entry.content); err != nil {
+		return err
+	}
+	return file.Whole()
+}
+
+func expectingWith(t *testing.T, f *Folder, transfer int, bytes int64, entries int) *Arrival {
+	t.Helper()
+	a := f.Expecting(transfer)
+	if err := a.Expect(bytes, entries); err != nil {
+		t.Fatalf("Expect(%d bytes, %d entries) for transfer %d: %v", bytes, entries, transfer, err)
 	}
 	return a
 }
 
-func start(t *testing.T, f *Folder, transfer int, entries ...sent) *Arrival {
+func expecting(t *testing.T, f *Folder, transfer int, entries ...sent) *Arrival {
 	t.Helper()
 	total, count := announced(entries)
-	return startWith(t, f, transfer, total, count)
+	return expectingWith(t, f, transfer, total, count)
 }
 
-func receiveAll(t *testing.T, a *Arrival, entries ...sent) {
+func sendAll(t *testing.T, a *Arrival, entries ...sent) {
 	t.Helper()
 	for _, entry := range entries {
-		if err := a.Receive(entry.entry, entry.stream()); err != nil {
-			t.Fatalf("Receive(%+v): %v", entry.entry, err)
+		if err := send(a, entry); err != nil {
+			t.Fatalf("sending %q: %v", entry.name, err)
 		}
 	}
 }
 
 func arrive(t *testing.T, f *Folder, transfer int, entries ...sent) (*Arrival, []string) {
 	t.Helper()
-	a := start(t, f, transfer, entries...)
-	receiveAll(t, a, entries...)
-	paths, err := a.Complete()
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
+	a := expecting(t, f, transfer, entries...)
+	sendAll(t, a, entries...)
+	if err := a.Finish(); err != nil {
+		t.Fatalf("Finish: %v", err)
 	}
-	return a, paths
+	return a, a.Paths()
 }
 
 func plantCompleted(t *testing.T, f *Folder, name string, completed time.Time, bytes int64) *Arrival {
